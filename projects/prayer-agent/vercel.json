@@ -12,11 +12,6 @@
     "api/**/*.js": {
       "memory": 1024,
       "maxDuration": 10
-    },
-    "api/**/*.py": {
-      "runtime": "python3.9",
-      "memory": 1024,
-      "maxDuration": 10
     }
   }
 }
