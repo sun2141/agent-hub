@@ -10,7 +10,7 @@ function App() {
     useEffect(() => {
         const fetchActivity = async () => {
             try {
-                const response = await fetch('http://localhost:3001/api/background-activities');
+                const response = await fetch('/api/background-activities');
                 if (response.ok) {
                     const data = await response.json();
                     setNotification(data.message);
@@ -37,7 +37,7 @@ function App() {
         setResult(null);
 
         try {
-            const response = await fetch('http://localhost:3001/api/generate-prayer', {
+            const response = await fetch('/api/generate-prayer', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
