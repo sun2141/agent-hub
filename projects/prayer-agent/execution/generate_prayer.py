@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,16 +9,15 @@ load_dotenv()
 # API Key setup
 api_key = os.getenv("GOOGLE_API_KEY")
 if api_key:
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 else:
-    # Fallback or error handling for missing API key
-    pass
+    client = None
 
 def generate_prayer(topic):
     """
     사용자의 기도 제목을 바탕으로 실제 사람이 기도하는 것 같은 따뜻한 AI 기도문을 생성합니다.
     """
-    if not api_key:
+    if not client:
         # Mock response if API key is missing
         return {
             "title": f"'{topic}'을 위한 진심 어린 기도",
@@ -26,8 +25,6 @@ def generate_prayer(topic):
         }
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
         prompt = f"""
         당신은 상처받은 이들을 위로하고 진심으로 공감하는 지혜로운 영적 동반자입니다.
         사용자의 기도 제목: "{topic}"
@@ -46,12 +43,16 @@ def generate_prayer(topic):
         }}
         """
 
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+
         # Handle potential non-JSON output from LLM
         text = response.text.strip()
         if text.startswith('```json'):
             text = text[7:-3].strip()
-        
+
         return json.loads(text)
     except Exception as e:
         print(f"Error in generation: {e}", file=sys.stderr)

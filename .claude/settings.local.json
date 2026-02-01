@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(test:*)",
+      "Bash(/Users/sun/20260128_test/venv/bin/python:*)",
+      "Bash(curl:*)",
+      "Bash(kill:*)"
+    ]
+  }
+}

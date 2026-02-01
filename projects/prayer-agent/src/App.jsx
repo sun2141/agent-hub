@@ -6,21 +6,26 @@ function App() {
     const [result, setResult] = useState(null);
     const [notification, setNotification] = useState(null);
 
-    // 랜덤 기도 알림 시뮬레이션
+    // 배경 활동 알림 (백엔드 연동)
     useEffect(() => {
-        const timer = setInterval(() => {
-            if (Math.random() > 0.7) {
-                const messages = [
-                    "AI 그레이스가 누군가를 위해 기도 중입니다...",
-                    "당신의 마음을 주님께 전달하고 있습니다.",
-                    "지금 이 순간, 위로의 메시지가 생성되고 있습니다.",
-                    "따뜻한 평화가 당신에게 머물기를 기도합니다."
-                ];
-                const randomMsg = messages[Math.floor(Math.random() * messages.length)];
-                setNotification(randomMsg);
-                setTimeout(() => setNotification(null), 5000);
+        const fetchActivity = async () => {
+            try {
+                const response = await fetch('http://localhost:3001/api/background-activities');
+                if (response.ok) {
+                    const data = await response.json();
+                    setNotification(data.message);
+                    setTimeout(() => setNotification(null), 6000);
+                }
+            } catch (error) {
+                console.error('Error fetching activity:', error);
             }
-        }, 15000);
+        };
+
+        const timer = setInterval(() => {
+            if (Math.random() > 0.6) {
+                fetchActivity();
+            }
+        }, 12000);
 
         return () => clearInterval(timer);
     }, []);
