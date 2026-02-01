@@ -34,8 +34,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Execute Python script using Vercel's Python runtime
-    const scriptPath = path.join(__dirname, 'generate-prayer.py');
+    // Execute Python script
+    const scriptPath = path.join(__dirname, '..', 'lib', 'generate_prayer.py');
     const command = `python3 "${scriptPath}" "${topic.replace(/"/g, '\\"')}"`;
 
     const { stdout, stderr } = await execAsync(command, {
