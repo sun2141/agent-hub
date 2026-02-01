@@ -1,9 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 function App() {
     const [topic, setTopic] = useState('');
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
+    const [notification, setNotification] = useState(null);
+
+    // 랜덤 기도 알림 시뮬레이션
+    useEffect(() => {
+        const timer = setInterval(() => {
+            if (Math.random() > 0.7) {
+                const messages = [
+                    "AI 그레이스가 누군가를 위해 기도 중입니다...",
+                    "당신의 마음을 주님께 전달하고 있습니다.",
+                    "지금 이 순간, 위로의 메시지가 생성되고 있습니다.",
+                    "따뜻한 평화가 당신에게 머물기를 기도합니다."
+                ];
+                const randomMsg = messages[Math.floor(Math.random() * messages.length)];
+                setNotification(randomMsg);
+                setTimeout(() => setNotification(null), 5000);
+            }
+        }, 15000);
+
+        return () => clearInterval(timer);
+    }, []);
 
     const handleGenerate = async () => {
         if (!topic.trim()) return;
@@ -12,20 +32,23 @@ function App() {
         setResult(null);
 
         try {
-            // simulate artificial delay for "AI thinking" feel
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            const response = await fetch('http://localhost:3001/api/generate-prayer', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ topic }),
+            });
 
-            // In a real Layer 2/3 setup, we would call an API or a local script.
-            // For now, let's use a mock implementation that mimics the Python script behavior.
-            const mockResult = {
-                title: `'${topic}'을 위한 기도`,
-                content: `사랑과 은혜가 풍성하신 하나님,\n\n오늘 '${topic}'이라는 마음의 짐을 가지고 주님 앞에 나온 당신의 자녀를 굽어살펴 주시옵소서. 우리의 연약함을 아시는 주님께서 이 상황 속에서 새 힘을 주시고, 보이지 않는 손길로 인도하여 주시기를 간절히 기도합니다.\n\n평안을 너희에게 끼치노니 곧 나의 평안을 너희에게 주노라 말씀하신 주님, 불안과 걱정 대신 주님이 주시는 참된 평화를 누리게 하옵소서.\n\n예수님의 이름으로 기도드립니다. 아멘.`
-            };
+            if (!response.ok) {
+                throw new Error('API request failed');
+            }
 
-            setResult(mockResult);
+            const data = await response.json();
+            setResult(data);
         } catch (error) {
             console.error('Error generating prayer:', error);
-            alert('기도문을 생성하는 중 오류가 발생했습니다.');
+            alert('기도문을 생성하는 중 오류가 발생했습니다. 서버가 실행 중인지 확인해주세요.');
         } finally {
             setLoading(false);
         }
@@ -33,6 +56,13 @@ function App() {
 
     return (
         <div className="container">
+            {notification && (
+                <div className="live-notification">
+                    <span className="pulse-dot"></span>
+                    {notification}
+                </div>
+            )}
+
             <h1>grace-ai</h1>
             <p className="subtitle">따뜻함을 전하는 AI 기도문</p>
 
