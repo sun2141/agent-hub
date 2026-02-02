@@ -58,7 +58,7 @@ JSON 형식으로 응답하세요. 줄바꿈은 실제 줄바꿈 문자가 아�
           }],
           generationConfig: {
             temperature: 0.9,
-            maxOutputTokens: 1024,
+            maxOutputTokens: 2048,
             responseMimeType: 'application/json',
             responseSchema: {
               type: 'object',
