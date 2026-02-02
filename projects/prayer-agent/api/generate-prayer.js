@@ -91,30 +91,9 @@ JSON 형식으로 응답하세요. 줄바꿈은 실제 줄바꿈 문자가 아�
     const data = await response.json();
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
-    // Remove markdown code blocks if present
-    text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-    try {
-      // Parse JSON
-      const prayerData = JSON.parse(text);
-      return res.status(200).json(prayerData);
-    } catch (parseError) {
-      console.error('JSON parse error:', parseError);
-      console.error('Raw text:', text);
-
-      // Fallback: try to extract title and content manually
-      const titleMatch = text.match(/"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
-      const contentMatch = text.match(/"content"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/s);
-
-      if (titleMatch && contentMatch) {
-        return res.status(200).json({
-          title: titleMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n'),
-          content: contentMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n')
-        });
-      }
-
-      throw parseError;
-    }
+    // The response is already a JSON string, just parse it directly
+    const prayerData = JSON.parse(text);
+    return res.status(200).json(prayerData);
   } catch (error) {
     console.error('Error generating prayer:', error);
     return res.status(500).json({
