@@ -86,10 +86,27 @@ export default async function handler(req, res) {
     // Remove markdown code blocks if present
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
-    // Parse JSON
-    const prayerData = JSON.parse(text);
+    try {
+      // Parse JSON
+      const prayerData = JSON.parse(text);
+      return res.status(200).json(prayerData);
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError);
+      console.error('Raw text:', text);
 
-    return res.status(200).json(prayerData);
+      // Fallback: try to extract title and content manually
+      const titleMatch = text.match(/"title"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+      const contentMatch = text.match(/"content"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/s);
+
+      if (titleMatch && contentMatch) {
+        return res.status(200).json({
+          title: titleMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n'),
+          content: contentMatch[1].replace(/\\"/g, '"').replace(/\\n/g, '\n')
+        });
+      }
+
+      throw parseError;
+    }
   } catch (error) {
     console.error('Error generating prayer:', error);
     return res.status(500).json({
