@@ -1,6 +1,5 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
 export default async function handler(req, res) {
+  console.log('[generate-prayer] Function invoked');
   // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,6 +25,10 @@ export default async function handler(req, res) {
   }
 
   try {
+    console.log('[generate-prayer] Importing GoogleGenerativeAI...');
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+    console.log('[generate-prayer] Import successful');
+
     const apiKey = process.env.GOOGLE_API_KEY;
 
     if (!apiKey) {
@@ -37,8 +40,10 @@ export default async function handler(req, res) {
     }
 
     // Initialize Gemini API
+    console.log('[generate-prayer] Initializing Gemini API...');
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    console.log('[generate-prayer] Model initialized');
 
     // Generate prayer content
     const prompt = `사용자가 다음과 같은 고민이나 감사의 마음을 전했습니다:
@@ -54,9 +59,12 @@ export default async function handler(req, res) {
 
 중요: 순수한 JSON만 출력하고, 마크다운 코드 블록(\\`\\`\\`json)은 사용하지 마세요.`;
 
+    console.log('[generate-prayer] Generating content...');
     const result = await model.generateContent(prompt);
+    console.log('[generate-prayer] Content generated');
     const response = await result.response;
     let text = response.text();
+    console.log('[generate-prayer] Response text extracted');
 
     // Remove markdown code blocks if present
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
