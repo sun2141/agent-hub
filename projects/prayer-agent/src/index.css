@@ -252,3 +252,191 @@ button:disabled {
     background: rgba(109, 93, 252, 0.2);
     box-shadow: 0 5px 15px rgba(109, 93, 252, 0.2);
 }
+
+/* User Section */
+.user-section {
+    position: absolute;
+    top: 1.5rem;
+    right: 1.5rem;
+    z-index: 10;
+}
+
+.user-loading {
+    font-size: 0.875rem;
+    color: var(--text-sub);
+}
+
+.login-btn {
+    padding: 0.6rem 1.25rem;
+    font-size: 0.9rem;
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 12px rgba(109, 93, 252, 0.3);
+}
+
+.login-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(109, 93, 252, 0.4);
+}
+
+.user-profile {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 0.6rem 1rem;
+    border-radius: 25px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    font-size: 0.875rem;
+}
+
+.user-name {
+    font-weight: 600;
+    color: var(--text-main);
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.user-tier {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px;
+    font-weight: 600;
+}
+
+.rate-limit-badge {
+    font-size: 0.75rem;
+    color: var(--accent-color);
+    background: rgba(109, 93, 252, 0.1);
+    padding: 0.25rem 0.5rem;
+    border-radius: 10px;
+}
+
+.logout-btn {
+    padding: 0.4rem 0.75rem;
+    font-size: 0.8rem;
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--text-sub);
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: none;
+}
+
+.logout-btn:hover {
+    background: rgba(0, 0, 0, 0.1);
+    transform: none;
+}
+
+/* Rate Limit Info */
+.rate-limit-info {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: linear-gradient(135deg, rgba(109, 93, 252, 0.1) 0%, rgba(163, 156, 253, 0.1) 100%);
+    border: 1px solid rgba(109, 93, 252, 0.2);
+    border-radius: 16px;
+    text-align: center;
+    font-size: 0.9rem;
+    color: var(--text-main);
+}
+
+.rate-limit-info p {
+    margin: 0;
+}
+
+.inline-link-btn {
+    background: none;
+    border: none;
+    color: var(--accent-color);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0 0.25rem;
+    text-decoration: underline;
+    font-size: inherit;
+    box-shadow: none;
+    display: inline;
+}
+
+.inline-link-btn:hover {
+    color: #5a4ad9;
+    transform: none;
+}
+
+/* Prayer Actions */
+.prayer-actions {
+    margin-top: 2rem;
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.save-button {
+    padding: 0.8rem 2rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 25px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.save-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.save-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.saved-indicator {
+    color: #10b981;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+@media (max-width: 768px) {
+    .user-section {
+        position: relative;
+        top: 0;
+        right: 0;
+        margin-bottom: 1rem;
+        text-align: center;
+    }
+
+    .user-profile {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .user-name {
+        max-width: 100%;
+    }
+
+    .prayer-actions {
+        flex-direction: column;
+    }
+
+    .save-button,
+    .reset-button {
+        width: 100%;
+    }
+}
