@@ -59,7 +59,21 @@ JSON 형식으로 응답하세요. 줄바꿈은 실제 줄바꿈 문자가 아�
           generationConfig: {
             temperature: 0.9,
             maxOutputTokens: 1024,
-            responseMimeType: 'application/json'
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'object',
+              properties: {
+                title: {
+                  type: 'string',
+                  description: '기도문의 제목'
+                },
+                content: {
+                  type: 'string',
+                  description: '기도문의 본문 내용'
+                }
+              },
+              required: ['title', 'content']
+            }
           }
         })
       }
