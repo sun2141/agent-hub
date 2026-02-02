@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  console.log('[generate-prayer] Function invoked');
   // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -25,46 +24,64 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('[generate-prayer] Importing GoogleGenerativeAI...');
-    const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    console.log('[generate-prayer] Import successful');
-
     const apiKey = process.env.GOOGLE_API_KEY;
 
     if (!apiKey) {
-      console.error('GOOGLE_API_KEY not found');
       return res.status(500).json({
         error: 'API configuration error',
         details: 'GOOGLE_API_KEY is not configured'
       });
     }
 
-    // Initialize Gemini API
-    console.log('[generate-prayer] Initializing Gemini API...');
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
-    console.log('[generate-prayer] Model initialized');
+    // Generate prayer content using Google Gemini REST API
+    const prompt = `당신은 상처받은 이들을 위로하고 진심으로 공감하는 지혜로운 영적 동반자입니다.
+사용자의 기도 제목: "${topic}"
 
-    // Generate prayer content
-    const prompt = `사용자가 다음과 같은 고민이나 감사의 마음을 전했습니다:
-"${topic}"
+다음 원칙에 따라 기도문을 작성해 주세요:
+1. **사람의 따스함**: AI가 아닌, 정말 내 아픔을 아는 사람이 옆에서 손을 잡고 기도해주는 것 같은 따뜻한 어조를 사용하세요.
+2. **깊은 공감**: 기도 제목에 담긴 사용자의 구체적인 감정(불안, 고독, 감사 등)을 깊이 헤아려 문장에 담으세요.
+3. **나-전달법**: "주님, 제가 이분을 위해 기도합니다"가 아닌, 사용자가 직접 주님께 고백하는 듯한 "나"의 언어로 작성하세요.
+4. **비정형성**: 너무 뻔한 종교적 표현만 반복하지 말고, 일상의 언어를 섞어 진실성을 높이세요.
+5. **구성**: 짧고 강렬한 제목, 300~500자의 본문, 그리고 "예수님의 이름으로 기도드립니다. 아멘."으로 마무리하세요.
 
-이를 바탕으로 따뜻하고 위로가 되는 기독교 기도문을 작성해주세요.
-
-다음 형식의 JSON으로 응답해주세요:
+응답은 반드시 아래의 JSON 형식으로만 출력하세요 (코드 블록 없이):
 {
-  "title": "기도문의 주제를 담은 짧은 제목 (예: 주님, 취업 준비로 지쳐갑니다)",
-  "content": "300~500자 내외의 기도문. 나-전달법을 사용하고, 정중한 경어체(~하시옵소서, ~기도합니다)를 사용합니다. 마지막에 '예수님의 이름으로 기도드립니다. 아멘.'으로 끝맺습니다."
-}
+  "title": "기도문의 제목",
+  "content": "기도문의 본문 내용"
+}`;
 
-중요: 순수한 JSON만 출력하고, 마크다운 코드 블록(\\`\\`\\`json)은 사용하지 마세요.`;
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 1024,
+          }
+        })
+      }
+    );
 
-    console.log('[generate-prayer] Generating content...');
-    const result = await model.generateContent(prompt);
-    console.log('[generate-prayer] Content generated');
-    const response = await result.response;
-    let text = response.text();
-    console.log('[generate-prayer] Response text extracted');
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('Gemini API error:', errorData);
+      return res.status(500).json({
+        error: 'Failed to generate prayer',
+        details: `API returned ${response.status}`
+      });
+    }
+
+    const data = await response.json();
+    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
     // Remove markdown code blocks if present
     text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
