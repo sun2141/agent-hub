@@ -1,0 +1,67 @@
+.prayer-ambience {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.ambience-circle {
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  filter: blur(80px);
+}
+
+.ambience-circle.primary {
+  width: 500px;
+  height: 500px;
+}
+
+.ambience-circle.secondary {
+  width: 700px;
+  height: 700px;
+  filter: blur(100px);
+}
+
+.ambience-particles {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+}
+
+.particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  top: 50%;
+  left: 50%;
+  filter: blur(2px);
+}
+
+@media (max-width: 768px) {
+  .ambience-circle {
+    width: 400px;
+    height: 400px;
+  }
+
+  .ambience-circle.primary {
+    width: 350px;
+    height: 350px;
+  }
+
+  .ambience-circle.secondary {
+    width: 450px;
+    height: 450px;
+  }
+}
