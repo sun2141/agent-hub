@@ -9,6 +9,7 @@ import { checkRateLimit, logUsage, savePrayer } from '../lib/supabaseClient';
 import { UpgradeBanner } from '../components/UpgradeBanner';
 import { DonateButton } from '../components/donation/DonateButton';
 import { PdfDownloadButton } from '../components/pdf/PdfDownloadButton';
+import { TtsButton } from '../components/tts/TtsButton';
 
 export function Home() {
     const navigate = useNavigate();
@@ -312,6 +313,7 @@ export function Home() {
                                     created_at: new Date().toISOString()
                                 }}
                             />
+                            <TtsButton text={content} />
                             <button className="reset-button" onClick={handleReset}>
                                 새로운 기도문 작성하기
                             </button>
