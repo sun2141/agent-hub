@@ -7,6 +7,7 @@ import { LoginModal } from '../components/auth/LoginModal';
 import { useAuth } from '../contexts/AuthContext';
 import { checkRateLimit, logUsage, savePrayer } from '../lib/supabaseClient';
 import { UpgradeBanner } from '../components/UpgradeBanner';
+import { DonateButton } from '../components/donation/DonateButton';
 
 export function Home() {
     const navigate = useNavigate();
@@ -76,6 +77,21 @@ export function Home() {
             setEmotion('peace');
         }
     }, [topic]);
+
+    // Handle donation success/cancel from URL params
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+
+        if (params.get('donation_success') === 'true') {
+            const amount = params.get('amount');
+            alert(`후원해주셔서 감사합니다! 💝\n${amount ? `₩${parseInt(amount).toLocaleString()}` : ''}\n더 나은 서비스로 보답하겠습니다.`);
+            // Clean URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+        } else if (params.get('donation_canceled') === 'true') {
+            // Clean URL silently
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+    }, []);
 
     const checkUserRateLimit = async () => {
         const userId = user?.id || null;
@@ -195,6 +211,7 @@ export function Home() {
                         >
                             📖 내 기도문
                         </button>
+                        <DonateButton />
                         <button className="logout-btn" onClick={handleLogout}>
                             로그아웃
                         </button>

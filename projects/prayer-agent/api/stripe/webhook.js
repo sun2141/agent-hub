@@ -88,6 +88,36 @@ export default async function handler(req, res) {
 }
 
 async function handleCheckoutCompleted(session) {
+  // Check if this is a donation or subscription
+  const isDonation = session.metadata?.type === 'donation';
+
+  if (isDonation) {
+    // Handle donation
+    const userId = session.metadata?.user_id;
+    const amount = parseInt(session.metadata?.amount || '0');
+
+    console.log(`Donation received: ${amount} KRW from user ${userId || 'anonymous'}`);
+
+    // Log donation to database (optional - create donations table if needed)
+    if (userId && userId !== 'anonymous') {
+      await supabase
+        .from('donations')
+        .insert({
+          user_id: userId,
+          amount,
+          stripe_payment_intent: session.payment_intent,
+          created_at: new Date()
+        })
+        .catch(err => {
+          // If donations table doesn't exist yet, just log
+          console.log('Donations table not yet created, skipping database log');
+        });
+    }
+
+    return;
+  }
+
+  // Handle subscription
   const userId = session.metadata?.supabase_user_id;
   if (!userId) return;
 
