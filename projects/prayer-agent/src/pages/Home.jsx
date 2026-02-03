@@ -6,6 +6,7 @@ import { PrayerAmbience } from '../components/prayer/PrayerAmbience';
 import { LoginModal } from '../components/auth/LoginModal';
 import { useAuth } from '../contexts/AuthContext';
 import { checkRateLimit, logUsage, savePrayer } from '../lib/supabaseClient';
+import { UpgradeBanner } from '../components/UpgradeBanner';
 
 export function Home() {
     const navigate = useNavigate();
@@ -235,6 +236,9 @@ export function Home() {
                     </p>
                 </div>
             )}
+
+            {/* Upgrade banner */}
+            <UpgradeBanner profile={profile} rateLimitInfo={rateLimitInfo} />
 
             <div className="input-section">
                 <textarea
