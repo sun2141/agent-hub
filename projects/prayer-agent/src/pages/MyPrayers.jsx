@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getUserPrayers, deletePrayer } from '../lib/supabaseClient';
+import { PdfDownloadButton } from '../components/pdf/PdfDownloadButton';
 import './MyPrayers.css';
 
 export function MyPrayers() {
@@ -292,6 +293,7 @@ export function MyPrayers() {
                 </p>
 
                 <div className="prayer-actions">
+                  <PdfDownloadButton prayer={prayer} compact={true} />
                   <button
                     className="action-button"
                     onClick={() => handleShare(prayer)}

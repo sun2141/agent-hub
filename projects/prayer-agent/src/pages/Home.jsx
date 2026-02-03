@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { checkRateLimit, logUsage, savePrayer } from '../lib/supabaseClient';
 import { UpgradeBanner } from '../components/UpgradeBanner';
 import { DonateButton } from '../components/donation/DonateButton';
+import { PdfDownloadButton } from '../components/pdf/PdfDownloadButton';
 
 export function Home() {
     const navigate = useNavigate();
@@ -302,6 +303,15 @@ export function Home() {
                             {currentPrayerId && (
                                 <span className="saved-indicator">✓ 저장됨</span>
                             )}
+                            <PdfDownloadButton
+                                prayer={{
+                                    title,
+                                    content,
+                                    topic,
+                                    emotion,
+                                    created_at: new Date().toISOString()
+                                }}
+                            />
                             <button className="reset-button" onClick={handleReset}>
                                 새로운 기도문 작성하기
                             </button>
