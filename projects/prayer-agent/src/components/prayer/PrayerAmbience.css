@@ -11,24 +11,26 @@
 
 .ambience-circle {
   position: absolute;
-  width: 600px;
-  height: 600px;
+  width: 400px;
+  height: 400px;
   border-radius: 50%;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  filter: blur(80px);
+  filter: blur(100px);
+  opacity: 0.4;
 }
 
 .ambience-circle.primary {
-  width: 500px;
-  height: 500px;
+  width: 350px;
+  height: 350px;
 }
 
 .ambience-circle.secondary {
-  width: 700px;
-  height: 700px;
-  filter: blur(100px);
+  width: 500px;
+  height: 500px;
+  filter: blur(120px);
+  opacity: 0.3;
 }
 
 .ambience-particles {
@@ -41,27 +43,27 @@
 
 .particle {
   position: absolute;
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   top: 50%;
   left: 50%;
-  filter: blur(2px);
+  filter: blur(1px);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 640px) {
   .ambience-circle {
-    width: 400px;
-    height: 400px;
+    width: 250px;
+    height: 250px;
   }
 
   .ambience-circle.primary {
-    width: 350px;
-    height: 350px;
+    width: 200px;
+    height: 200px;
   }
 
   .ambience-circle.secondary {
-    width: 450px;
-    height: 450px;
+    width: 300px;
+    height: 300px;
   }
 }

@@ -10,6 +10,11 @@ import { UpgradeBanner } from '../components/UpgradeBanner';
 import { DonateButton } from '../components/donation/DonateButton';
 import { PdfDownloadButton } from '../components/pdf/PdfDownloadButton';
 import { TtsButton } from '../components/tts/TtsButton';
+import { StreakDisplay } from '../components/streak/StreakDisplay';
+import { VoiceInput } from '../components/voice/VoiceInput';
+import { EmergencyPrayerButton } from '../components/emergency/EmergencyPrayerButton';
+import { Button } from '../components/ui/button';
+import { Badge } from '../components/ui/badge';
 
 export function Home() {
     const navigate = useNavigate();
@@ -33,14 +38,12 @@ export function Home() {
         reset
     } = usePrayerGeneration();
 
-    // Check rate limit on mount and when user changes
     useEffect(() => {
         if (!authLoading) {
             checkUserRateLimit();
         }
     }, [user, authLoading]);
 
-    // 배경 활동 알림 (백엔드 연동)
     useEffect(() => {
         const fetchActivity = async () => {
             try {
@@ -64,7 +67,6 @@ export function Home() {
         return () => clearInterval(timer);
     }, []);
 
-    // Detect emotion from topic for ambience color
     useEffect(() => {
         if (!topic) return;
 
@@ -80,17 +82,14 @@ export function Home() {
         }
     }, [topic]);
 
-    // Handle donation success/cancel from URL params
     useEffect(() => {
         const params = new URLSearchParams(window.location.search);
 
         if (params.get('donation_success') === 'true') {
             const amount = params.get('amount');
             alert(`후원해주셔서 감사합니다! 💝\n${amount ? `₩${parseInt(amount).toLocaleString()}` : ''}\n더 나은 서비스로 보답하겠습니다.`);
-            // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
         } else if (params.get('donation_canceled') === 'true') {
-            // Clean URL silently
             window.history.replaceState({}, document.title, window.location.pathname);
         }
     }, []);
@@ -104,7 +103,6 @@ export function Home() {
     };
 
     const getAnonymousId = () => {
-        // Use a simple fingerprint based on user agent and screen size
         const fingerprint = `${navigator.userAgent}_${screen.width}x${screen.height}`;
         return btoa(fingerprint).substring(0, 32);
     };
@@ -112,7 +110,6 @@ export function Home() {
     const handleGenerate = async () => {
         if (!topic.trim()) return;
 
-        // Check rate limit
         const userId = user?.id || null;
         const anonymousId = !userId ? getAnonymousId() : null;
 
@@ -126,16 +123,9 @@ export function Home() {
             return;
         }
 
-        // Generate prayer
         await generatePrayer(topic);
-
-        // Log usage
         await logUsage(userId, anonymousId, 'prayer_generation');
-
-        // Update rate limit info
         await checkUserRateLimit();
-
-        // Reset prayer ID for new prayer
         setCurrentPrayerId(null);
     };
 
@@ -184,12 +174,24 @@ export function Home() {
         handleReset();
     };
 
+    const handleVoiceTranscript = (transcript, isFinal) => {
+        setTopic(transcript);
+    };
+
     return (
         <div className="container">
             {/* Breathing ambience background */}
             <PrayerAmbience isActive={isGenerating} emotion={emotion} />
 
-            {/* User Profile / Login Button */}
+            {/* Live notification */}
+            {notification && (
+                <div className="live-notification">
+                    <span className="pulse-dot" />
+                    {notification}
+                </div>
+            )}
+
+            {/* User Section */}
             <div className="user-section">
                 {authLoading ? (
                     <div className="user-loading">로딩 중...</div>
@@ -206,10 +208,10 @@ export function Home() {
                                 오늘 {rateLimitInfo.remaining || 0}회 남음
                             </span>
                         )}
+                        <StreakDisplay profile={profile} />
                         <button
                             className="my-prayers-link"
                             onClick={() => navigate('/my-prayers')}
-                            title="내 기도문"
                         >
                             📖 내 기도문
                         </button>
@@ -220,22 +222,16 @@ export function Home() {
                     </div>
                 ) : (
                     <button className="login-btn" onClick={() => setShowLoginModal(true)}>
-                        로그인 / 회원가입
+                        시작하기
                     </button>
                 )}
             </div>
 
-            {notification && (
-                <div className="live-notification">
-                    <span className="pulse-dot"></span>
-                    {notification}
-                </div>
-            )}
-
+            {/* Header */}
             <h1>grace-ai</h1>
-            <p className="subtitle">따뜻함을 전하는 AI 기도문</p>
+            <p className="subtitle">당신의 마음을 담은 AI 기도문</p>
 
-            {/* Show progress indicator when generating */}
+            {/* Progress indicator */}
             {isGenerating && progress > 0 && (
                 <PrayerProgress currentStep={progress} />
             )}
@@ -244,14 +240,14 @@ export function Home() {
             {!user && rateLimitInfo && (
                 <div className="rate-limit-info">
                     <p>
-                        🎁 오늘 {rateLimitInfo.remaining || 0}회 남았습니다.
+                        ✨ 오늘 {rateLimitInfo.remaining || 0}회 남았습니다.{' '}
                         <button
                             className="inline-link-btn"
                             onClick={() => setShowLoginModal(true)}
                         >
                             회원가입
                         </button>
-                        하시면 하루 10회까지 이용 가능합니다!
+                        하시면 더 많이 이용하실 수 있어요!
                     </p>
                 </div>
             )}
@@ -259,19 +255,29 @@ export function Home() {
             {/* Upgrade banner */}
             <UpgradeBanner profile={profile} rateLimitInfo={rateLimitInfo} />
 
+            {/* Input section */}
             <div className="input-section">
-                <textarea
-                    placeholder="오늘의 고민이나 감사하고 싶은 내용을 들려주세요..."
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    disabled={isGenerating}
-                />
-                <button
-                    onClick={handleGenerate}
-                    disabled={isGenerating || !topic.trim()}
-                >
-                    {isGenerating ? '기도문 작성 중...' : '기도문 생성하기'}
-                </button>
+                <div className="input-with-voice">
+                    <textarea
+                        placeholder="오늘 감사한 일, 힘든 일, 기도하고 싶은 내용을 자유롭게 적어주세요..."
+                        value={topic}
+                        onChange={(e) => setTopic(e.target.value)}
+                        disabled={isGenerating}
+                    />
+                    <VoiceInput onTranscript={handleVoiceTranscript} />
+                </div>
+                <div className="action-buttons">
+                    <Button
+                        onClick={handleGenerate}
+                        disabled={isGenerating || !topic.trim()}
+                        isLoading={isGenerating}
+                        className="generate-button"
+                        size="lg"
+                    >
+                        {isGenerating ? '기도문 작성 중...' : '✨ 기도문 생성하기'}
+                    </Button>
+                    <EmergencyPrayerButton />
+                </div>
             </div>
 
             {/* Error message */}
@@ -281,7 +287,7 @@ export function Home() {
                 </div>
             )}
 
-            {/* Prayer result with streaming effect */}
+            {/* Prayer result */}
             {(title || content) && (
                 <div className="prayer-result">
                     {title && <h2>{title}</h2>}
@@ -293,13 +299,14 @@ export function Home() {
                     {!isGenerating && (title || content) && (
                         <div className="prayer-actions">
                             {user && !currentPrayerId && (
-                                <button
-                                    className="save-button"
+                                <Button
                                     onClick={() => handleSavePrayer(false)}
                                     disabled={saving}
+                                    isLoading={saving}
+                                    size="sm"
                                 >
                                     {saving ? '저장 중...' : '💾 저장하기'}
-                                </button>
+                                </Button>
                             )}
                             {currentPrayerId && (
                                 <span className="saved-indicator">✓ 저장됨</span>
@@ -314,9 +321,9 @@ export function Home() {
                                 }}
                             />
                             <TtsButton text={content} />
-                            <button className="reset-button" onClick={handleReset}>
-                                새로운 기도문 작성하기
-                            </button>
+                            <Button variant="outline" size="sm" onClick={handleReset}>
+                                새로운 기도문
+                            </Button>
                         </div>
                     )}
                 </div>
