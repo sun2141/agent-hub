@@ -14,6 +14,8 @@ import { StreakDisplay } from '../components/streak/StreakDisplay';
 import { VoiceInput } from '../components/voice/VoiceInput';
 import { EmergencyPrayerButton } from '../components/emergency/EmergencyPrayerButton';
 import { PrayerDashboard } from '../components/schedule/PrayerDashboard';
+import { PrayerNotification } from '../components/schedule/PrayerNotification';
+import { usePrayerCompanion } from '../hooks/usePrayerCompanion';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 
@@ -28,6 +30,7 @@ export function Home() {
     const [currentPrayerId, setCurrentPrayerId] = useState(null);
 
     const { user, profile, loading: authLoading, signOut } = useAuth();
+    const { currentPrayer: companionPrayer, nextPrayerTime, unviewedPrayers } = usePrayerCompanion();
 
     const {
         title,
@@ -343,6 +346,12 @@ export function Home() {
                     setShowLoginModal(false);
                     checkUserRateLimit();
                 }}
+            />
+
+            {/* 실시간 기도 알림 (화면 하단 고정) */}
+            <PrayerNotification
+                prayer={companionPrayer}
+                onDismiss={() => {}}
             />
         </div>
     );

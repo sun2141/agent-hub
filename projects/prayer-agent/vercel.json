@@ -21,7 +21,7 @@
   "crons": [
     {
       "path": "/api/cron/execute-prayers",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
