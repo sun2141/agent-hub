@@ -13,6 +13,7 @@ import { TtsButton } from '../components/tts/TtsButton';
 import { StreakDisplay } from '../components/streak/StreakDisplay';
 import { VoiceInput } from '../components/voice/VoiceInput';
 import { EmergencyPrayerButton } from '../components/emergency/EmergencyPrayerButton';
+import { PrayerDashboard } from '../components/schedule/PrayerDashboard';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 
@@ -327,6 +328,11 @@ export function Home() {
                         </div>
                     )}
                 </div>
+            )}
+
+            {/* 기도 동반자 대시보드 - 로그인 사용자만 */}
+            {user && (
+                <PrayerDashboard />
             )}
 
             {/* Login Modal */}

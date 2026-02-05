@@ -1,0 +1,580 @@
+.scheduler-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+  animation: fadeIn 0.2s ease;
+}
+
+.scheduler-modal {
+  background: white;
+  border-radius: var(--radius-xl, 32px);
+  padding: 2rem;
+  max-width: 500px;
+  width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
+  animation: slideUp 0.3s ease;
+  position: relative;
+}
+
+.scheduler-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: var(--violet-100, #ede9fe);
+  border-radius: 50%;
+  font-size: 1.5rem;
+  color: var(--violet-600, #7c3aed);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  padding: 0;
+  box-shadow: none;
+}
+
+.scheduler-close:hover {
+  background: var(--violet-200, #ddd6fe);
+  transform: none;
+}
+
+.scheduler-header {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.scheduler-header h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(135deg, var(--violet-600, #7c3aed) 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.scheduler-header p {
+  color: var(--muted-foreground, #6b7280);
+  font-size: 0.9rem;
+}
+
+.scheduler-loading {
+  text-align: center;
+  padding: 3rem;
+  color: var(--muted-foreground, #6b7280);
+}
+
+/* 활성화 토글 */
+.scheduler-toggle {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.scheduler-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+}
+
+.scheduler-toggle input[type="checkbox"] {
+  display: none;
+}
+
+.toggle-slider {
+  width: 48px;
+  height: 26px;
+  background: var(--muted, #e5e7eb);
+  border-radius: 13px;
+  position: relative;
+  transition: background 0.2s ease;
+}
+
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.scheduler-toggle input:checked + .toggle-slider {
+  background: linear-gradient(135deg, var(--violet-500, #8b5cf6) 0%, var(--violet-600, #7c3aed) 100%);
+}
+
+.scheduler-toggle input:checked + .toggle-slider::after {
+  transform: translateX(22px);
+}
+
+.toggle-label {
+  font-weight: 600;
+  color: var(--foreground, #111827);
+}
+
+/* 섹션 */
+.scheduler-section {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: var(--muted, #f3f4f6);
+  border-radius: var(--radius-lg, 24px);
+}
+
+.scheduler-section h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--foreground, #111827);
+  margin-bottom: 0.75rem;
+}
+
+/* 스케줄 타입 탭 */
+.schedule-type-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.schedule-type-tabs button {
+  flex: 1;
+  padding: 0.625rem 1rem;
+  border: 2px solid transparent;
+  background: white;
+  border-radius: var(--radius-md, 16px);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: var(--muted-foreground, #6b7280);
+  box-shadow: none;
+}
+
+.schedule-type-tabs button:hover {
+  transform: none;
+}
+
+.schedule-type-tabs button.active {
+  background: linear-gradient(135deg, var(--violet-500, #8b5cf6) 0%, var(--violet-600, #7c3aed) 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+}
+
+/* 고정 시간 프리셋 */
+.time-presets {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.time-preset {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  background: white;
+  border: 2px solid transparent;
+  border-radius: var(--radius-md, 16px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: none;
+}
+
+.time-preset:hover {
+  transform: none;
+  border-color: var(--violet-200, #ddd6fe);
+}
+
+.time-preset.selected {
+  background: var(--violet-100, #ede9fe);
+  border-color: var(--violet-400, #a78bfa);
+}
+
+.preset-icon {
+  font-size: 1.5rem;
+}
+
+.preset-label {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--foreground, #111827);
+}
+
+.preset-time {
+  font-size: 0.75rem;
+  color: var(--muted-foreground, #6b7280);
+}
+
+/* 커스텀 시간 */
+.custom-time {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.custom-time input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 2px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 10px);
+  font-size: 0.875rem;
+}
+
+.custom-time button {
+  padding: 0.5rem 1rem;
+  background: var(--violet-600, #7c3aed);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm, 10px);
+  font-size: 0.875rem;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.custom-time button:disabled {
+  opacity: 0.5;
+}
+
+/* 선택된 시간 */
+.selected-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.selected-times .label {
+  font-size: 0.8rem;
+  color: var(--muted-foreground, #6b7280);
+}
+
+.time-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--violet-100, #ede9fe);
+  color: var(--violet-700, #6d28d9);
+  border-radius: var(--radius-full, 9999px);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.time-badge button {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--violet-500, #8b5cf6);
+  cursor: pointer;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+
+/* 랜덤 설정 */
+.random-time-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.random-count label,
+.random-range label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted-foreground, #6b7280);
+  margin-bottom: 0.5rem;
+}
+
+.count-selector {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.count-selector button {
+  padding: 0.5rem 1rem;
+  background: white;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm, 10px);
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: none;
+  color: var(--foreground, #111827);
+}
+
+.count-selector button.selected {
+  background: var(--violet-100, #ede9fe);
+  border-color: var(--violet-400, #a78bfa);
+  color: var(--violet-700, #6d28d9);
+}
+
+.range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.range-inputs input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 2px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 10px);
+  font-size: 0.875rem;
+}
+
+.range-inputs span {
+  color: var(--muted-foreground, #6b7280);
+}
+
+/* 기도문 소스 */
+.prayer-source-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.prayer-source-options label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: white;
+  border: 2px solid transparent;
+  border-radius: var(--radius-md, 16px);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prayer-source-options label.selected {
+  background: var(--violet-50, #f5f3ff);
+  border-color: var(--violet-300, #c4b5fd);
+}
+
+.prayer-source-options input[type="radio"] {
+  display: none;
+}
+
+.option-icon {
+  font-size: 1.5rem;
+}
+
+.option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.option-text strong {
+  font-size: 0.9rem;
+  color: var(--foreground, #111827);
+}
+
+.option-text small {
+  font-size: 0.75rem;
+  color: var(--muted-foreground, #6b7280);
+}
+
+/* 저장된 기도문 목록 */
+.saved-prayers-list {
+  margin-top: 1rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.list-hint {
+  font-size: 0.8rem;
+  color: var(--muted-foreground, #6b7280);
+  margin-bottom: 0.5rem;
+}
+
+.prayer-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem;
+  background: white;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 10px);
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.prayer-item:hover {
+  border-color: var(--violet-300, #c4b5fd);
+}
+
+.prayer-item.selected {
+  background: var(--violet-50, #f5f3ff);
+  border-color: var(--violet-400, #a78bfa);
+}
+
+.prayer-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--violet-600, #7c3aed);
+}
+
+.prayer-title {
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--foreground, #111827);
+  flex-shrink: 0;
+}
+
+.prayer-preview {
+  font-size: 0.75rem;
+  color: var(--muted-foreground, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 기본 주제 */
+.default-topic {
+  margin-top: 1rem;
+}
+
+.default-topic label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted-foreground, #6b7280);
+  margin-bottom: 0.5rem;
+}
+
+.default-topic input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border: 2px solid var(--border, #e5e7eb);
+  border-radius: var(--radius-sm, 10px);
+  font-size: 0.9rem;
+}
+
+/* 알림 설정 */
+.notification-section {
+  display: flex;
+  gap: 1rem;
+}
+
+.notification-section h3 {
+  flex-basis: 100%;
+}
+
+.notification-section label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.notification-section input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--violet-600, #7c3aed);
+}
+
+/* 액션 버튼 */
+.scheduler-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.cancel-btn {
+  flex: 1;
+  padding: 0.875rem;
+  background: var(--muted, #f3f4f6);
+  color: var(--foreground, #111827);
+  border: none;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: none;
+}
+
+.cancel-btn:hover {
+  background: var(--border, #e5e7eb);
+  transform: none;
+}
+
+.save-btn {
+  flex: 2;
+  padding: 0.875rem;
+  background: linear-gradient(135deg, var(--violet-500, #8b5cf6) 0%, var(--violet-600, #7c3aed) 100%);
+  color: white;
+  border: none;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.35);
+}
+
+.save-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+}
+
+.save-btn:disabled {
+  opacity: 0.5;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 애니메이션 */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 모바일 */
+@media (max-width: 640px) {
+  .scheduler-modal {
+    padding: 1.5rem;
+    max-height: 90vh;
+  }
+
+  .time-presets {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .notification-section {
+    flex-wrap: wrap;
+  }
+}
