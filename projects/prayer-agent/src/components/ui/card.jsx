@@ -2,13 +2,18 @@ import * as React from "react";
 import { cn } from "../../lib/utils";
 
 const Card = React.forwardRef(
-  ({ className, ...props }, ref) => (
+  ({ className, style, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        "rounded-3xl border bg-card text-card-foreground shadow-lg",
+        "rounded-3xl border text-card-foreground",
         className
       )}
+      style={{
+        background: "var(--gradient-card)",
+        boxShadow: "var(--shadow-md), var(--shadow-glow)",
+        ...style
+      }}
       {...props}
     />
   )

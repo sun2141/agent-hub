@@ -4,8 +4,8 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0.25rem 0.625rem;
-  background: white;
-  border: 2px solid var(--accent-soft, #EDE9FE);
+  background: var(--violet-50);
+  border: 2px solid var(--violet-200);
   border-radius: var(--radius-full, 9999px);
   font-weight: 600;
   font-size: 0.85rem;
@@ -16,7 +16,7 @@
 }
 
 .streak-compact .streak-number {
-  color: var(--text-primary, #111827);
+  color: hsl(var(--foreground));
 }
 
 /* Main Streak Container */
@@ -29,10 +29,10 @@
   align-items: center;
   gap: 1.25rem;
   padding: 1.25rem;
-  background: white;
-  border: 2px solid var(--border, #E5E7EB);
+  background: var(--gradient-card);
+  border: 2px solid hsl(var(--border));
   border-radius: var(--radius-lg, 24px);
-  box-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.04));
+  box-shadow: var(--shadow-md), var(--shadow-glow);
 }
 
 .streak-icon-large {
@@ -56,7 +56,7 @@
 
 .streak-label {
   font-size: 0.85rem;
-  color: var(--text-secondary, #6B7280);
+  color: hsl(var(--muted-foreground));
   margin-bottom: 0.25rem;
   font-weight: 500;
 }
@@ -65,14 +65,14 @@
   font-size: 2.5rem;
   font-weight: 800;
   line-height: 1;
-  color: var(--text-primary, #111827);
+  color: hsl(var(--foreground));
 }
 
 .streak-unit {
   font-size: 1.25rem;
   margin-left: 0.25rem;
   font-weight: 600;
-  color: var(--text-secondary, #6B7280);
+  color: hsl(var(--muted-foreground));
 }
 
 /* Stats */
@@ -86,34 +86,36 @@
 .streak-stat {
   text-align: center;
   padding: 0.875rem;
-  background: var(--bg-secondary, #F3F4F6);
+  background: var(--gradient-glow);
+  border: 1px solid var(--violet-100);
   border-radius: var(--radius-md, 16px);
 }
 
 .stat-label {
   font-size: 0.8rem;
-  color: var(--text-secondary, #6B7280);
+  color: hsl(var(--muted-foreground));
   margin-bottom: 0.375rem;
 }
 
 .stat-value {
   font-size: 1.375rem;
   font-weight: 700;
-  color: var(--text-primary, #111827);
+  color: hsl(var(--foreground));
 }
 
 /* Next Milestone */
 .streak-next-milestone {
   margin-top: 0.75rem;
   padding: 0.875rem;
-  background: var(--bg-secondary, #F3F4F6);
+  background: var(--gradient-glow);
+  border: 1px solid var(--violet-100);
   border-radius: var(--radius-md, 16px);
 }
 
 .milestone-progress {
   width: 100%;
   height: 6px;
-  background: var(--border, #E5E7EB);
+  background: hsl(var(--border));
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 0.625rem;
@@ -139,7 +141,7 @@
 
 .milestone-label {
   font-size: 0.85rem;
-  color: var(--text-secondary, #6B7280);
+  color: hsl(var(--muted-foreground));
   font-weight: 600;
 }
 
@@ -158,12 +160,12 @@
 }
 
 .celebration-content {
-  background: white;
+  background: var(--gradient-card);
   padding: 2.5rem 2rem;
   border-radius: var(--radius-lg, 24px);
   text-align: center;
   animation: celebrationPop 0.4s ease;
-  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-xl), var(--shadow-glow);
   max-width: 360px;
   width: 100%;
 }
@@ -200,13 +202,13 @@
 .celebration-title {
   font-size: 1.5rem;
   font-weight: 800;
-  color: var(--text-primary, #111827);
+  color: hsl(var(--foreground));
   margin-bottom: 0.375rem;
 }
 
 .celebration-message {
   font-size: 1.25rem;
-  color: var(--text-secondary, #6B7280);
+  color: hsl(var(--muted-foreground));
   font-weight: 600;
   margin-bottom: 0.75rem;
 }

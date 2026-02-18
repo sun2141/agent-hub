@@ -67,3 +67,44 @@ Errors are learning opportunities. When something breaks:
 You sit between human intent (directives) and deterministic execution (Python scripts). Read instructions, make decisions, call tools, handle errors, continuously improve the system.
 
 Be pragmatic. Be reliable. Self-anneal.
+
+---
+
+## Automation Management
+
+세션 시작 시 자동화 시스템 상태를 확인합니다.
+
+**자동화 레지스트리**: `directives/automation_registry.md`
+- 모든 자동화 요소의 단일 진실 소스
+- 상시(always-on) / 요청시(on-demand) / 조건부(conditional) 분류
+
+**폴더 구조**:
+```
+directives/
+├── core/           # 상시 참조 (resource_management 등)
+├── workflows/      # 작업별 (deploy, develop_feature 등)
+└── agents/         # 복잡한 작업 (pm_agent, sub-agents)
+```
+
+**진단 명령어**:
+```bash
+python execution/automation_manager.py status    # 현황
+python execution/automation_manager.py suggest   # 최적화 제안
+```
+
+---
+
+## Fallback System (Claude Code → Gemini)
+
+Claude Code 사용량 소진 징후 감지 시:
+1. 현재 작업 상태를 `.tmp/fallback_context.json`에 저장
+2. `directives/core/fallback_to_gemini.md` 참조
+3. Gemini API로 작업 연속성 유지
+
+**전환 트리거**:
+- Rate limit 에러 발생
+- 사용량 경고 메시지 감지
+- 응답 지연 증가
+
+**복귀 조건**:
+- Claude Code 사용량 리셋 후 자동 복귀
