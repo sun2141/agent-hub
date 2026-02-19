@@ -204,14 +204,6 @@ export function Home() {
                         <span className="user-name">
                             {profile?.display_name || user.email}
                         </span>
-                        <span className="user-tier">
-                            {profile?.subscription_tier === 'premium' ? '⭐ 프리미엄' : '무료'}
-                        </span>
-                        {rateLimitInfo && rateLimitInfo.tier !== 'premium' && (
-                            <span className="rate-limit-badge">
-                                오늘 {rateLimitInfo.remaining || 0}회 남음
-                            </span>
-                        )}
                         <StreakDisplay profile={profile} />
                         <button
                             className="my-prayers-link"
@@ -278,7 +270,7 @@ export function Home() {
                         className="generate-button"
                         size="lg"
                     >
-                        {isGenerating ? '기도문 작성 중...' : '✨ 기도문 생성하기'}
+                        {isGenerating ? '🙏 기도하는 중...' : '✨ 기도 맡기기'}
                     </Button>
                     <EmergencyPrayerButton />
                 </div>

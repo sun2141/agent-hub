@@ -153,7 +153,7 @@ export function PrayerScheduler({ onClose, onSave }) {
             />
             <span className="toggle-slider"></span>
             <span className="toggle-label">
-              {isActive ? '🙏 예약 기도 활성화' : '예약 기도 비활성화'}
+              {isActive ? '🙏 AI 기도 맡기기 ON' : 'AI 기도 맡기기 OFF'}
             </span>
           </label>
         </div>

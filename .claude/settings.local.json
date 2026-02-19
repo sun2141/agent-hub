@@ -5,7 +5,11 @@
       "Bash(test:*)",
       "Bash(/Users/sun/20260128_test/venv/bin/python:*)",
       "Bash(curl:*)",
-      "Bash(kill:*)"
+      "Bash(kill:*)",
+      "Bash(vercel env ls:*)",
+      "Bash(vercel env add:*)",
+      "Bash(stripe --version:*)",
+      "Bash(stripe config:*)"
     ]
   }
 }

@@ -57,7 +57,7 @@ export function EmergencyPrayerButton({ onPrayerGenerated }) {
     <>
       <button className="emergency-button" onClick={handleEmergencyClick}>
         <span className="emergency-icon">🆘</span>
-        <span className="emergency-text">긴급 기도</span>
+        <span className="emergency-text">지금 기도가 필요해요</span>
       </button>
 
       {showModal && (
@@ -71,7 +71,7 @@ export function EmergencyPrayerButton({ onPrayerGenerated }) {
             </button>
 
             <div className="emergency-modal-header">
-              <h2>긴급 기도</h2>
+              <h2>지금 기도가 필요해요</h2>
               <p>지금 이 순간, 필요한 기도를 선택하세요</p>
             </div>
 

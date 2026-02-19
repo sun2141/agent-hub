@@ -33,43 +33,8 @@ export async function checkRateLimit(userId = null, anonymousId = null) {
       return { allowed: false, error: 'Failed to check rate limit' };
     }
 
-    // Premium users have unlimited access
-    if (profile.subscription_tier === 'premium') {
-      return { allowed: true, tier: 'premium' };
-    }
-
-    // Reset counter if it's a new day
-    if (profile.last_prayer_date !== today) {
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({
-          daily_prayer_count: 0,
-          last_prayer_date: today
-        })
-        .eq('id', userId);
-
-      if (updateError) {
-        console.error('Error resetting counter:', updateError);
-      }
-
-      return { allowed: true, tier: 'free', remaining: 10 };
-    }
-
-    // Check if free user has reached limit (10/day)
-    if (profile.daily_prayer_count >= 10) {
-      return {
-        allowed: false,
-        tier: 'free',
-        limit: 10,
-        message: '오늘의 무료 기도문 생성 횟수를 모두 사용하셨습니다. 프리미엄으로 업그레이드하시면 무제한 이용하실 수 있습니다.'
-      };
-    }
-
-    return {
-      allowed: true,
-      tier: 'free',
-      remaining: 10 - profile.daily_prayer_count
-    };
+    // 로그인 사용자는 무제한 (도네이션 모델)
+    return { allowed: true, tier: 'free' };
   } else if (anonymousId) {
     // Check usage for anonymous users (3/day)
     const { count, error } = await supabase
@@ -83,19 +48,19 @@ export async function checkRateLimit(userId = null, anonymousId = null) {
       return { allowed: false, error: 'Failed to check rate limit' };
     }
 
-    if (count >= 3) {
+    if (count >= 5) {
       return {
         allowed: false,
         tier: 'anonymous',
-        limit: 3,
-        message: '오늘의 무료 기도문 생성 횟수(3회)를 모두 사용하셨습니다. 회원가입하시면 하루 10회까지 이용하실 수 있습니다.'
+        limit: 5,
+        message: '오늘의 기도 체험 횟수(5회)를 모두 사용하셨습니다. 회원가입하시면 무제한으로 기도를 맡길 수 있습니다.'
       };
     }
 
     return {
       allowed: true,
       tier: 'anonymous',
-      remaining: 3 - count
+      remaining: 5 - count
     };
   }
 

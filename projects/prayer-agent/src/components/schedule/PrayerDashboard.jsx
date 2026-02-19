@@ -100,8 +100,8 @@ export function PrayerDashboard() {
       {/* 헤더 */}
       <div className="dashboard-header">
         <div className="header-content">
-          <h2>🙏 기도 동반자</h2>
-          <p>AI가 당신을 위해 기도합니다</p>
+          <h2>🙏 AI에게 기도 맡기기</h2>
+          <p>AI가 매일 정해진 시간에 당신을 위해 기도합니다</p>
         </div>
         <button className="settings-btn" onClick={() => setShowScheduler(true)}>
           ⚙️ 설정

@@ -37,7 +37,7 @@ export function DonateButton({ onSuccess }) {
       window.location.href = url;
     } catch (error) {
       console.error('Donation error:', error);
-      alert('결제 처리 중 오류가 발생했습니다. 다시 시도해주세요.');
+      alert('결제 처리 중 오류가 발생했습니다.\n\n현재 결제 시스템 설정 중입니다. 잠시 후 다시 시도해주세요.');
     } finally {
       setLoading(false);
     }
