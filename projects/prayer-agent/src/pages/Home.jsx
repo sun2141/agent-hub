@@ -7,7 +7,6 @@ import { LoginModal } from '../components/auth/LoginModal';
 import { useAuth } from '../contexts/AuthContext';
 import { checkRateLimit, logUsage, savePrayer } from '../lib/supabaseClient';
 import { UpgradeBanner } from '../components/UpgradeBanner';
-import { DonateButton } from '../components/donation/DonateButton';
 import { PdfDownloadButton } from '../components/pdf/PdfDownloadButton';
 import { TtsButton } from '../components/tts/TtsButton';
 import { StreakDisplay } from '../components/streak/StreakDisplay';
@@ -211,7 +210,6 @@ export function Home() {
                         >
                             📖 내 기도문
                         </button>
-                        <DonateButton />
                         <button className="logout-btn" onClick={handleLogout}>
                             로그아웃
                         </button>

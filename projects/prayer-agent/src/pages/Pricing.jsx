@@ -1,5 +1,4 @@
 import { useNavigate } from 'react-router-dom';
-import { DonateButton } from '../components/donation/DonateButton';
 import './Pricing.css';
 
 export function Pricing() {
@@ -59,15 +58,6 @@ export function Pricing() {
         </div>
       </div>
 
-      {/* Donation section */}
-      <div className="pricing-faq" style={{ textAlign: 'center' }}>
-        <h2>서비스가 마음에 드셨나요?</h2>
-        <p style={{ color: '#666', marginBottom: '24px' }}>
-          Grace-AI는 AI 기도 비용과 서버 운영비로 유지됩니다.<br />
-          커피 한 잔으로 AI의 기도를 응원해주세요 🙏
-        </p>
-        <DonateButton />
-      </div>
 
       <div className="pricing-faq">
         <h2>자주 묻는 질문</h2>
@@ -89,10 +79,10 @@ export function Pricing() {
         </div>
 
         <div className="faq-item">
-          <h4>기부는 어떻게 사용되나요?</h4>
+          <h4>어떻게 운영되나요?</h4>
           <p>
-            AI API 비용과 서버 운영비로 사용됩니다.
-            기부 덕분에 모든 분이 무료로 사용할 수 있습니다.
+            광고 수익으로 AI API 비용과 서버 운영비를 충당합니다.
+            좋은 서비스를 만들어 더 많은 분들께 도움이 되도록 하겠습니다.
           </p>
         </div>
       </div>
