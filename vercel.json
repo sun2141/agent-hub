@@ -1,22 +1,22 @@
 {
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
+  "buildCommand": "cd projects/prayer-agent && npm install && npm run build",
+  "outputDirectory": "projects/prayer-agent/dist",
   "framework": "vite",
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/$1"
+      "destination": "/projects/prayer-agent/api/$1"
     }
   ],
   "functions": {
-    "api/**/*.js": {
+    "projects/prayer-agent/api/**/*.js": {
       "memory": 1024,
       "maxDuration": 30
     }
   },
   "crons": [
     {
-      "path": "/api/cron/execute-prayers",
+      "path": "/projects/prayer-agent/api/cron/execute-prayers",
       "schedule": "0 1 * * *"
     }
   ]
