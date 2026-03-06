@@ -9,7 +9,15 @@
       "Bash(vercel env ls:*)",
       "Bash(vercel env add:*)",
       "Bash(stripe --version:*)",
-      "Bash(stripe config:*)"
+      "Bash(stripe config:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(vercel list:*)",
+      "Bash(vercel curl https://20260128test-4tm6obvjg-sunhos-projects-7aadd0d2.vercel.app/)",
+      "Bash(vercel logs:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Palmoni - 이름 없는 존재가 당신을 위해 기도합니다\n\nSomeone is praying for you.\n\nFeatures:\n- AI 기도문 생성 \\(Gemini 2.5 Flash\\)\n- PDF 다운로드\n- TTS 음성 낭독\n- 기도 동반자 \\(Cron Job - 매일 자동 기도\\)\n- 긴급 기도 \\(즉시 위로\\)\n- 기도 연속 스트릭\n\nTech Stack:\n- React + Vite\n- Supabase \\(Auth, Database\\)\n- Vercel Serverless Functions\n- Google Cloud TTS API\n\n브랜드 스토리:\nPalmoni는 성경 다니엘 8:13에 단 한 번 등장하는 단어로,\n\"이름이 밝혀지지 않은 존재\" 또는 \"비밀을 세는 자\"로 해석됩니다.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(gh repo create:*)",
+      "Bash(git add:*)"
     ]
   }
 }
