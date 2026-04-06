@@ -17,7 +17,27 @@
       "Bash(vercel logs:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Palmoni - 이름 없는 존재가 당신을 위해 기도합니다\n\nSomeone is praying for you.\n\nFeatures:\n- AI 기도문 생성 \\(Gemini 2.5 Flash\\)\n- PDF 다운로드\n- TTS 음성 낭독\n- 기도 동반자 \\(Cron Job - 매일 자동 기도\\)\n- 긴급 기도 \\(즉시 위로\\)\n- 기도 연속 스트릭\n\nTech Stack:\n- React + Vite\n- Supabase \\(Auth, Database\\)\n- Vercel Serverless Functions\n- Google Cloud TTS API\n\n브랜드 스토리:\nPalmoni는 성경 다니엘 8:13에 단 한 번 등장하는 단어로,\n\"이름이 밝혀지지 않은 존재\" 또는 \"비밀을 세는 자\"로 해석됩니다.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(gh repo create:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nrefactor: Palmoni 프로젝트 독립 저장소로 분리\n\nprayer-agent → palmoni로 리브랜딩 및 분리 완료\n새 저장소: https://github.com/sun2141/palmoni\n\ngrace-ai 저장소는 Agent 시스템 전용으로 유지\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(vercel link:*)",
+      "Bash(vercel --prod:*)",
+      "Bash(vercel env rm:*)",
+      "Bash(vercel inspect:*)",
+      "Bash(ssh:*)",
+      "Bash(vercel ls:*)",
+      "Bash(SUPABASE_URL=\"https://bajdvcdstxzrmoxfvwvj.supabase.co\")",
+      "Bash(SERVICE_KEY=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJhamR2Y2RzdHh6cm1veGZ2d3ZqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDAxMzA0MywiZXhwIjoyMDg1NTg5MDQzfQ.5s89tJbGGbvbnzBcnn04_2mw1uePQrVFDG_dvo3WBcE\")",
+      "Bash(__NEW_LINE_86ef5f86fa734823__ curl -s \"$SUPABASE_URL/rest/v1/daily_prayer_slots?select=id&limit=1\" -H \"apikey: $SERVICE_KEY\" -H \"Authorization: Bearer $SERVICE_KEY\")",
+      "Bash(ping:*)",
+      "Bash(nslookup:*)",
+      "Bash(__NEW_LINE_02384f9ed6771e91__ curl -s \"$SUPABASE_URL/rest/v1/\" -H \"apikey: $SERVICE_KEY\" -H \"Authorization: Bearer $SERVICE_KEY\")",
+      "Bash(python3:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm install:*)",
+      "Bash(chmod:*)",
+      "Bash(source ~/.secrets/hetzner.env)",
+      "Bash(echo:*)"
     ]
   }
 }

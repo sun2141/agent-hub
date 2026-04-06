@@ -13,3 +13,7 @@ __pycache__/
 *.swp
 *.swo
 *~
+
+# 하네스 데이터 (DB, 민감 정보)
+harness/data/
+harness/.env

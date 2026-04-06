@@ -59,6 +59,7 @@ Errors are learning opportunities. When something breaks:
 - `directives/` - SOPs in Markdown (the instruction set)
 - `.env` - Environment variables and API keys
 - `credentials.json`, `token.json` - Google OAuth credentials (required files, in `.gitignore`)
+- `~/.secrets/` - 민감 정보 저장소 (SSH 키, API 키, 서버 접속 정보)
 
 **Key principle:** Local files are only for processing. Deliverables live in cloud services (Google Sheets, Slides, etc.) where the user can access them. Everything in `.tmp/` can be deleted and regenerated.
 
@@ -108,3 +109,115 @@ Claude Code 사용량 소진 징후 감지 시:
 
 **복귀 조건**:
 - Claude Code 사용량 리셋 후 자동 복귀
+
+---
+
+## Secrets Management
+
+민감한 정보는 `~/.secrets/` 폴더에 저장합니다.
+
+**구조**:
+```
+~/.secrets/
+├── hetzner.env        # Hetzner VPS 접속 정보
+├── telegram.env       # 텔레그램 봇 설정
+├── api_keys.env       # API 키 모음
+└── ssh/               # SSH 키 파일들
+```
+
+**사용법**:
+```bash
+# VPS 접속
+source ~/.secrets/hetzner.env
+ssh $HETZNER_USER@$HETZNER_IP
+```
+
+**보안 원칙**:
+- 이 폴더는 Git에 절대 커밋하지 않음
+- 권한: 700 (본인만 접근 가능)
+
+---
+
+## Infrastructure Overview
+
+### Agent Hub (이 폴더)
+
+**경로**: `/Users/sun/agent-hub/`
+**역할**: 모든 프로젝트를 관리하는 중앙 허브
+**GitHub**: sun2141/grace-ai
+
+### 연결된 프로젝트 (Project Registry)
+
+| ID | 프로젝트 | 로컬 경로 | GitHub | 배포 |
+|----|---------|----------|--------|------|
+| palmoni | Palmoni 기도앱 | `/Users/sun/palmoni/` | sun2141/palmoni | palmoni.vercel.app |
+| facepick | FacePick | `/Users/sun/facepick/` | - | 개발중 |
+| reddit-insight | Reddit Insight | `/Users/sun/reddit-insight/` | - | 개발중 |
+
+### 프로젝트 자동 연결 규칙
+
+**새 프로젝트 추가 시**:
+1. 위 테이블에 프로젝트 등록
+2. 해당 프로젝트 폴더에 `CLAUDE.md` 생성 (템플릿: `directives/templates/project_claude_md.md`)
+3. `directives/projects/{project_id}.md`에 프로젝트별 directive 생성
+
+**Agent가 프로젝트 폴더에서 작업 시**:
+- 해당 프로젝트의 `CLAUDE.md` 지침 따름
+- 자동화/인프라 작업은 agent-hub에서만 수행
+- 프로젝트 간 공유 로직은 `execution/shared/`에 위치
+
+**모니터링 대상 (Hetzner VPS 연동)**:
+- 등록된 모든 프로젝트의 배포 상태 감시
+- 오류 발생 시 텔레그램 알림 + 자동 수정 시도
+
+### 클라우드 서비스
+- **Vercel**: palmoni.vercel.app (프론트엔드 + Serverless API)
+- **Supabase**: 데이터베이스 + Auth
+- **Google Cloud**: Gemini API, TTS API
+
+### Hetzner VPS (24/7 Agent 서버)
+- **IP**: 91.99.58.70
+- **접속**: `ssh agent@91.99.58.70`
+- **플랜**: CX23 (2 vCPU, 4GB RAM, 40GB NVMe) - €3.99/월
+- **OS**: Ubuntu 24.04
+- **설치됨**: Node.js 22, Claude Code, PM2, Git
+
+**서버 워크스페이스**:
+```
+~/workspace/
+├── CLAUDE.md              ← 글로벌 Agent 규칙
+├── shared-skills/         ← 공유 스킬
+├── facepick/              ← FacePick 프로젝트
+├── reddit-insight/        ← Reddit Insight 프로젝트
+└── prayer-app/            ← Palmoni 연동
+```
+
+**핵심 역할**:
+- 프로젝트 상시 모니터링
+- 오류 자동 감지 및 수정
+- 텔레그램 알림 (Bot: 8580472888)
+- 스케줄 작업 실행
+
+### 시스템 연결 구조
+```
+┌─────────────┐     ┌──────────────────────────────┐
+│  텔레그램   │◄────│  Hetzner VPS (24/7 Agent)   │
+│  (알림/명령) │     │  - 모니터링                  │
+└─────────────┘     │  - 오류 자동 수정            │
+                    │  - 스케줄 작업               │
+                    └──────────────┬───────────────┘
+                                   │
+        ┌──────────────────────────┼──────────────────────────┐
+        │                          │                          │
+        ▼                          ▼                          ▼
+┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+│ Palmoni       │      │ FacePick      │      │ Reddit Insight│
+│ (Vercel)      │      │ (개발중)       │      │ (개발중)       │
+└───────┬───────┘      └───────────────┘      └───────────────┘
+        │
+        ▼
+┌───────────────┐
+│ Supabase      │
+│ (DB + Auth)   │
+└───────────────┘
+```
