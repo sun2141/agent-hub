@@ -36,6 +36,9 @@ async function main() {
   console.log('  Agent Harness v1.0.0');
   console.log('  Plan → Build → Eval');
   console.log('═══════════════════════════════════════');
+  console.log(`[Boot] CLAUDE_CLI_PATH=${process.env.CLAUDE_CLI_PATH}`);
+  console.log(`[Boot] CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR}`);
+  console.log(`[Boot] CLAUDE_MODEL=${process.env.CLAUDE_MODEL}`);
 
   // 1. DB 초기화 (비동기)
   await initDb();
@@ -60,7 +63,6 @@ async function main() {
 
   notify('🟢 <b>하네스 시작됨</b>\n/help 로 명령어 확인');
 
-  // 콘솔 로그
   agent.on('phase:start',    ({ taskId, phase, round }) =>
     console.log(`[${phase.toUpperCase()}] ${taskId} Round ${round} 시작`));
   agent.on('phase:complete', ({ taskId, phase, round }) =>
@@ -70,7 +72,6 @@ async function main() {
   agent.on('task:failed',    ({ taskId, error }) =>
     console.error(`[FAILED] ${taskId} — ${error}`));
 
-  // Graceful shutdown
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);
     notify('🔴 <b>하네스 종료됨</b>');
@@ -79,7 +80,6 @@ async function main() {
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT',  () => shutdown('SIGINT'));
-
   process.on('uncaughtException',  (err)    => console.error('[uncaughtException]', err.message));
   process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
 }

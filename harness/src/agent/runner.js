@@ -7,9 +7,10 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import { taskQueries, logQueries, projectQueries } from '../db/db.js';
 
-const CLAUDE_CLI = process.env.CLAUDE_CLI_PATH || 'claude';
+const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
-const MAX_ROUNDS = parseInt(process.env.MAX_EVAL_ROUNDS || '3', 10);
+const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '3', 10);
 
 const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || '/Users/sun')
   .split(',')
@@ -23,6 +24,12 @@ const PHASE = {
   FAILED: 'failed',
   PAUSED: 'paused',
 };
+
+function parseJson(text) {
+  const stripped = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+  const m = stripped.match(/\{[\s\S]*\}/);
+  return JSON.parse(m ? m[0] : stripped);
+}
 
 export class AgentRunner extends EventEmitter {
   constructor() {
@@ -40,12 +47,9 @@ export class AgentRunner extends EventEmitter {
     return resolved;
   }
 
-  // ── 공개 API ───────────────────────────────────────────────
-
   async run({ projectId, prompt, maxRounds = MAX_ROUNDS }) {
     const project = await projectQueries.get(projectId);
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
-
     this._validateProjectPath(project.path);
 
     const taskId = `task_${Date.now()}_${randomUUID().slice(0, 6)}`;
@@ -57,7 +61,6 @@ export class AgentRunner extends EventEmitter {
       this.emit('task:queued', { taskId });
       return taskId;
     }
-
     this._startPipeline(taskId);
     return taskId;
   }
@@ -85,48 +88,33 @@ export class AgentRunner extends EventEmitter {
     return { running, queued: this._queue.length, maxConcurrent: MAX_CONCURRENT };
   }
 
-  // ── 파이프라인 ─────────────────────────────────────────────
-
   async _startPipeline(taskId) {
     const task    = await taskQueries.get(taskId);
     const project = await projectQueries.get(task.project_id);
     const safeCwd = this._validateProjectPath(project.path);
 
     try {
-      // Planner
       let plan = task.plan ? JSON.parse(task.plan) : null;
-      if (!plan) {
-        plan = await this._runPlanner(task, project, safeCwd);
-      }
+      if (!plan) plan = await this._runPlanner(task, project, safeCwd);
 
-      // Generator → Evaluator 루프
       let round = task.round || 0;
       while (round < task.max_rounds) {
         round++;
-
         await taskQueries.updateStatus(taskId, PHASE.BUILD);
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
-
         await this._runGenerator(task, project, plan, round, safeCwd);
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
-
         const evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
-
-        await taskQueries.updateStatus(taskId, PHASE.EVAL, {
-          eval_result: JSON.stringify(evalResult),
-        });
+        await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
 
         if (evalResult.passed || round >= task.max_rounds) {
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', {
-            taskId, round, evalResult,
-            maxRoundsReached: !evalResult.passed && round >= task.max_rounds,
-          });
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: !evalResult.passed && round >= task.max_rounds });
           break;
         }
       }
@@ -145,129 +133,100 @@ export class AgentRunner extends EventEmitter {
     }
   }
 
-  // ── Planner ────────────────────────────────────────────────
-
   async _runPlanner(task, project, safeCwd) {
     await taskQueries.updateStatus(task.id, PHASE.PLAN);
     this.emit('phase:start', { taskId: task.id, phase: PHASE.PLAN, round: 0 });
 
-    const systemPrompt = [
+    const prompt = [
+      '[지시사항]',
       '당신은 소프트웨어 프로젝트 플래너입니다.',
       '사용자의 요청을 분석하여 구체적인 구현 계획을 JSON으로 반환하세요.',
       `프로젝트: ${project.name} (${project.stack || '미지정'})`,
-      '반드시 다음 JSON 형식으로만 응답하세요:',
+      '코드블록 없이 순수 JSON만 반환하세요:',
       '{"title":"작업 제목","summary":"한 줄 요약","features":["기능1"],"files_to_modify":["파일"],"acceptance_criteria":["완료 기준1"],"tech_notes":"주의사항"}',
+      '',
+      '[작업 요청]',
+      task.prompt,
     ].join('\n');
 
-    const output = await this._claudeRun({
-      taskId: task.id, phase: 'plan', round: 0, cwd: safeCwd,
-      prompt: `다음 작업을 계획하세요:\n\n${task.prompt}`,
-      systemPrompt, printMode: true,
-    });
+    const output = await this._claudeRun({ taskId: task.id, phase: 'plan', round: 0, cwd: safeCwd, prompt });
 
     let plan;
-    try {
-      const m = output.match(/\{[\s\S]*\}/);
-      plan = JSON.parse(m ? m[0] : output);
-    } catch {
-      plan = { title: task.prompt, summary: output, features: [], acceptance_criteria: [] };
-    }
+    try { plan = parseJson(output); }
+    catch { plan = { title: task.prompt, summary: output, features: [], acceptance_criteria: [] }; }
 
     await taskQueries.updateStatus(task.id, PHASE.PLAN, { plan: JSON.stringify(plan) });
     this.emit('phase:complete', { taskId: task.id, phase: PHASE.PLAN, round: 0 });
     return plan;
   }
 
-  // ── Generator ──────────────────────────────────────────────
-
   async _runGenerator(task, project, plan, round, safeCwd) {
     const prevEval = task.eval_result ? JSON.parse(task.eval_result) : null;
-    const prompt   = round === 1
-      ? this._buildGeneratorPrompt(plan)
-      : this._buildRetryPrompt(plan, prevEval, round);
-
-    await this._claudeRun({
-      taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt, printMode: false,
-    });
+    const prompt   = round === 1 ? this._buildGeneratorPrompt(plan) : this._buildRetryPrompt(plan, prevEval, round);
+    await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
   }
 
   _buildGeneratorPrompt(plan) {
-    return [
-      '다음 계획에 따라 코드를 구현하세요.',
-      `## 작업\n${plan.title}`,
-      `## 요약\n${plan.summary}`,
-      `## 기능\n${(plan.features || []).map((f,i) => `${i+1}. ${f}`).join('\n')}`,
-      `## 완료 기준\n${(plan.acceptance_criteria || []).map((c,i) => `${i+1}. ${c}`).join('\n')}`,
-      `## 주의사항\n${plan.tech_notes || '없음'}`,
+    return ['다음 계획에 따라 코드를 구현하세요.',
+      `## 작업\n${plan.title}`, `## 요약\n${plan.summary}`,
+      `## 기능\n${(plan.features||[]).map((f,i)=>`${i+1}. ${f}`).join('\n')}`,
+      `## 완료 기준\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
+      `## 주의사항\n${plan.tech_notes||'없음'}`,
       '기존 코드 스타일을 따르고, 완료 기준을 모두 충족하도록 구현하세요.',
     ].join('\n\n');
   }
 
   _buildRetryPrompt(plan, prevEval, round) {
-    return [
-      `이전 구현에 문제가 있습니다. Round ${round} 재시도합니다.`,
+    return [`이전 구현에 문제가 있습니다. Round ${round} 재시도합니다.`,
       `## 원래 작업\n${plan.title}`,
-      `## 평가 결과 (Round ${round-1})\n점수: ${prevEval?.score ?? '?'}/100`,
-      `## 수정 필요\n${(prevEval?.issues || []).map((x,i) => `${i+1}. ${x}`).join('\n') || '없음'}`,
-      `## 제안\n${prevEval?.suggestions || '없음'}`,
+      `## 평가 결과 (Round ${round-1})\n점수: ${prevEval?.score??'?'}/100`,
+      `## 수정 필요\n${(prevEval?.issues||[]).map((x,i)=>`${i+1}. ${x}`).join('\n')||'없음'}`,
+      `## 제안\n${prevEval?.suggestions||'없음'}`,
       '위 문제를 반드시 해결하고 완료 기준을 충족하도록 수정하세요.',
     ].join('\n\n');
   }
 
-  // ── Evaluator ──────────────────────────────────────────────
-
   async _runEvaluator(task, project, plan, round, safeCwd) {
-    const systemPrompt = [
-      '당신은 코드 품질 평가자입니다. 요구사항 충족 여부를 객관적으로 평가하세요.',
-      '반드시 다음 JSON 형식으로만 응답하세요:',
-      '{"score":0-100,"passed":true/false,"issues":["문제1"],"suggestions":"개선방향","summary":"한줄요약"}',
-      'passed 기준: score >= 80',
+    const prompt = ['[지시사항]', '당신은 코드 품질 평가자입니다.',
+      '코드블록 없이 순수 JSON만 반환하세요:',
+      '{"score":0~100,"passed":true또는false,"issues":["문제1"],"suggestions":"개선방향","summary":"한줄요약"}',
+      'passed 기준: score >= 80이면 true', '',
+      '[평가 요청]', `작업: ${plan.title}`,
+      `완료 기준:\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
+      '프로젝트 경로의 실제 코드를 확인하고 각 기준의 충족 여부를 평가하세요.',
     ].join('\n');
 
-    const prompt = [
-      '다음 완료 기준에 따라 현재 코드를 평가하세요:',
-      `## 작업\n${plan.title}`,
-      `## 완료 기준\n${(plan.acceptance_criteria || []).map((c,i) => `${i+1}. ${c}`).join('\n')}`,
-      '프로젝트 경로의 실제 코드를 확인하고 각 기준의 충족 여부를 평가하세요.',
-    ].join('\n\n');
-
-    const output = await this._claudeRun({
-      taskId: task.id, phase: 'eval', round, cwd: safeCwd,
-      prompt, systemPrompt, printMode: true,
-    });
-
-    try {
-      const m = output.match(/\{[\s\S]*\}/);
-      return JSON.parse(m ? m[0] : output);
-    } catch {
-      return { score: 50, passed: false, issues: ['평가 파싱 실패'], suggestions: output.substring(0, 500) };
-    }
+    const output = await this._claudeRun({ taskId: task.id, phase: 'eval', round, cwd: safeCwd, prompt });
+    try { return parseJson(output); }
+    catch { return { score: 50, passed: false, issues: ['평가 파싱 실패'], suggestions: output.substring(0, 500) }; }
   }
 
   // ── Claude CLI 실행 ────────────────────────────────────────
+  // 모든 단계 동일 args: --print --verbose --output-format stream-json
+  // stdio: ['ignore', 'pipe', 'pipe'] → stdin 닫기로 인터랙티브 모드 방지
 
-  _claudeRun({ taskId, phase, round, cwd, prompt, systemPrompt, printMode }) {
+  _claudeRun({ taskId, phase, round, cwd, prompt }) {
     return new Promise((resolve, reject) => {
-      const args = printMode
-        ? ['--print', '--output-format', 'stream-json']
-        : ['--output-format', 'stream-json'];
+      const args = [
+        '--print',
+        '--verbose',
+        '--output-format', 'stream-json',
+        '--model', CLAUDE_MODEL,
+        '--dangerously-skip-permissions',
+        '--setting-sources', 'user',
+        prompt,
+      ];
 
-      if (systemPrompt) args.push('--system', systemPrompt);
-      args.push(prompt);
+      console.log(`[CLI spawn:${phase}] round=${round}`);
 
       const entry = { process: null, phase, round };
       this._running.set(taskId, entry);
 
-      const safeEnv = {
-        HOME: process.env.HOME,
-        PATH: process.env.PATH,
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-        TERM: 'xterm-256color',
-        LANG: process.env.LANG || 'en_US.UTF-8',
-      };
-
-      const proc = spawn(CLAUDE_CLI, args, { cwd, env: safeEnv });
+      const proc = spawn(CLAUDE_CLI, args, {
+        cwd,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       entry.process = proc;
 
       let fullOutput = '';
@@ -282,6 +241,7 @@ export class AgentRunner extends EventEmitter {
           if (!line.trim()) continue;
           try {
             const msg = JSON.parse(line);
+            if (msg.type !== 'system') console.log(`[CLI msg:${phase}] type=${msg.type} ${msg.error||''}`);
             this._handleStreamMsg(taskId, phase, round, msg, t => { fullOutput += t; });
           } catch { /* JSON 아닌 라인 무시 */ }
         }
@@ -289,6 +249,7 @@ export class AgentRunner extends EventEmitter {
 
       proc.stderr.on('data', (chunk) => {
         const text = chunk.toString();
+        console.error(`[CLI stderr:${phase}] ${text.trim()}`);
         if (!rejected && (text.includes('rate limit') || text.includes('429'))) {
           rejected = true;
           reject(new Error('RATE_LIMIT'));
@@ -297,12 +258,13 @@ export class AgentRunner extends EventEmitter {
       });
 
       proc.on('close', (code) => {
+        console.log(`[CLI close:${phase}] code=${code} outputLen=${fullOutput.length}`);
         if (rejected) return;
         if (code !== 0 && !fullOutput) reject(new Error(`Claude CLI 비정상 종료 (code: ${code})`));
         else resolve(fullOutput.trim());
       });
 
-      proc.on('error', () => reject(new Error('Claude CLI 실행 실패')));
+      proc.on('error', (err) => reject(new Error(`Claude CLI 실행 실패: ${err.message}`)));
     });
   }
 
