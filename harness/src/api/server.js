@@ -5,6 +5,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries } from '../db/db.js';
+import crypto from 'crypto';
 
 const API_KEY = process.env.API_KEY;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
@@ -88,6 +89,37 @@ export function createApiServer(agentRunner) {
       const project = await projectQueries.get(req.params.id);
       if (!project) return res.status(404).json({ error: '프로젝트 없음' });
       res.json(project);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/projects', async (req, res) => {
+    const { name, path: projectPath, stack, description } = req.body;
+    if (!validateString(name, 100)) {
+      return res.status(400).json({ error: 'name: 1~100자 문자열 필수' });
+    }
+    if (!validateString(projectPath, 500)) {
+      return res.status(400).json({ error: 'path: 1~500자 문자열 필수' });
+    }
+    if (stack !== undefined && !validateString(stack, 100)) {
+      return res.status(400).json({ error: 'stack: 100자 이하 문자열' });
+    }
+    if (description !== undefined && !validateString(description, 500)) {
+      return res.status(400).json({ error: 'description: 500자 이하 문자열' });
+    }
+    // 이름 기반 slug 생성 (영문 소문자/숫자/하이픈, 최대 30자) + 충돌 방지 suffix
+    const slug = name.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24) || 'project';
+    const suffix = crypto.randomBytes(3).toString('hex');
+    const id = `${slug}-${suffix}`;
+    try {
+      const existing = await projectQueries.get(id);
+      if (existing) return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
+      const project = await projectQueries.insert({ id, name, path: projectPath, stack, description });
+      res.status(201).json(project);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

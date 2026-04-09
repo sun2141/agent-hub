@@ -73,6 +73,10 @@ export function useHarness() {
             loadTasks()
             loadStatus()
           }
+          if (msg.type === 'task:created') {
+            loadTasks()
+            loadStatus()
+          }
         } catch {}
       }
 
@@ -107,6 +111,22 @@ export function useHarness() {
     return () => clearInterval(timer)
   }, [])
 
+  const addProject = useCallback(async (data) => {
+    try {
+      const result = await apiFetch('/projects', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      })
+      if (result && !result.error) {
+        await loadProjects()
+        return result
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 추가 실패' }
+    }
+  }, [loadProjects])
+
   const runTask = useCallback((projectId, prompt, maxRounds = 3) => {
     return apiFetch('/run', {
       method: 'POST',
@@ -134,7 +154,7 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, getTaskLogs,
+    runTask, stopTask, resumeTask, getTaskLogs, addProject,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }
 }

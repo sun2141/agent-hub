@@ -139,6 +139,14 @@ export const projectQueries = {
 
   async get(id) {
     return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+  },
+
+  async insert({ id, name, path, stack, description }) {
+    await dbRun(
+      'INSERT INTO projects (id, name, path, stack, description) VALUES (?, ?, ?, ?, ?)',
+      [id, name, path, stack || null, description || null]
+    );
+    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
   }
 };
 

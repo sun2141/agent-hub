@@ -240,6 +240,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                     {t.round}/{t.max_rounds} 라운드
                   </div>
                 )}
+                <TaskReport task={t} />
               </div>
             )
           })}
@@ -335,6 +336,7 @@ function TaskHistory({ tasks, projects }) {
             {t.round > 0 && (
               <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>{t.round}/{t.max_rounds} 라운드</div>
             )}
+            <TaskReport task={t} />
           </div>
         )
       })}
@@ -342,11 +344,168 @@ function TaskHistory({ tasks, projects }) {
   )
 }
 
+// ── 프로젝트 추가 폼 ──────────────────────────────────────
+function AddProjectForm({ onAdd, onCancel }) {
+  const [form, setForm] = useState({ name: '', path: '', stack: '', description: '' })
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!form.name.trim()) { setError('프로젝트 이름은 필수입니다'); return }
+    if (!form.path.trim()) { setError('경로는 필수입니다'); return }
+    setError('')
+    setSaving(true)
+    try {
+      const result = await onAdd({
+        name: form.name.trim(),
+        path: form.path.trim(),
+        stack: form.stack.trim() || undefined,
+        description: form.description.trim() || undefined,
+      })
+      if (result?.error) { setError(result.error) }
+      else { onCancel() }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const fieldStyle = {
+    width: '100%', background: 'var(--bg3)', border: '1px solid var(--border)',
+    borderRadius: 8, padding: '9px 11px', color: 'var(--text)',
+    fontSize: 13, outline: 'none', boxSizing: 'border-box',
+  }
+  const labelStyle = { fontSize: 11, color: 'var(--text3)', fontWeight: 600, marginBottom: 4, display: 'block' }
+
+  return (
+    <form onSubmit={handleSubmit} style={{
+      margin: '8px 0 16px', padding: '14px', background: 'var(--bg2)',
+      border: '1px solid var(--border)', borderRadius: 12,
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div>
+        <label style={labelStyle}>이름 *</label>
+        <input value={form.name} onChange={set('name')} placeholder="My Project" style={fieldStyle} />
+      </div>
+      <div>
+        <label style={labelStyle}>경로 *</label>
+        <input value={form.path} onChange={set('path')} placeholder="/Users/…/project" style={fieldStyle} />
+      </div>
+      <div>
+        <label style={labelStyle}>스택</label>
+        <input value={form.stack} onChange={set('stack')} placeholder="Node.js, React, …" style={fieldStyle} />
+      </div>
+      <div>
+        <label style={labelStyle}>설명</label>
+        <input value={form.description} onChange={set('description')} placeholder="한 줄 설명" style={fieldStyle} />
+      </div>
+      {error && <div style={{ fontSize: 12, color: 'var(--red)' }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="submit" disabled={saving} style={{
+          flex: 1, background: 'var(--accent)', border: 'none', borderRadius: 8,
+          padding: '9px', color: 'white', fontSize: 13, fontWeight: 600,
+          opacity: saving ? 0.5 : 1,
+        }}>{saving ? '저장 중…' : '추가'}</button>
+        <button type="button" onClick={onCancel} style={{
+          background: 'none', border: '1px solid var(--border)', borderRadius: 8,
+          padding: '9px 14px', color: 'var(--text3)', fontSize: 13,
+        }}>취소</button>
+      </div>
+    </form>
+  )
+}
+
+// ── 리포트 섹션 ───────────────────────────────────────────
+function TaskReport({ task }) {
+  if (!['done', 'failed'].includes(task.status)) return null
+
+  let evalResult = null
+  if (task.eval_result) {
+    try { evalResult = JSON.parse(task.eval_result) } catch { evalResult = { raw: task.eval_result } }
+  }
+
+  const passed = evalResult?.passed ?? evalResult?.success ?? evalResult?.result === 'pass'
+  const hasPlan = task.plan && task.plan.trim()
+
+  return (
+    <div style={{
+      marginTop: 8, padding: '12px', background: 'var(--bg)',
+      border: '1px solid var(--border)', borderRadius: 10,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', letterSpacing: '0.08em', marginBottom: 8, textTransform: 'uppercase' }}>
+        리포트
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{
+          fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 600,
+          background: task.status === 'done' ? 'rgba(61,214,140,0.15)' : 'rgba(248,113,113,0.15)',
+          color: task.status === 'done' ? 'var(--green)' : 'var(--red)',
+          border: '1px solid ' + (task.status === 'done' ? 'rgba(61,214,140,0.4)' : 'rgba(248,113,113,0.4)'),
+        }}>{task.status === 'done' ? '완료' : '실패'}</span>
+
+        {task.round > 0 && (
+          <span style={{
+            fontSize: 12, padding: '3px 9px', borderRadius: 20,
+            background: 'rgba(107,94,248,0.12)', color: 'var(--accent2)',
+            border: '1px solid rgba(107,94,248,0.25)',
+          }}>{task.round}/{task.max_rounds} 라운드</span>
+        )}
+
+        {evalResult && (
+          <span style={{
+            fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 600,
+            background: passed ? 'rgba(61,214,140,0.12)' : 'rgba(248,113,113,0.12)',
+            color: passed ? 'var(--green)' : 'var(--red)',
+            border: '1px solid ' + (passed ? 'rgba(61,214,140,0.3)' : 'rgba(248,113,113,0.3)'),
+          }}>Eval: {passed ? '합격' : '불합격'}</span>
+        )}
+
+        {evalResult?.score !== undefined && (
+          <span style={{
+            fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 700,
+            background: evalResult.score >= 70 ? 'rgba(61,214,140,0.12)' : evalResult.score >= 40 ? 'rgba(245,158,11,0.12)' : 'rgba(248,113,113,0.12)',
+            color: evalResult.score >= 70 ? 'var(--green)' : evalResult.score >= 40 ? 'var(--orange)' : 'var(--red)',
+            border: '1px solid ' + (evalResult.score >= 70 ? 'rgba(61,214,140,0.3)' : evalResult.score >= 40 ? 'rgba(245,158,11,0.3)' : 'rgba(248,113,113,0.3)'),
+          }}>{evalResult.score}/100</span>
+        )}
+      </div>
+
+      {evalResult?.summary && (
+        <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 6 }}>
+          <span style={{ color: 'var(--text3)' }}>Eval 요약: </span>{evalResult.summary}
+        </div>
+      )}
+
+      {hasPlan && (
+        <details style={{ marginTop: 4 }}>
+          <summary style={{ fontSize: 12, color: 'var(--text3)', cursor: 'pointer', userSelect: 'none' }}>플랜 보기</summary>
+          <div style={{
+            marginTop: 6, fontSize: 11, color: 'var(--text2)', lineHeight: 1.6,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            fontFamily: 'var(--mono)', background: 'var(--bg3)',
+            padding: '8px', borderRadius: 7, maxHeight: 200, overflowY: 'auto',
+          }}>{task.plan.slice(0, 1000)}{task.plan.length > 1000 ? '\n…' : ''}</div>
+        </details>
+      )}
+
+      {task.error && (
+        <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 6, wordBreak: 'break-word' }}>
+          오류: {task.error}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, refresh } = useHarness()
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, addProject, refresh } = useHarness()
   const [view, setView]         = useState('list')
   const [selected, setSelected] = useState(null)
+  const [showAddForm, setShowAddForm] = useState(false)
 
   const productProjects = projects.filter(p => !INFRA_IDS.includes(p.id))
   const infraProjects   = projects.filter(p => INFRA_IDS.includes(p.id))
@@ -393,13 +552,27 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', marginBottom: 8, textTransform: 'uppercase' }}>프로젝트</div>
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', flex: 1 }}>프로젝트</div>
+            <button onClick={() => setShowAddForm(f => !f)} style={{
+              background: showAddForm ? 'rgba(107,94,248,0.2)' : 'none',
+              border: '1px solid ' + (showAddForm ? 'rgba(107,94,248,0.4)' : 'var(--border)'),
+              borderRadius: 8, width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: showAddForm ? 'var(--accent2)' : 'var(--text3)', fontSize: 16, lineHeight: 1,
+            }}>{showAddForm ? '×' : '+'}</button>
+          </div>
+          {showAddForm && (
+            <AddProjectForm
+              onAdd={addProject}
+              onCancel={() => setShowAddForm(false)}
+            />
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
             {productProjects.map(p => (
               <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
                 onClick={() => { setSelected(p); setView('detail') }} />
             ))}
-            {productProjects.length === 0 && (
+            {productProjects.length === 0 && !showAddForm && (
               <div style={{ color: 'var(--text3)', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>연결 중...</div>
             )}
           </div>
