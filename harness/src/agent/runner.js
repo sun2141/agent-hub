@@ -2,15 +2,19 @@
 // Claude Code CLI 래퍼 + Planner→Generator→Evaluator 파이프라인
 
 import { EventEmitter } from 'events';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries } from '../db/db.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
-const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '3', 10);
+const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
 
 const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || '/Users/sun')
   .split(',')
@@ -27,8 +31,21 @@ const PHASE = {
 
 function parseJson(text) {
   const stripped = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  const m = stripped.match(/\{[\s\S]*\}/);
-  return JSON.parse(m ? m[0] : stripped);
+  // 중첩 중괄호를 올바르게 파싱: 첫 { 부터 매칭되는 } 까지 추출
+  const start = stripped.indexOf('{');
+  if (start !== -1) {
+    let depth = 0;
+    for (let i = start; i < stripped.length; i++) {
+      if (stripped[i] === '{') depth++;
+      else if (stripped[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          return JSON.parse(stripped.slice(start, i + 1));
+        }
+      }
+    }
+  }
+  return JSON.parse(stripped);
 }
 
 export class AgentRunner extends EventEmitter {
@@ -89,7 +106,7 @@ export class AgentRunner extends EventEmitter {
   }
 
   async _startPipeline(taskId) {
-    const task    = await taskQueries.get(taskId);
+    let task      = await taskQueries.get(taskId);
     const project = await projectQueries.get(task.project_id);
     const safeCwd = this._validateProjectPath(project.path);
 
@@ -97,24 +114,56 @@ export class AgentRunner extends EventEmitter {
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd);
 
+      // 작업 복잡도에 따라 max_rounds 동적 조정 (플래닝 후 한 번만)
+      if (!task.plan) {
+        const featureCount = (plan.features || []).length;
+        const criteriaCount = (plan.acceptance_criteria || []).length;
+        const complexity = featureCount + criteriaCount;
+        let adjustedRounds = task.max_rounds;
+        if (complexity >= 10) adjustedRounds = Math.max(task.max_rounds, MAX_ROUNDS);
+        else if (complexity >= 6) adjustedRounds = Math.max(task.max_rounds, Math.ceil(MAX_ROUNDS * 0.8));
+        if (adjustedRounds !== task.max_rounds) {
+          console.log(`[pipeline] 복잡도(${complexity}) 기반 max_rounds 조정: ${task.max_rounds} → ${adjustedRounds}`);
+          await taskQueries.updateStatus(taskId, PHASE.PLAN, { max_rounds: adjustedRounds });
+          task = await taskQueries.get(taskId);
+        }
+      }
+
       let round = task.round || 0;
+      let evalResult = null;
       while (round < task.max_rounds) {
         round++;
+        const isLastRound = round >= task.max_rounds;
+
+        // 매 라운드마다 최신 eval 결과를 DB에서 로드
+        const freshTask = await taskQueries.get(taskId);
+        const prevEval = freshTask.eval_result ? JSON.parse(freshTask.eval_result) : null;
+
         await taskQueries.updateStatus(taskId, PHASE.BUILD);
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
-        await this._runGenerator(task, project, plan, round, safeCwd);
+        await this._runGenerator(task, project, plan, round, task.max_rounds, prevEval, safeCwd);
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
-        const evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+        evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
 
-        if (evalResult.passed || round >= task.max_rounds) {
+        if (this._isEvalPassed(evalResult)) {
+          // eval 합격 → commit → deploy
+          await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: !evalResult.passed && round >= task.max_rounds });
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false });
+          break;
+        }
+
+        if (isLastRound) {
+          // 최대 라운드 도달 — eval 불합격으로 종료 (커밋/배포 없음)
+          await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
+          await taskQueries.updateStatus(taskId, PHASE.DONE);
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: true });
           break;
         }
       }
@@ -160,45 +209,133 @@ export class AgentRunner extends EventEmitter {
     return plan;
   }
 
-  async _runGenerator(task, project, plan, round, safeCwd) {
-    const prevEval = task.eval_result ? JSON.parse(task.eval_result) : null;
-    const prompt   = round === 1 ? this._buildGeneratorPrompt(plan) : this._buildRetryPrompt(plan, prevEval, round);
+  async _runGenerator(task, project, plan, round, maxRounds, prevEval, safeCwd) {
+    const prompt = round === 1
+      ? this._buildGeneratorPrompt(plan, round, maxRounds)
+      : this._buildRetryPrompt(plan, prevEval, round, maxRounds);
     await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
   }
 
-  _buildGeneratorPrompt(plan) {
+  // eval 합격 여부 판정
+  _isEvalPassed(evalResult) {
+    return !!(evalResult && evalResult.passed === true && (evalResult.score ?? 0) >= 80);
+  }
+
+  async _runCommitAndDeploy(task, project, plan, round, safeCwd) {
+    this.emit('phase:start', { taskId: task.id, phase: 'deploying', round });
+
+    // ── 1. git commit (harness/ 경로 한정) ──────────────────
+    let commitSha = null;
+    try {
+      const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
+      // harness/ 디렉토리 기준 git 루트 확인
+      const gitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: safeCwd, encoding: 'utf8', timeout: 10_000,
+      }).trim();
+      // harness/ 경로만 스테이징 (의도치 않은 파일 커밋 방지)
+      const harnessRelPath = path.relative(gitRoot, path.resolve(__dirname, '../..'));
+      execSync(`git add -- ${harnessRelPath}`, {
+        cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+      });
+      execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
+        cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+      });
+      commitSha = execSync('git rev-parse HEAD', {
+        cwd: gitRoot, encoding: 'utf8', timeout: 5_000,
+      }).trim();
+      await taskQueries.updateCommit(task.id, commitSha);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit] ${commitSha}` });
+      console.log(`[deploy] commit 완료: ${commitSha}`);
+    } catch (err) {
+      const msg = err.stderr?.toString().trim() || err.message;
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit 실패] ${msg.substring(0, 500)}` });
+      console.error(`[deploy] commit 실패 — deploy 건너뜀: ${msg}`);
+      await taskQueries.updateDeploy(task.id, 'skipped:commit_failed');
+      this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+      return;
+    }
+
+    // ── 2. deploy (커밋 성공 이후에만 실행) ─────────────────
+    const deployScript = _findDeployScript(safeCwd);
+    if (!deployScript) {
+      await taskQueries.updateDeploy(task.id, 'skipped:no_script');
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[deploy] 배포 스크립트 없음 — 건너뜀' });
+      console.log('[deploy] 배포 스크립트 없음 — 건너뜀');
+      this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+      return;
+    }
+
+    try {
+      const output = execSync(deployScript.cmd, {
+        cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000,
+      });
+      await taskQueries.updateDeploy(task.id, 'success');
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy 성공] ${output.substring(0, 500)}` });
+      console.log(`[deploy] 배포 성공: ${deployScript.cmd}`);
+    } catch (err) {
+      const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message).trim();
+      await taskQueries.updateDeploy(task.id, 'failed');
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy 실패] ${msg.substring(0, 500)}` });
+      console.error(`[deploy] 배포 실패: ${msg}`);
+    }
+
+    this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+  }
+
+  _buildGeneratorPrompt(plan, round, maxRounds) {
     return ['다음 계획에 따라 코드를 구현하세요.',
       `## 작업\n${plan.title}`, `## 요약\n${plan.summary}`,
       `## 기능\n${(plan.features||[]).map((f,i)=>`${i+1}. ${f}`).join('\n')}`,
       `## 완료 기준\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
       `## 주의사항\n${plan.tech_notes||'없음'}`,
+      `## 라운드 정보\nRound ${round}/${maxRounds} — 모든 완료 기준을 이 라운드에서 충족하는 것을 목표로 하세요.`,
       '기존 코드 스타일을 따르고, 완료 기준을 모두 충족하도록 구현하세요.',
+      '⚠️ 이 단계에서는 git commit이나 배포를 실행하지 마세요. 구현만 완료하세요.',
     ].join('\n\n');
   }
 
-  _buildRetryPrompt(plan, prevEval, round) {
-    return [`이전 구현에 문제가 있습니다. Round ${round} 재시도합니다.`,
+  _buildRetryPrompt(plan, prevEval, round, maxRounds) {
+    const remaining = maxRounds - round;
+    return [`이전 구현에 문제가 있습니다. Round ${round}/${maxRounds} 재시도합니다. (남은 라운드: ${remaining})`,
       `## 원래 작업\n${plan.title}`,
       `## 평가 결과 (Round ${round-1})\n점수: ${prevEval?.score??'?'}/100`,
       `## 수정 필요\n${(prevEval?.issues||[]).map((x,i)=>`${i+1}. ${x}`).join('\n')||'없음'}`,
       `## 제안\n${prevEval?.suggestions||'없음'}`,
       '위 문제를 반드시 해결하고 완료 기준을 충족하도록 수정하세요.',
+      '⚠️ 이 단계에서는 git commit이나 배포를 실행하지 마세요. 구현만 완료하세요.',
     ].join('\n\n');
   }
 
   async _runEvaluator(task, project, plan, round, safeCwd) {
-    const prompt = ['[지시사항]', '당신은 코드 품질 평가자입니다.',
-      '코드블록 없이 순수 JSON만 반환하세요:',
-      '{"score":0~100,"passed":true또는false,"issues":["문제1"],"suggestions":"개선방향","summary":"한줄요약"}',
-      'passed 기준: score >= 80이면 true', '',
-      '[평가 요청]', `작업: ${plan.title}`,
-      `완료 기준:\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
-      '프로젝트 경로의 실제 코드를 확인하고 각 기준의 충족 여부를 평가하세요.',
+    const criteria = (plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n');
+    const prompt = [
+      '[지시사항]',
+      '당신은 코드 품질 평가자입니다. 반드시 실제 파일을 읽고 코드를 확인한 뒤 평가하세요.',
+      '',
+      '[평가 절차]',
+      '1. ls, cat 등 도구로 현재 디렉토리의 파일 구조를 파악하세요.',
+      `2. 아래 완료 기준과 관련된 파일을 직접 읽어서 구현 여부를 확인하세요.`,
+      '3. 각 완료 기준이 충족되었는지 하나씩 검토하세요.',
+      '4. 검토 완료 후 아래 JSON 형식으로만 결과를 반환하세요 (코드블록 없이).',
+      '',
+      '[반환 형식]',
+      '{"score":0~100,"passed":true또는false,"issues":["미충족 기준이나 문제점"],"suggestions":"다음 라운드를 위한 구체적 개선 방향","summary":"한줄요약"}',
+      'passed 기준: 모든 완료 기준을 충족하고 score >= 80이면 true',
+      '',
+      '[평가 대상]',
+      `작업: ${plan.title}`,
+      `요약: ${plan.summary}`,
+      '',
+      `[완료 기준 — 각 항목의 충족 여부를 파일에서 직접 확인하세요]`,
+      criteria,
     ].join('\n');
 
     const output = await this._claudeRun({ taskId: task.id, phase: 'eval', round, cwd: safeCwd, prompt });
     try { return parseJson(output); }
-    catch { return { score: 50, passed: false, issues: ['평가 파싱 실패'], suggestions: output.substring(0, 500) }; }
+    catch (e) {
+      console.error(`[eval] JSON 파싱 실패: ${e.message}\n출력(500자): ${output.substring(0, 500)}`);
+      return { score: 50, passed: false, issues: ['평가 파싱 실패'], suggestions: output.substring(0, 500) };
+    }
   }
 
   // ── Claude CLI 실행 ────────────────────────────────────────
@@ -229,9 +366,10 @@ export class AgentRunner extends EventEmitter {
       });
       entry.process = proc;
 
-      let fullOutput = '';
-      let buffer     = '';
-      let rejected   = false;
+      let finalResult    = null; // result 타입에서 추출한 최종 응답
+      let assistantTexts = [];   // assistant 블록 텍스트 누적 (폴백용)
+      let buffer         = '';
+      let rejected       = false;
 
       proc.stdout.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -242,7 +380,10 @@ export class AgentRunner extends EventEmitter {
           try {
             const msg = JSON.parse(line);
             if (msg.type !== 'system') console.log(`[CLI msg:${phase}] type=${msg.type} ${msg.error||''}`);
-            this._handleStreamMsg(taskId, phase, round, msg, t => { fullOutput += t; });
+            this._handleStreamMsg(taskId, phase, round, msg,
+              (text) => { assistantTexts.push(text); },
+              (r)    => { finalResult = r; }
+            );
           } catch { /* JSON 아닌 라인 무시 */ }
         }
       });
@@ -258,30 +399,41 @@ export class AgentRunner extends EventEmitter {
       });
 
       proc.on('close', (code) => {
-        console.log(`[CLI close:${phase}] code=${code} outputLen=${fullOutput.length}`);
+        // 우선순위: result 타입 > assistant 블록 누적 텍스트
+        const output = (finalResult && finalResult.trim())
+          ? finalResult
+          : assistantTexts.join('\n').trim();
+        console.log(`[CLI close:${phase}] code=${code} outputLen=${output.length} source=${finalResult ? 'result' : 'assistant'}`);
         if (rejected) return;
-        if (code !== 0 && !fullOutput) reject(new Error(`Claude CLI 비정상 종료 (code: ${code})`));
-        else resolve(fullOutput.trim());
+        if (code !== 0 && !output) reject(new Error(`Claude CLI 비정상 종료 (code: ${code})`));
+        else resolve(output.trim());
       });
 
       proc.on('error', (err) => reject(new Error(`Claude CLI 실행 실패: ${err.message}`)));
     });
   }
 
-  _handleStreamMsg(taskId, phase, round, msg, onText) {
+  _handleStreamMsg(taskId, phase, round, msg, onAssistantText, onResult) {
     if (msg.type === 'assistant' && msg.message?.content) {
       for (const block of msg.message.content) {
         if (block.type === 'text') {
-          onText(block.text);
           logQueries.append({ task_id: taskId, phase, round, level: 'info', content: block.text });
           this.emit('agent:text', { taskId, phase, round, content: block.text });
+          // assistant 블록 텍스트를 별도 누적 (result가 빈 경우 폴백으로 사용)
+          if (onAssistantText) onAssistantText(block.text);
         } else if (block.type === 'tool_use') {
           logQueries.append({ task_id: taskId, phase, round, level: 'tool', content: `[도구: ${block.name}]` });
           this.emit('agent:tool', { taskId, phase, round, tool: block.name });
         }
       }
-    } else if (msg.type === 'result' && msg.result) {
-      onText(msg.result);
+    } else if (msg.type === 'result') {
+      // result 타입: Claude CLI 최종 응답
+      if (msg.is_error) {
+        logQueries.append({ task_id: taskId, phase, round, level: 'error', content: `[result error] ${JSON.stringify(msg.result||'')}` });
+      } else if (msg.result != null) {
+        const resultText = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result);
+        if (resultText.trim() && onResult) onResult(resultText);
+      }
     }
   }
 
@@ -292,4 +444,42 @@ export class AgentRunner extends EventEmitter {
       this._startPipeline(nextId);
     }
   }
+}
+
+// ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────
+// 우선순위: deploy.sh → Makefile (deploy target) → pm2 ecosystem
+// cwd 기준으로 파일 존재 여부를 확인하여 실행 커맨드 반환
+function _findDeployScript(cwd) {
+  const deployShPath = path.join(cwd, 'deploy.sh');
+  if (fs.existsSync(deployShPath)) {
+    return { cmd: 'bash deploy.sh', cwd };
+  }
+
+  const makefilePath = path.join(cwd, 'Makefile');
+  if (fs.existsSync(makefilePath)) {
+    try {
+      const content = fs.readFileSync(makefilePath, 'utf8');
+      if (/^deploy:/m.test(content)) {
+        return { cmd: 'make deploy', cwd };
+      }
+    } catch { /* 읽기 실패 시 무시 */ }
+  }
+
+  const ecosystemPath = path.join(cwd, 'ecosystem.config.js');
+  const ecosystem2Path = path.join(cwd, 'ecosystem.config.cjs');
+  if (fs.existsSync(ecosystemPath) || fs.existsSync(ecosystem2Path)) {
+    return { cmd: 'pm2 reload ecosystem.config.js --update-env', cwd };
+  }
+
+  const pkgPath = path.join(cwd, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg.scripts?.deploy) {
+        return { cmd: 'npm run deploy', cwd };
+      }
+    } catch { /* 파싱 실패 시 무시 */ }
+  }
+
+  return null;
 }

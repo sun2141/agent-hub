@@ -135,8 +135,8 @@ export function createApiServer(agentRunner) {
     }
     if (maxRounds !== undefined) {
       const r = parseInt(maxRounds, 10);
-      if (isNaN(r) || r < 1 || r > 5) {
-        return res.status(400).json({ error: 'maxRounds: 1~5 사이 정수' });
+      if (isNaN(r) || r < 1 || r > 20) {
+        return res.status(400).json({ error: 'maxRounds: 1~20 사이 정수' });
       }
     }
     try {

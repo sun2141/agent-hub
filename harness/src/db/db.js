@@ -60,6 +60,29 @@ export async function initDb() {
   await dbRun('PRAGMA journal_mode = WAL');
   await dbRun('PRAGMA foreign_keys = ON');
 
+  // 기존 DB의 max_rounds 컬럼 DEFAULT가 3인 경우 대응:
+  // SQLite는 ALTER COLUMN DEFAULT를 지원하지 않으므로
+  // 잘못 저장된 기존 task의 max_rounds=3을 10으로 마이그레이션
+  const tableInfo = await dbAll("PRAGMA table_info(tasks)");
+  if (tableInfo.length > 0) {
+    const maxRoundsCol = tableInfo.find(col => col.name === 'max_rounds');
+    if (maxRoundsCol && String(maxRoundsCol.dflt_value) === '3') {
+      console.log('[DB] max_rounds DEFAULT 마이그레이션: 3→10 (기존 task 중 max_rounds=3인 것 수정)');
+      await dbRun("UPDATE tasks SET max_rounds = 10 WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
+    }
+    // commit_sha, deploy_status 컬럼 마이그레이션 (기존 DB 대응)
+    const hasCommitSha = tableInfo.some(col => col.name === 'commit_sha');
+    const hasDeployStatus = tableInfo.some(col => col.name === 'deploy_status');
+    if (!hasCommitSha) {
+      console.log('[DB] commit_sha 컬럼 추가');
+      await dbRun("ALTER TABLE tasks ADD COLUMN commit_sha TEXT");
+    }
+    if (!hasDeployStatus) {
+      console.log('[DB] deploy_status 컬럼 추가');
+      await dbRun("ALTER TABLE tasks ADD COLUMN deploy_status TEXT");
+    }
+  }
+
   await dbExec(`
     CREATE TABLE IF NOT EXISTS projects (
       id          TEXT PRIMARY KEY,
@@ -72,17 +95,19 @@ export async function initDb() {
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
-      id          TEXT PRIMARY KEY,
-      project_id  TEXT NOT NULL REFERENCES projects(id),
-      prompt      TEXT NOT NULL,
-      status      TEXT DEFAULT 'pending',
-      plan        TEXT,
-      eval_result TEXT,
-      round       INTEGER DEFAULT 0,
-      max_rounds  INTEGER DEFAULT 3,
-      error       TEXT,
-      created_at  TEXT DEFAULT (datetime('now')),
-      updated_at  TEXT DEFAULT (datetime('now'))
+      id            TEXT PRIMARY KEY,
+      project_id    TEXT NOT NULL REFERENCES projects(id),
+      prompt        TEXT NOT NULL,
+      status        TEXT DEFAULT 'pending',
+      plan          TEXT,
+      eval_result   TEXT,
+      round         INTEGER DEFAULT 0,
+      max_rounds    INTEGER DEFAULT 10,
+      error         TEXT,
+      commit_sha    TEXT,
+      deploy_status TEXT,
+      created_at    TEXT DEFAULT (datetime('now')),
+      updated_at    TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS logs (
@@ -152,7 +177,7 @@ export const projectQueries = {
 
 // ── tasks ─────────────────────────────────────────────────────
 export const taskQueries = {
-  async create({ id, project_id, prompt, max_rounds = 3 }) {
+  async create({ id, project_id, prompt, max_rounds = 10 }) {
     await dbRun(
       'INSERT INTO tasks (id, project_id, prompt, max_rounds) VALUES (?, ?, ?, ?)',
       [id, project_id, prompt, max_rounds]
@@ -187,6 +212,14 @@ export const taskQueries = {
 
   async incrementRound(id) {
     await dbRun('UPDATE tasks SET round = round + 1 WHERE id = ?', [id]);
+  },
+
+  async updateCommit(id, commitSha) {
+    await dbRun('UPDATE tasks SET commit_sha = ? WHERE id = ?', [commitSha, id]);
+  },
+
+  async updateDeploy(id, deployStatus) {
+    await dbRun('UPDATE tasks SET deploy_status = ? WHERE id = ?', [deployStatus, id]);
   },
 };
 
