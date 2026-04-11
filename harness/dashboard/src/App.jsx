@@ -118,11 +118,13 @@ function ProjectCard({ project, tasks, running, onClick }) {
 }
 
 // ── 프로젝트 상세 ─────────────────────────────────────────
-function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onBack }) {
+function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onBack, fetchTaskLogs }) {
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [tab, setTab] = useState('tasks')
+  const [dbLogs, setDbLogs] = useState([])
   const logRef = useRef(null)
+  const autoScrollRef = useRef(true)
 
   const projectTasks = [...tasks.filter(t => t.project_id === project.id)]
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
@@ -134,16 +136,54 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const isRunning = activeRun !== null
   const pausedTask = projectTasks.find(t => t.status === 'paused')
 
+  // 로그 fetch 대상 taskId: 실행 중인 작업 또는 가장 최근 작업
+  const targetTaskId = activeRun?.taskId || projectTasks[0]?.id || null
+
+  // 로그 탭 전환 또는 targetTaskId 변경 시 DB 로그 로드
+  useEffect(() => {
+    if (tab !== 'logs' || !targetTaskId) return
+    fetchTaskLogs(targetTaskId).then(setDbLogs)
+  }, [tab, targetTaskId])
+
+  // 실행 중일 때 주기적으로 DB 로그 갱신
+  useEffect(() => {
+    if (tab !== 'logs' || !targetTaskId || !isRunning) return
+    const timer = setInterval(() => {
+      fetchTaskLogs(targetTaskId).then(setDbLogs)
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [tab, targetTaskId, isRunning])
+
   const projectTaskIds = new Set(projectTasks.map(t => t.id))
-  const logs = wsEvents.filter(e =>
+  const wsLogs = wsEvents.filter(e =>
     e.taskId && projectTaskIds.has(e.taskId) &&
     ['agent:text', 'agent:tool', 'phase:start', 'phase:complete',
      'task:complete', 'task:failed', 'task:paused', 'task:created'].includes(e.type)
   )
 
+  // DB 로그와 WS 이벤트 병합 (중복 제거: WS 이벤트는 ts가 ms 단위, DB 로그는 초 단위이므로
+  // DB 로그를 기본으로 하고 WS 이벤트 중 DB에 없는 것(1초 이내 같은 type+content)만 추가)
+  const logs = (() => {
+    if (dbLogs.length === 0) return wsLogs
+    if (wsLogs.length === 0) return dbLogs
+    // DB 로그 ts를 초 단위로 버킷화하여 중복 탐지
+    const dbBuckets = new Set(dbLogs.map(d => `${d.type}:${Math.floor((d.ts || 0) / 1000)}`))
+    const wsOnly = wsLogs.filter(e => !dbBuckets.has(`${e.type}:${Math.floor((e.ts || 0) / 1000)}`))
+    return [...dbLogs, ...wsOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0))
+  })()
+
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+    if (logRef.current && autoScrollRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
   }, [logs])
+
+  // 스크롤 이벤트: 사용자가 위로 올리면 자동 스크롤 중단
+  function handleLogScroll() {
+    if (!logRef.current) return
+    const { scrollTop, scrollHeight, clientHeight } = logRef.current
+    autoScrollRef.current = scrollTop + clientHeight >= scrollHeight - 40
+  }
 
   const handleRun = async () => {
     if (!prompt.trim() || sending || isRunning) return
@@ -246,7 +286,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
           })}
         </div>
 
-        <div ref={logRef} style={{
+        <div ref={logRef} onScroll={handleLogScroll} style={{
           position: 'absolute', inset: 0, overflowY: 'auto',
           padding: '12px 16px', fontFamily: 'var(--mono)', fontSize: 11, lineHeight: 1.7,
           visibility: tab === 'logs' ? 'visible' : 'hidden',
@@ -502,7 +542,7 @@ function TaskReport({ task }) {
 
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, addProject, refresh } = useHarness()
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, fetchTaskLogs, addProject, refresh } = useHarness()
   const [view, setView]         = useState('list')
   const [selected, setSelected] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -528,6 +568,7 @@ export default function App() {
           onStop={async id => { await stopTask(id); refresh() }}
           onResume={async id => { await resumeTask(id); refresh() }}
           onBack={() => setView('list')}
+          fetchTaskLogs={fetchTaskLogs}
         />
       ) : view === 'history' ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

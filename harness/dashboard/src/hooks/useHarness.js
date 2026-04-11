@@ -152,9 +152,35 @@ export function useHarness() {
     )
   }, [wsEvents])
 
+  // DB 저장 로그를 fetch하여 WS 이벤트 형식으로 변환
+  const fetchTaskLogs = useCallback(async (taskId) => {
+    try {
+      const data = await apiFetch(`/tasks/${taskId}`)
+      if (!data || !Array.isArray(data.logs)) return []
+      // DESC로 저장된 로그를 오름차순으로 정렬
+      const sorted = [...data.logs].sort((a, b) => a.id - b.id)
+      return sorted.map(log => {
+        const type = log.level === 'tool' ? 'agent:tool' : 'agent:text'
+        return {
+          type,
+          taskId: log.task_id,
+          phase: log.phase,
+          round: log.round,
+          content: log.content,
+          tool: log.level === 'tool' ? log.content : undefined,
+          ts: new Date(log.created_at.endsWith('Z') ? log.created_at : log.created_at.replace(' ', 'T') + 'Z').getTime(),
+          _fromDb: true,
+        }
+      })
+    } catch (e) {
+      console.error('fetchTaskLogs:', e)
+      return []
+    }
+  }, [])
+
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, getTaskLogs, addProject,
+    runTask, stopTask, resumeTask, getTaskLogs, fetchTaskLogs, addProject,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }
 }
