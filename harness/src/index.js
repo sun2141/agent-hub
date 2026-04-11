@@ -2,11 +2,41 @@
 // 하네스 진입점
 
 import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { initDb, projectQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { createApiServer } from './api/server.js';
 import { createTelegramBot } from './telegram/bot.js';
+
+// ── PID 락 파일 (중복 실행 방지) ─────────────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PID_FILE = path.join(__dirname, '../../harness.pid');
+
+function acquireLock() {
+  if (fs.existsSync(PID_FILE)) {
+    const existingPid = fs.readFileSync(PID_FILE, 'utf-8').trim();
+    // 해당 PID가 실제로 살아있는지 확인
+    try {
+      process.kill(Number(existingPid), 0); // signal 0 = 존재 확인만
+      console.error(`\n[Boot] ❌ 이미 실행 중인 하네스가 있습니다 (PID: ${existingPid})`);
+      console.error(`       종료하려면: kill ${existingPid}`);
+      console.error(`       강제 시작: rm ${PID_FILE}\n`);
+      process.exit(1);
+    } catch {
+      // PID가 없는 프로세스 → 스테일 락 파일 정리 후 계속
+      console.warn(`[Boot] 스테일 락 파일 제거 (PID ${existingPid} 없음)`);
+      fs.unlinkSync(PID_FILE);
+    }
+  }
+  fs.writeFileSync(PID_FILE, String(process.pid));
+}
+
+function releaseLock() {
+  try { fs.unlinkSync(PID_FILE); } catch { /* 무시 */ }
+}
 
 function validateEnv() {
   const required = {
@@ -30,6 +60,7 @@ function validateEnv() {
 }
 
 async function main() {
+  acquireLock();
   validateEnv();
 
   console.log('═══════════════════════════════════════');
@@ -74,17 +105,19 @@ async function main() {
 
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);
+    releaseLock();
     notify('🔴 <b>하네스 종료됨</b>');
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000);
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT',  () => shutdown('SIGINT'));
-  process.on('uncaughtException',  (err)    => console.error('[uncaughtException]', err.message));
+  process.on('uncaughtException',  (err)    => { releaseLock(); console.error('[uncaughtException]', err.message); process.exit(1); });
   process.on('unhandledRejection', (reason) => console.error('[unhandledRejection]', reason));
 }
 
 main().catch(err => {
+  releaseLock();
   console.error('[Boot] 시작 실패:', err.message);
   process.exit(1);
 });

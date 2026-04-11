@@ -6,6 +6,13 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries } from '../db/db.js';
 import crypto from 'crypto';
+import fs from 'fs';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_USER = process.env.GITHUB_USER || 'sun2141';
 
 const API_KEY = process.env.API_KEY;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
@@ -65,6 +72,84 @@ export function createApiServer(agentRunner) {
   });
 
   app.use('/api', authMiddleware);
+
+  // ── 프로젝트 생성 (폴더 + GitHub 레포 + DB) ───────────────
+  app.post('/api/projects/create', async (req, res) => {
+    const { name, path: projectPath, stack, description, githubRepo, githubPrivate } = req.body;
+
+    if (!validateString(name, 100)) return res.status(400).json({ error: 'name: 1~100자 필수' });
+    if (!validateString(projectPath, 500)) return res.status(400).json({ error: 'path: 1~500자 필수' });
+
+    // 경로 안전 검증: /Users/sun/ 하위만 허용
+    const resolvedPath = path.resolve(projectPath);
+    if (!resolvedPath.startsWith('/Users/sun/')) {
+      return res.status(400).json({ error: '경로는 /Users/sun/ 하위여야 합니다' });
+    }
+
+    // slug 기반 ID 생성
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
+    const suffix = crypto.randomBytes(3).toString('hex');
+    const id = `${slug}-${suffix}`;
+
+    const results = { id, folderCreated: false, gitInit: false, githubRepo: null, dbInserted: false };
+
+    try {
+      // 1. 로컬 폴더 생성
+      fs.mkdirSync(resolvedPath, { recursive: true });
+      results.folderCreated = true;
+
+      // 2. git init
+      execSync(`git init`, { cwd: resolvedPath, stdio: 'pipe' });
+      execSync(`git checkout -b main`, { cwd: resolvedPath, stdio: 'pipe' });
+      results.gitInit = true;
+
+      // 3. GitHub 레포 생성 (토큰이 있을 때만)
+      if (githubRepo && GITHUB_TOKEN) {
+        const repoName = (githubRepo === true || githubRepo === 'auto')
+          ? slug
+          : String(githubRepo).toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+
+        const ghRes = await fetch('https://api.github.com/user/repos', {
+          method: 'POST',
+          headers: {
+            Authorization: `token ${GITHUB_TOKEN}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'agent-harness',
+          },
+          body: JSON.stringify({
+            name: repoName,
+            description: description || '',
+            private: githubPrivate !== false, // 기본 private
+            auto_init: false,
+          }),
+        });
+
+        const ghData = await ghRes.json();
+
+        if (ghRes.ok) {
+          results.githubRepo = { name: repoName, url: ghData.html_url, sshUrl: ghData.ssh_url, cloneUrl: ghData.clone_url };
+          // remote 연결
+          execSync(`git remote add origin ${ghData.ssh_url}`, { cwd: resolvedPath, stdio: 'pipe' });
+        } else {
+          results.githubError = ghData.message || 'GitHub 레포 생성 실패';
+        }
+      }
+
+      // 4. README 초기 커밋
+      const readmeContent = `# ${name}\n\n${description || ''}\n`;
+      fs.writeFileSync(path.join(resolvedPath, 'README.md'), readmeContent);
+      execSync(`git add README.md && git commit -m "Initial commit"`, { cwd: resolvedPath, stdio: 'pipe', shell: true });
+
+      // 5. DB에 프로젝트 등록
+      const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description });
+      results.dbInserted = true;
+
+      res.status(201).json({ ...results, project });
+    } catch (err) {
+      console.error('[create-project]', err);
+      res.status(500).json({ error: err.message, results });
+    }
+  });
 
   // ── REST 엔드포인트 (모두 async/await) ────────────────────
 

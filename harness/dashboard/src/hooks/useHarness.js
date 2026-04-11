@@ -127,6 +127,22 @@ export function useHarness() {
     }
   }, [loadProjects])
 
+  // 폴더 + GitHub 레포 + DB 한 번에 생성
+  const createProject = useCallback(async (data) => {
+    try {
+      const result = await apiFetch('/projects/create', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      })
+      if (result && !result.error) {
+        await loadProjects()
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 생성 실패' }
+    }
+  }, [loadProjects])
+
   const runTask = useCallback((projectId, prompt, maxRounds = 3) => {
     return apiFetch('/run', {
       method: 'POST',
@@ -180,7 +196,7 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, getTaskLogs, fetchTaskLogs, addProject,
+    runTask, stopTask, resumeTask, getTaskLogs, fetchTaskLogs, addProject, createProject,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }
 }
