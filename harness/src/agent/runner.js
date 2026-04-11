@@ -152,18 +152,23 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
 
         if (this._isEvalPassed(evalResult)) {
-          // eval 합격 → commit → deploy
+          // eval 합격 — issues가 없음을 확인 로그
+          const passedIssues = Array.isArray(evalResult.issues) ? evalResult.issues : [];
+          console.log(`[pipeline] eval 합격 (score=${evalResult.score}, issues=${passedIssues.length}개) → commit/deploy 진행`);
+          await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info',
+            content: `[eval 합격] score=${evalResult.score}, issues=0, passed=true → commit/deploy 진행` });
           await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false });
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0 });
           break;
         }
 
         if (isLastRound) {
           // 최대 라운드 도달 — eval 불합격으로 종료 (커밋/배포 없음)
+          const unresolvedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues.length : null;
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: true });
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: true, unresolvedIssues });
           break;
         }
       }
@@ -217,8 +222,12 @@ export class AgentRunner extends EventEmitter {
   }
 
   // eval 합격 여부 판정
+  // issues 배열이 존재(Array.isArray)하면 반드시 비어있어야 합격으로 인정
+  // issues가 null/undefined인 레거시 결과는 passed/score만으로 판단
   _isEvalPassed(evalResult) {
-    return !!(evalResult && evalResult.passed === true && (evalResult.score ?? 0) >= 80);
+    if (!evalResult || evalResult.passed !== true || (evalResult.score ?? 0) < 80) return false;
+    if (Array.isArray(evalResult.issues) && evalResult.issues.length > 0) return false;
+    return true;
   }
 
   async _runCommitAndDeploy(task, project, plan, round, safeCwd) {
@@ -296,12 +305,19 @@ export class AgentRunner extends EventEmitter {
 
   _buildRetryPrompt(plan, prevEval, round, maxRounds) {
     const remaining = maxRounds - round;
-    return [`이전 구현에 문제가 있습니다. Round ${round}/${maxRounds} 재시도합니다. (남은 라운드: ${remaining})`,
+    const issuesList = (prevEval?.issues || []);
+    const issuesText = issuesList.length > 0
+      ? issuesList.map((x, i) => `${i + 1}. ${x}`).join('\n')
+      : '없음';
+    return [
+      `이전 구현에 문제가 있습니다. Round ${round}/${maxRounds} 재시도합니다. (남은 라운드: ${remaining})`,
       `## 원래 작업\n${plan.title}`,
-      `## 평가 결과 (Round ${round-1})\n점수: ${prevEval?.score??'?'}/100`,
-      `## 수정 필요\n${(prevEval?.issues||[]).map((x,i)=>`${i+1}. ${x}`).join('\n')||'없음'}`,
-      `## 제안\n${prevEval?.suggestions||'없음'}`,
-      '위 문제를 반드시 해결하고 완료 기준을 충족하도록 수정하세요.',
+      `## 요약\n${plan.summary || ''}`,
+      `## 완료 기준\n${(plan.acceptance_criteria || []).map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
+      `## 평가 결과 (Round ${round - 1})\n점수: ${prevEval?.score ?? '?'}/100`,
+      `## 반드시 해결해야 할 미충족 항목 (${issuesList.length}개)\n${issuesText}`,
+      `## 개선 제안\n${prevEval?.suggestions || '없음'}`,
+      '위 미충족 항목을 모두 해결하고 모든 완료 기준을 충족하도록 수정하세요. 미충족 항목을 하나라도 건너뛰지 마세요.',
       '⚠️ 이 단계에서는 git commit이나 배포를 실행하지 마세요. 구현만 완료하세요.',
     ].join('\n\n');
   }
@@ -320,7 +336,8 @@ export class AgentRunner extends EventEmitter {
       '',
       '[반환 형식]',
       '{"score":0~100,"passed":true또는false,"issues":["미충족 기준이나 문제점"],"suggestions":"다음 라운드를 위한 구체적 개선 방향","summary":"한줄요약"}',
-      'passed 기준: 모든 완료 기준을 충족하고 score >= 80이면 true',
+      '⚠️ passed=true 조건: 모든 완료 기준이 100% 구현되어 있고, issues 배열이 완전히 비어 있으며, score >= 80인 경우에만 true로 설정하세요.',
+      '하나라도 미구현·부분 구현·미확인 항목이 있으면 passed=false이고 해당 항목을 issues에 명시하세요.',
       '',
       '[평가 대상]',
       `작업: ${plan.title}`,
