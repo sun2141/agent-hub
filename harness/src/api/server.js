@@ -11,6 +11,9 @@ import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DASHBOARD_DIST = path.join(__dirname, '../../dashboard/dist');
+
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER || 'sun2141';
 
@@ -56,6 +59,15 @@ export function createApiServer(agentRunner) {
 
   app.use(express.json({ limit: '10kb' }));
   app.use(rateLimit);
+
+  // ── 대시보드 정적 파일 서빙 (빌드된 dist/) ─────────────────
+  if (fs.existsSync(DASHBOARD_DIST)) {
+    app.use(express.static(DASHBOARD_DIST));
+    // SPA fallback: /api 제외한 모든 요청은 index.html
+    app.get(/^(?!\/api|\/ws).*/, (req, res) => {
+      res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
+    });
+  }
 
   // CORS
   app.use((req, res, next) => {
