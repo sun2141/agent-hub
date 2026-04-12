@@ -3,6 +3,7 @@
 
 import 'dotenv/config';
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDb, projectQueries } from './db/db.js';
@@ -36,6 +37,28 @@ function acquireLock() {
 
 function releaseLock() {
   try { fs.unlinkSync(PID_FILE); } catch { /* 무시 */ }
+}
+
+// ── 포트 사용 여부 확인 ────────────────────────────────────
+function checkPortAvailable(port) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        reject(new Error(
+          `포트 ${port}가 이미 사용 중입니다.\n` +
+          `점유 프로세스 확인: lsof -i :${port}\n` +
+          `종료 후 다시 시작해주세요.`
+        ));
+      } else {
+        reject(err);
+      }
+    });
+    server.once('listening', () => {
+      server.close(() => resolve());
+    });
+    server.listen(port, '127.0.0.1');
+  });
 }
 
 function validateEnv() {
@@ -81,8 +104,18 @@ async function main() {
   console.log('[Boot] Agent runner 준비');
 
   // 3. API 서버
-  const { server } = createApiServer(agent);
   const PORT = parseInt(process.env.PORT || '3000', 10);
+
+  // 포트 충돌 사전 감지 — 다른 프로세스가 점유 중이면 즉시 종료
+  try {
+    await checkPortAvailable(PORT);
+  } catch (err) {
+    console.error(`\n[Boot] ❌ ${err.message}\n`);
+    releaseLock();
+    process.exit(1);
+  }
+
+  const { server } = createApiServer(agent);
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[Boot] API 서버 127.0.0.1:${PORT} (localhost only)`);
     console.log(`[Boot] WebSocket ws://127.0.0.1:${PORT}/ws`);

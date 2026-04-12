@@ -60,16 +60,7 @@ export function createApiServer(agentRunner) {
   app.use(express.json({ limit: '10kb' }));
   app.use(rateLimit);
 
-  // ── 대시보드 정적 파일 서빙 (빌드된 dist/) ─────────────────
-  if (fs.existsSync(DASHBOARD_DIST)) {
-    app.use(express.static(DASHBOARD_DIST));
-    // SPA fallback: /api 제외한 모든 요청은 index.html
-    app.get(/^(?!\/api|\/ws).*/, (req, res) => {
-      res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
-    });
-  }
-
-  // CORS
+  // CORS (정적 파일 서빙보다 먼저 등록)
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) {
@@ -84,6 +75,13 @@ export function createApiServer(agentRunner) {
   });
 
   app.use('/api', authMiddleware);
+
+  // ── 대시보드 정적 파일 서빙 (빌드된 dist/) ─────────────────
+  // API 라우트 등록 후에 정적 파일과 SPA fallback을 등록해야
+  // /api/* 요청이 authMiddleware를 거친 뒤 올바르게 처리됨
+  if (fs.existsSync(DASHBOARD_DIST)) {
+    app.use(express.static(DASHBOARD_DIST));
+  }
 
   // ── 프로젝트 생성 (폴더 + GitHub 레포 + DB) ───────────────
   app.post('/api/projects/create', async (req, res) => {
@@ -293,6 +291,13 @@ export function createApiServer(agentRunner) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // SPA fallback: 모든 API 라우트 등록 후 마지막에 위치해야 함
+  if (fs.existsSync(DASHBOARD_DIST)) {
+    app.get(/^(?!\/api|\/ws).*/, (req, res) => {
+      res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
+    });
+  }
 
   app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
   app.use((err, req, res, next) => {

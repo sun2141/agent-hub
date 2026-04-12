@@ -31,21 +31,41 @@ const PHASE = {
 
 function parseJson(text) {
   const stripped = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  // 중첩 중괄호를 올바르게 파싱: 첫 { 부터 매칭되는 } 까지 추출
-  const start = stripped.indexOf('{');
-  if (start !== -1) {
+  // 첫 { 부터 매칭되는 } 까지 추출 (문자열 내 중괄호 무시)
+  // 여러 후보를 모두 시도하여 유효한 JSON을 반환
+  let searchFrom = 0;
+  while (true) {
+    const start = stripped.indexOf('{', searchFrom);
+    if (start === -1) break;
     let depth = 0;
+    let inString = false;
+    let escape = false;
+    let foundEnd = false;
     for (let i = start; i < stripped.length; i++) {
-      if (stripped[i] === '{') depth++;
-      else if (stripped[i] === '}') {
+      const ch = stripped[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') {
         depth--;
         if (depth === 0) {
-          return JSON.parse(stripped.slice(start, i + 1));
+          foundEnd = true;
+          try {
+            return JSON.parse(stripped.slice(start, i + 1));
+          } catch {
+            // 이 후보는 실패 — 다음 { 부터 재탐색
+            searchFrom = start + 1;
+            break;
+          }
         }
       }
     }
+    // 닫히지 않은 중괄호 또는 모든 후보 소진 — 탐색 종료
+    if (!foundEnd) break;
   }
-  return JSON.parse(stripped);
+  throw new Error('유효한 JSON 객체를 찾을 수 없음');
 }
 
 export class AgentRunner extends EventEmitter {
@@ -131,18 +151,18 @@ export class AgentRunner extends EventEmitter {
 
       let round = task.round || 0;
       let evalResult = null;
-      while (round < task.max_rounds) {
+      // 매 반복마다 DB에서 최신 max_rounds 및 eval 결과를 읽기 위해 루프 시작 시 재로드
+      while (true) {
+        const currentTask = await taskQueries.get(taskId);
+        if (round >= currentTask.max_rounds) break;
         round++;
-        const isLastRound = round >= task.max_rounds;
-
-        // 매 라운드마다 최신 eval 결과를 DB에서 로드
-        const freshTask = await taskQueries.get(taskId);
-        const prevEval = freshTask.eval_result ? JSON.parse(freshTask.eval_result) : null;
+        const isLastRound = round >= currentTask.max_rounds;
+        const prevEval = currentTask.eval_result ? JSON.parse(currentTask.eval_result) : null;
 
         await taskQueries.updateStatus(taskId, PHASE.BUILD);
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
-        await this._runGenerator(task, project, plan, round, task.max_rounds, prevEval, safeCwd);
+        await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd);
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
@@ -222,11 +242,16 @@ export class AgentRunner extends EventEmitter {
   }
 
   // eval 합격 여부 판정
-  // issues 배열이 존재(Array.isArray)하면 반드시 비어있어야 합격으로 인정
-  // issues가 null/undefined인 레거시 결과는 passed/score만으로 판단
+  // issues 배열이 존재(Array.isArray)하면 비어있어야 합격으로 인정
+  // 빈 문자열, null, whitespace-only 항목은 실질적 이슈가 아닌 것으로 처리
   _isEvalPassed(evalResult) {
     if (!evalResult || evalResult.passed !== true || (evalResult.score ?? 0) < 80) return false;
-    if (Array.isArray(evalResult.issues) && evalResult.issues.length > 0) return false;
+    if (Array.isArray(evalResult.issues)) {
+      const realIssues = evalResult.issues.filter(
+        x => x && typeof x === 'string' && x.trim().length > 0
+      );
+      if (realIssues.length > 0) return false;
+    }
     return true;
   }
 
@@ -241,9 +266,15 @@ export class AgentRunner extends EventEmitter {
       const gitRoot = execSync('git rev-parse --show-toplevel', {
         cwd: safeCwd, encoding: 'utf8', timeout: 10_000,
       }).trim();
-      // harness/ 경로만 스테이징 (의도치 않은 파일 커밋 방지)
+      // harness/ 경로 및 프로젝트(safeCwd) 경로 모두 스테이징
       const harnessRelPath = path.relative(gitRoot, path.resolve(__dirname, '../..'));
-      execSync(`git add -- ${harnessRelPath}`, {
+      const projectRelPath = path.relative(gitRoot, safeCwd);
+      // 스테이징 대상: harness/ + 프로젝트 경로 (중복 없도록 Set 활용)
+      const stagePaths = [...new Set([harnessRelPath, projectRelPath])]
+        .filter(p => p && !p.startsWith('..')) // git 루트 외부 경로 제외
+        .map(p => JSON.stringify(p))
+        .join(' ');
+      execSync(`git add -- ${stagePaths}`, {
         cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
       });
       execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
@@ -332,12 +363,17 @@ export class AgentRunner extends EventEmitter {
       '1. ls, cat 등 도구로 현재 디렉토리의 파일 구조를 파악하세요.',
       `2. 아래 완료 기준과 관련된 파일을 직접 읽어서 구현 여부를 확인하세요.`,
       '3. 각 완료 기준이 충족되었는지 하나씩 검토하세요.',
-      '4. 검토 완료 후 아래 JSON 형식으로만 결과를 반환하세요 (코드블록 없이).',
+      '4. 검토 완료 후 반드시 아래 JSON 형식으로만 최종 응답을 작성하세요.',
       '',
-      '[반환 형식]',
-      '{"score":0~100,"passed":true또는false,"issues":["미충족 기준이나 문제점"],"suggestions":"다음 라운드를 위한 구체적 개선 방향","summary":"한줄요약"}',
-      '⚠️ passed=true 조건: 모든 완료 기준이 100% 구현되어 있고, issues 배열이 완전히 비어 있으며, score >= 80인 경우에만 true로 설정하세요.',
-      '하나라도 미구현·부분 구현·미확인 항목이 있으면 passed=false이고 해당 항목을 issues에 명시하세요.',
+      '[⚠️ 매우 중요 — 최종 응답 형식]',
+      '응답의 마지막 부분에 반드시 아래 형식의 JSON을 그대로 출력하세요 (코드블록, 설명 없이):',
+      '{"score":85,"passed":true,"issues":[],"suggestions":"개선 방향","summary":"한줄요약"}',
+      '',
+      '규칙:',
+      '- passed=true 조건: 모든 완료 기준이 구현되어 있고 score >= 80',
+      '- 모든 기준이 충족되면 issues는 반드시 빈 배열 [] (충족된 항목을 issues에 넣지 말 것)',
+      '- 미구현·부분 구현 항목만 issues에 문자열로 명시',
+      '- score는 0~100 사이 정수',
       '',
       '[평가 대상]',
       `작업: ${plan.title}`,
@@ -351,7 +387,55 @@ export class AgentRunner extends EventEmitter {
     try { return parseJson(output); }
     catch (e) {
       console.error(`[eval] JSON 파싱 실패: ${e.message}\n출력(500자): ${output.substring(0, 500)}`);
-      return { score: 50, passed: false, issues: ['평가 파싱 실패'], suggestions: output.substring(0, 500) };
+      // 텍스트에서 score/passed 값을 정규식으로 추출 시도
+      const scoreMatch = output.match(/"score"\s*:\s*(\d+)/);
+      const passedMatch = output.match(/"passed"\s*:\s*(true|false)/);
+      const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
+      const passed = passedMatch ? passedMatch[1] === 'true' : false;
+
+      // issues 배열: 깊이 추적으로 첫 번째 완결된 배열을 추출
+      let issues = null; // null = 파싱 미시도 또는 실패
+      let issuesParseFailed = false;
+      const issuesKeyIdx = output.indexOf('"issues"');
+      if (issuesKeyIdx !== -1) {
+        const arrStart = output.indexOf('[', issuesKeyIdx);
+        if (arrStart !== -1) {
+          let depth = 0, inStr = false, esc = false, arrEnd = -1;
+          for (let i = arrStart; i < output.length; i++) {
+            const ch = output[i];
+            if (esc) { esc = false; continue; }
+            if (ch === '\\' && inStr) { esc = true; continue; }
+            if (ch === '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (ch === '[') depth++;
+            else if (ch === ']') { depth--; if (depth === 0) { arrEnd = i; break; } }
+          }
+          if (arrEnd !== -1) {
+            try { issues = JSON.parse(output.slice(arrStart, arrEnd + 1)); }
+            catch { issuesParseFailed = true; }
+          } else {
+            issuesParseFailed = true;
+          }
+        } else {
+          issuesParseFailed = true;
+        }
+      }
+
+      // passed=true이면서 issues 파싱 실패 → 빈 배열로 보정 (합격 판정 보호)
+      if (issues === null) {
+        if (passed) {
+          issues = [];
+        } else {
+          issues = issuesParseFailed ? ['평가 파싱 실패'] : [];
+        }
+      }
+
+      // suggestions/summary: 멀티라인 문자열을 처리하기 위해 s 플래그 사용
+      const suggestionsMatch = output.match(/"suggestions"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
+      const summaryMatch = output.match(/"summary"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
+      const suggestions = suggestionsMatch ? suggestionsMatch[1] : output.substring(0, 500);
+      const summary = summaryMatch ? summaryMatch[1] : '';
+      return { score, passed, issues, suggestions, summary };
     }
   }
 
