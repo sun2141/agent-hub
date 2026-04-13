@@ -141,7 +141,7 @@ export class AgentRunner extends EventEmitter {
         const complexity = featureCount + criteriaCount;
         let adjustedRounds = task.max_rounds;
         if (complexity >= 10) adjustedRounds = Math.max(task.max_rounds, MAX_ROUNDS);
-        else if (complexity >= 6) adjustedRounds = Math.max(task.max_rounds, Math.ceil(MAX_ROUNDS * 0.8));
+        else if (complexity >= 6) adjustedRounds = Math.max(task.max_rounds, MAX_ROUNDS);
         if (adjustedRounds !== task.max_rounds) {
           console.log(`[pipeline] 복잡도(${complexity}) 기반 max_rounds 조정: ${task.max_rounds} → ${adjustedRounds}`);
           await taskQueries.updateStatus(taskId, PHASE.PLAN, { max_rounds: adjustedRounds });
