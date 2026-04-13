@@ -84,13 +84,19 @@ export class AgentRunner extends EventEmitter {
     return resolved;
   }
 
-  async run({ projectId, prompt, maxRounds = MAX_ROUNDS }) {
+  async run({ projectId, prompt, maxRounds }) {
     const project = await projectQueries.get(projectId);
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
     this._validateProjectPath(project.path);
 
+    // maxRounds는 MAX_ROUNDS 이상으로 보장 (외부 입력으로 하향 불가)
+    const effectiveMaxRounds = Math.max(
+      typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : MAX_ROUNDS,
+      MAX_ROUNDS
+    );
+
     const taskId = `task_${Date.now()}_${randomUUID().slice(0, 6)}`;
-    await taskQueries.create({ id: taskId, project_id: projectId, prompt, max_rounds: maxRounds });
+    await taskQueries.create({ id: taskId, project_id: projectId, prompt, max_rounds: effectiveMaxRounds });
     this.emit('task:created', { taskId, projectId });
 
     if (this._running.size >= MAX_CONCURRENT) {
@@ -133,21 +139,6 @@ export class AgentRunner extends EventEmitter {
     try {
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd);
-
-      // 작업 복잡도에 따라 max_rounds 동적 조정 (플래닝 후 한 번만)
-      if (!task.plan) {
-        const featureCount = (plan.features || []).length;
-        const criteriaCount = (plan.acceptance_criteria || []).length;
-        const complexity = featureCount + criteriaCount;
-        let adjustedRounds = task.max_rounds;
-        if (complexity >= 10) adjustedRounds = Math.max(task.max_rounds, MAX_ROUNDS);
-        else if (complexity >= 6) adjustedRounds = Math.max(task.max_rounds, MAX_ROUNDS);
-        if (adjustedRounds !== task.max_rounds) {
-          console.log(`[pipeline] 복잡도(${complexity}) 기반 max_rounds 조정: ${task.max_rounds} → ${adjustedRounds}`);
-          await taskQueries.updateStatus(taskId, PHASE.PLAN, { max_rounds: adjustedRounds });
-          task = await taskQueries.get(taskId);
-        }
-      }
 
       let round = task.round || 0;
       let evalResult = null;

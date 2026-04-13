@@ -228,14 +228,15 @@ export function createApiServer(agentRunner) {
     if (!validateString(prompt, 2000)) {
       return res.status(400).json({ error: 'prompt: 1~2000자 문자열 필요' });
     }
+    let parsedMaxRounds;
     if (maxRounds !== undefined) {
-      const r = parseInt(maxRounds, 10);
-      if (isNaN(r) || r < 1 || r > 20) {
+      parsedMaxRounds = parseInt(maxRounds, 10);
+      if (isNaN(parsedMaxRounds) || parsedMaxRounds < 1 || parsedMaxRounds > 20) {
         return res.status(400).json({ error: 'maxRounds: 1~20 사이 정수' });
       }
     }
     try {
-      const taskId = await agentRunner.run({ projectId, prompt, maxRounds });
+      const taskId = await agentRunner.run({ projectId, prompt, maxRounds: parsedMaxRounds });
       res.json({ taskId, status: 'started' });
     } catch (err) {
       res.status(400).json({ error: err.message });

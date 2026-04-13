@@ -62,11 +62,12 @@ export function createTelegramBot(agentRunner) {
       '<b>🤖 하네스 명령어</b>\n\n' +
       '/status — 시스템 상태\n' +
       '/projects — 프로젝트 목록\n' +
-      '/run &lt;project&gt; &lt;작업내용&gt; — 파이프라인 시작\n' +
+      '/run &lt;project&gt; [rounds:N] &lt;작업내용&gt; — 파이프라인 시작\n' +
       '/resume &lt;taskId&gt; — 일시정지 재개\n' +
       '/stop &lt;taskId&gt; — 작업 중지\n' +
       '/tasks — 최근 작업 이력\n\n' +
-      '<b>파이프라인:</b> 📋 Plan → 🔨 Build → 🔍 Eval → ✅'
+      '<b>파이프라인:</b> 📋 Plan → 🔨 Build → 🔍 Eval → ✅\n\n' +
+      '<b>rounds 예시:</b> /run facepick rounds:15 얼굴 인식 개선'
     );
   });
 
@@ -88,8 +89,8 @@ export function createTelegramBot(agentRunner) {
     notify(msg);
   });
 
-  onCommand(/\/projects/, () => {
-    const list = projectQueries.list();
+  onCommand(/\/projects/, async () => {
+    const list = await projectQueries.list();
     const msg = '<b>📁 프로젝트 목록</b>\n\n' +
       list.map(p =>
         `• <b>${p.name}</b> (<code>${p.id}</code>)\n` +
@@ -98,11 +99,10 @@ export function createTelegramBot(agentRunner) {
     notify(msg);
   });
 
-  // /run <projectId> <prompt>
+  // /run <projectId> [rounds:N] <prompt>
   onCommand(/\/run (.+)/, async (msg, match) => {
     const parts = match[1].trim().split(' ');
     const projectId = parts[0];
-    const prompt = parts.slice(1).join(' ');
 
     // projectId 형식 검증
     if (!/^[a-z0-9-]{1,50}$/.test(projectId)) {
@@ -110,20 +110,33 @@ export function createTelegramBot(agentRunner) {
       return;
     }
 
+    // 두 번째 토큰이 rounds:N 형식인지 확인
+    let maxRounds;
+    let promptStartIdx = 1;
+    if (parts.length > 1 && /^rounds:\d+$/i.test(parts[1])) {
+      const n = parseInt(parts[1].split(':')[1], 10);
+      if (!isNaN(n) && n >= 1 && n <= 20) {
+        maxRounds = n;
+      }
+      promptStartIdx = 2;
+    }
+
+    const prompt = parts.slice(promptStartIdx).join(' ');
+
     // prompt 길이 제한
     if (!prompt || prompt.length > 1000) {
-      notify('사용법: /run &lt;projectId&gt; &lt;작업내용(1000자 이하)&gt;\n예: /run palmoni 기도 목록 페이지 추가');
+      notify('사용법: /run &lt;projectId&gt; [rounds:N] &lt;작업내용(1000자 이하)&gt;\n예: /run palmoni 기도 목록 페이지 추가\n예: /run facepick rounds:15 얼굴 인식 개선');
       return;
     }
 
-    const project = projectQueries.get(projectId);
+    const project = await projectQueries.get(projectId);
     if (!project) {
       notify(`❌ 프로젝트 없음: <code>${projectId}</code>\n/projects 로 목록 확인`);
       return;
     }
 
     try {
-      const taskId = await agentRunner.run({ projectId, prompt });
+      const taskId = await agentRunner.run({ projectId, prompt, maxRounds });
       notify(
         `📋 <b>파이프라인 시작</b>\n\n` +
         `ID: <code>${taskId}</code>\n` +
@@ -165,8 +178,8 @@ export function createTelegramBot(agentRunner) {
     }
   });
 
-  onCommand(/\/tasks/, () => {
-    const list = taskQueries.list(10);
+  onCommand(/\/tasks/, async () => {
+    const list = await taskQueries.list(10);
     if (!list.length) { notify('최근 작업 없음'); return; }
 
     const msg = '<b>📋 최근 작업</b>\n\n' +
