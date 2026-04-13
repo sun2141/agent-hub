@@ -258,45 +258,89 @@ export class AgentRunner extends EventEmitter {
   async _runCommitAndDeploy(task, project, plan, round, safeCwd) {
     this.emit('phase:start', { taskId: task.id, phase: 'deploying', round });
 
-    // ── 1. git commit (harness/ 경로 한정) ──────────────────
+    const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
+
+    // ── 1a. harness git 저장소에 harness/ 변경사항 커밋 ─────
+    // harness/ 절대 경로를 realpath로 확정 (symlink/상대경로 오류 방지)
+    const harnessAbsPath = fs.realpathSync(path.resolve(__dirname, '../..'));
     let commitSha = null;
     try {
-      const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
-      // harness/ 디렉토리 기준으로 git 루트 확인 (safeCwd가 별도 repo여도 harness repo 기준 유지)
-      const gitRoot = execSync('git rev-parse --show-toplevel', {
-        cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 10_000,
+      const harnessGitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000,
       }).trim();
-      // harness/ 경로는 gitRoot 기준으로 계산
-      const harnessRelPath = path.relative(gitRoot, path.resolve(__dirname, '../..'));
-      const projectRelPath = path.relative(gitRoot, safeCwd);
-      // 스테이징 대상: harness/ + 프로젝트 경로 (git 루트 외부 경로 제외)
-      // projectRelPath가 '..'으로 시작하면 별도 repo이므로 harness만 스테이징
-      const stagePaths = [...new Set([harnessRelPath, projectRelPath])]
-        .filter(p => p && !p.startsWith('..')) // git 루트 외부 경로 제외
-        .map(p => JSON.stringify(p))
-        .join(' ');
-      if (!stagePaths) {
-        throw new Error(`stagePaths가 비어있음 — gitRoot: ${gitRoot}, harnessRelPath: ${harnessRelPath}, projectRelPath: ${projectRelPath}`);
+      // harness/ 경로는 harnessGitRoot 기준 상대경로로 계산
+      const harnessRelPath = path.relative(harnessGitRoot, harnessAbsPath);
+      if (harnessRelPath.startsWith('..')) {
+        throw new Error(`harnessAbsPath(${harnessAbsPath})가 gitRoot(${harnessGitRoot}) 외부에 있음`);
       }
-      execSync(`git add -- ${stagePaths}`, {
-        cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+      execSync(`git add -- ${JSON.stringify(harnessRelPath)}`, {
+        cwd: harnessGitRoot, encoding: 'utf8', timeout: 15_000,
       });
       execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
-        cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+        cwd: harnessGitRoot, encoding: 'utf8', timeout: 15_000,
       });
       commitSha = execSync('git rev-parse HEAD', {
-        cwd: gitRoot, encoding: 'utf8', timeout: 5_000,
+        cwd: harnessGitRoot, encoding: 'utf8', timeout: 5_000,
       }).trim();
       await taskQueries.updateCommit(task.id, commitSha);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit] ${commitSha}` });
-      console.log(`[deploy] commit 완료: ${commitSha}`);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit harness] ${commitSha}` });
+      console.log(`[deploy] harness commit 완료: ${commitSha}`);
     } catch (err) {
       const msg = err.stderr?.toString().trim() || err.message;
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit 실패] ${msg.substring(0, 500)}` });
-      console.error(`[deploy] commit 실패 — deploy 건너뜀: ${msg}`);
-      await taskQueries.updateDeploy(task.id, 'skipped:commit_failed');
-      this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
-      return;
+      // "nothing to commit" 은 정상 — harness 변경 없음으로 처리하고 계속 진행
+      if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
+        console.log('[deploy] harness: 커밋할 변경사항 없음 — 건너뜀');
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[commit harness] nothing to commit — skipped' });
+      } else {
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit harness 실패] ${msg.substring(0, 500)}` });
+        console.error(`[deploy] harness commit 실패 — deploy 건너뜀: ${msg}`);
+        await taskQueries.updateDeploy(task.id, 'skipped:commit_failed');
+        this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+        return;
+      }
+    }
+
+    // ── 1b. 외부 프로젝트가 별도 git 저장소인 경우 해당 저장소에 커밋 ──
+    // safeCwd가 harnessAbsPath와 다른 경우에만 외부 프로젝트 커밋 시도
+    const safeCwdReal = fs.existsSync(safeCwd) ? fs.realpathSync(safeCwd) : safeCwd;
+    if (safeCwdReal !== harnessAbsPath && !safeCwdReal.startsWith(harnessAbsPath + path.sep)) {
+      try {
+        const projectGitRoot = execSync('git rev-parse --show-toplevel', {
+          cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000,
+        }).trim();
+        const projectRelPath = path.relative(projectGitRoot, safeCwdReal);
+        // 프로젝트 경로가 해당 git 루트 내부인지 확인 (안전 검사)
+        const stageTarget = projectRelPath === '' ? '.' : projectRelPath;
+        if (!stageTarget.startsWith('..')) {
+          execSync(`git add -- ${JSON.stringify(stageTarget)}`, {
+            cwd: projectGitRoot, encoding: 'utf8', timeout: 15_000,
+          });
+          execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
+            cwd: projectGitRoot, encoding: 'utf8', timeout: 15_000,
+          });
+          const projectCommitSha = execSync('git rev-parse HEAD', {
+            cwd: projectGitRoot, encoding: 'utf8', timeout: 5_000,
+          }).trim();
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit project] ${projectCommitSha}` });
+          console.log(`[deploy] project commit 완료: ${projectCommitSha}`);
+          // harness 커밋이 없었으면 프로젝트 커밋 SHA로 대체
+          if (!commitSha) {
+            commitSha = projectCommitSha;
+            await taskQueries.updateCommit(task.id, commitSha);
+          }
+        }
+      } catch (err) {
+        const msg = err.stderr?.toString().trim() || err.message;
+        if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
+          console.log('[deploy] project: 커밋할 변경사항 없음 — 건너뜀');
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[commit project] nothing to commit — skipped' });
+        } else if (msg.includes('not a git repository')) {
+          console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
+        } else {
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit project 실패] ${msg.substring(0, 500)}` });
+          console.error(`[deploy] project commit 실패 (계속): ${msg}`);
+        }
+      }
     }
 
     // ── 2. deploy (커밋 성공 이후에만 실행) ─────────────────
@@ -370,7 +414,8 @@ export class AgentRunner extends EventEmitter {
       '4. 검토 완료 후 반드시 아래 JSON 형식으로만 최종 응답을 작성하세요.',
       '',
       '[⚠️ 매우 중요 — 최종 응답 형식]',
-      '응답의 마지막 부분에 반드시 아래 형식의 JSON을 그대로 출력하세요 (코드블록, 설명 없이):',
+      '모든 분석이 끝나면 응답의 맨 마지막 줄에 반드시 아래 형식의 JSON 한 줄만 출력하세요.',
+      '코드블록(```), 설명 텍스트, 줄바꿈 없이 JSON 객체만 그대로 출력하세요:',
       '{"score":85,"passed":true,"issues":[],"suggestions":"개선 방향","summary":"한줄요약"}',
       '',
       '규칙:',
@@ -378,6 +423,7 @@ export class AgentRunner extends EventEmitter {
       '- 모든 기준이 충족되면 issues는 반드시 빈 배열 [] (충족된 항목을 issues에 넣지 말 것)',
       '- 미구현·부분 구현 항목만 issues에 문자열로 명시',
       '- score는 0~100 사이 정수',
+      '- 반드시 score, passed, issues, suggestions, summary 필드를 모두 포함할 것',
       '',
       '[평가 대상]',
       `작업: ${plan.title}`,
@@ -428,20 +474,28 @@ export class AgentRunner extends EventEmitter {
         issuesParseFailed = true;
       }
 
-      // passed=true이면서 issues 파싱 실패 → 빈 배열로 보정 (합격 판정 보호)
-      if (issues === null) {
-        if (passed) {
-          issues = [];
-        } else {
-          issues = issuesParseFailed ? ['평가 파싱 실패'] : [];
-        }
-      }
-
       // suggestions/summary: 멀티라인 문자열을 처리하기 위해 s 플래그 사용
       const suggestionsMatch = output.match(/"suggestions"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
       const summaryMatch = output.match(/"summary"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
       const suggestions = suggestionsMatch ? suggestionsMatch[1] : output.substring(0, 500);
       const summary = summaryMatch ? summaryMatch[1] : '';
+
+      // passed=true이면서 issues 파싱 실패 → 빈 배열로 보정 (합격 판정 보호)
+      // passed=false이면서 issues 파싱 실패 → suggestions 텍스트를 issue로 사용
+      if (issues === null) {
+        if (passed) {
+          issues = [];
+        } else if (issuesParseFailed) {
+          // suggestions에서 의미있는 정보 추출, 없으면 출력 앞부분 사용
+          const fallbackText = suggestions && suggestions !== output.substring(0, 500)
+            ? suggestions.substring(0, 200)
+            : output.replace(/```[\s\S]*?```/g, '').trim().substring(0, 200);
+          issues = [fallbackText || '평가 파싱 실패'];
+        } else {
+          issues = [];
+        }
+      }
+
       return { score, passed, issues, suggestions, summary };
     }
   }
