@@ -262,18 +262,22 @@ export class AgentRunner extends EventEmitter {
     let commitSha = null;
     try {
       const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
-      // harness/ 디렉토리 기준 git 루트 확인
+      // harness/ 디렉토리 기준으로 git 루트 확인 (safeCwd가 별도 repo여도 harness repo 기준 유지)
       const gitRoot = execSync('git rev-parse --show-toplevel', {
-        cwd: safeCwd, encoding: 'utf8', timeout: 10_000,
+        cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 10_000,
       }).trim();
-      // harness/ 경로 및 프로젝트(safeCwd) 경로 모두 스테이징
+      // harness/ 경로는 gitRoot 기준으로 계산
       const harnessRelPath = path.relative(gitRoot, path.resolve(__dirname, '../..'));
       const projectRelPath = path.relative(gitRoot, safeCwd);
-      // 스테이징 대상: harness/ + 프로젝트 경로 (중복 없도록 Set 활용)
+      // 스테이징 대상: harness/ + 프로젝트 경로 (git 루트 외부 경로 제외)
+      // projectRelPath가 '..'으로 시작하면 별도 repo이므로 harness만 스테이징
       const stagePaths = [...new Set([harnessRelPath, projectRelPath])]
         .filter(p => p && !p.startsWith('..')) // git 루트 외부 경로 제외
         .map(p => JSON.stringify(p))
         .join(' ');
+      if (!stagePaths) {
+        throw new Error(`stagePaths가 비어있음 — gitRoot: ${gitRoot}, harnessRelPath: ${harnessRelPath}, projectRelPath: ${projectRelPath}`);
+      }
       execSync(`git add -- ${stagePaths}`, {
         cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
       });
@@ -419,6 +423,9 @@ export class AgentRunner extends EventEmitter {
         } else {
           issuesParseFailed = true;
         }
+      } else {
+        // issues 키 자체가 출력에 없는 경우도 파싱 실패로 처리
+        issuesParseFailed = true;
       }
 
       // passed=true이면서 issues 파싱 실패 → 빈 배열로 보정 (합격 판정 보호)
