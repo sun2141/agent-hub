@@ -3,6 +3,7 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import { projectQueries, taskQueries } from '../db/db.js';
+import { spawnDetached } from './deploy_worker.js';
 
 const PHASE_EMOJI = {
   planning:   '📋',
@@ -65,7 +66,8 @@ export function createTelegramBot(agentRunner) {
       '/run &lt;project&gt; [rounds:N] &lt;작업내용&gt; — 파이프라인 시작\n' +
       '/resume &lt;taskId&gt; — 일시정지 재개\n' +
       '/stop &lt;taskId&gt; — 작업 중지\n' +
-      '/tasks — 최근 작업 이력\n\n' +
+      '/tasks — 최근 작업 이력\n' +
+      '/deploy — git push + harness 재시작 (분리 프로세스)\n\n' +
       '<b>파이프라인:</b> 📋 Plan → 🔨 Build → 🔍 Eval → ✅\n\n' +
       '<b>rounds 예시:</b> /run facepick rounds:15 얼굴 인식 개선'
     );
@@ -188,6 +190,31 @@ export function createTelegramBot(agentRunner) {
         `   ${t.project_name} | ${t.prompt.substring(0, 40)}...`
       ).join('\n\n');
     notify(msg);
+  });
+
+  // /deploy — 별도 자식 프로세스로 git push + 하네스 재시작
+  // self-kill 방지: harness 자신을 직접 재시작하지 않고 분리된 프로세스가 처리
+  onCommand(/\/deploy(?:\s+(.+))?/, async (msg, match) => {
+    const targetArg = match[1]?.trim() || '';
+
+    // 인자 검증: 빈 값 또는 'harness' 키워드만 허용
+    if (targetArg && !/^[a-z0-9-]{0,30}$/.test(targetArg)) {
+      notify('❌ 잘못된 인자. 예: /deploy 또는 /deploy harness');
+      return;
+    }
+
+    notify('🔄 <b>배포 시작</b>\n\ngit push + harness 재시작 중...');
+
+    try {
+      const logPath = await spawnDetached();
+      notify(
+        `✅ <b>배포 프로세스 시작됨</b>\n\n` +
+        `로그: <code>${logPath}</code>\n` +
+        `약 10초 후 하네스가 재시작됩니다.`
+      );
+    } catch (err) {
+      notify(`❌ 배포 실패: ${err.message.substring(0, 200)}`);
+    }
   });
 
   // ── 에이전트 이벤트 → 텔레그램 알림 ──────────────────────

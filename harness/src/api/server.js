@@ -7,7 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries } from '../db/db.js';
 import crypto from 'crypto';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
@@ -291,6 +291,51 @@ export function createApiServer(agentRunner) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ── 웹훅 배포 트리거 ──────────────────────────────────────
+  // POST /api/deploy — git push + harness 재시작을 분리 프로세스로 실행
+  // self-kill 방지: detached 자식 프로세스가 harness 재시작을 처리
+  app.post('/api/deploy', (req, res) => {
+    const harnessRoot = path.resolve(__dirname, '../..');
+    const scriptPath = path.join(harnessRoot, 'scripts', 'deploy_detached.sh');
+
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(500).json({ error: 'deploy_detached.sh 스크립트 없음' });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const logDir = path.join(harnessRoot, 'logs');
+    try { fs.mkdirSync(logDir, { recursive: true }); } catch { /* 무시 */ }
+
+    const logPath = path.join(logDir, `deploy-${timestamp}.log`);
+
+    let logFd;
+    try {
+      logFd = fs.openSync(logPath, 'w');
+    } catch (err) {
+      return res.status(500).json({ error: `로그 파일 생성 실패: ${err.message}` });
+    }
+
+    const child = spawn('bash', [scriptPath], {
+      cwd: harnessRoot,
+      env: { ...process.env },
+      stdio: ['ignore', logFd, logFd],
+      detached: true,
+    });
+    child.unref();
+    fs.closeSync(logFd);
+
+    child.on('error', (err) => {
+      console.error('[/api/deploy] 배포 프로세스 시작 실패:', err.message);
+    });
+
+    res.json({
+      ok: true,
+      message: '배포 프로세스 시작됨 (분리 프로세스)',
+      logPath,
+      note: '약 10초 후 harness가 재시작됩니다',
+    });
   });
 
   // SPA fallback: 모든 API 라우트 등록 후 마지막에 위치해야 함

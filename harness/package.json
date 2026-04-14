@@ -6,6 +6,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:bg": "bash scripts/start.sh",
+    "stop": "bash scripts/start.sh stop",
+    "status": "bash scripts/start.sh status",
     "dev": "node --watch src/index.js",
     "tunnel": "bash scripts/tunnel.sh"
   },
