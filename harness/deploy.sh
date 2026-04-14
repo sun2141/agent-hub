@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 배포 방법 선택 (환경변수 DEPLOY_METHOD로 제어) ─────────────
-DEPLOY_METHOD="${DEPLOY_METHOD:-pm2}"
+DEPLOY_METHOD="${DEPLOY_METHOD:-none}"
 
 case "$DEPLOY_METHOD" in
   pm2)

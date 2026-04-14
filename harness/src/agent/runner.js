@@ -168,9 +168,12 @@ export class AgentRunner extends EventEmitter {
           console.log(`[pipeline] eval 합격 (score=${evalResult.score}, issues=${passedIssues.length}개) → commit/deploy 진행`);
           await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info',
             content: `[eval 합격] score=${evalResult.score}, issues=0, passed=true → commit/deploy 진행` });
-          await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
+          const deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
+          // deploy 실패 여부와 무관하게 DONE으로 기록하되, deploy_status는 이미 updateDeploy로 구분됨
+          // deploy_failed인 경우 task 완료 이벤트에 deployFailed 플래그 포함
+          const deployFailed = deployResult === 'deploy_failed';
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0 });
+          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
           break;
         }
 
@@ -277,17 +280,22 @@ export class AgentRunner extends EventEmitter {
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit harness] ${commitSha}` });
       console.log(`[deploy] harness commit 완료: ${commitSha}`);
     } catch (err) {
-      const msg = err.stderr?.toString().trim() || err.message;
+      const stderr = err.stderr?.toString().trim() || '';
+      const msg = stderr || err.message;
       // "nothing to commit" 은 정상 — harness 변경 없음으로 처리하고 계속 진행
       if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
         console.log('[deploy] harness: 커밋할 변경사항 없음 — 건너뜀');
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[commit harness] nothing to commit — skipped' });
       } else {
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit harness 실패] ${msg.substring(0, 500)}` });
-        console.error(`[deploy] harness commit 실패 — deploy 건너뜀: ${msg}`);
-        await taskQueries.updateDeploy(task.id, 'skipped:commit_failed');
-        this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
-        return;
+        // commit 실패 시 git status로 원인 파악 가능하도록 상세 로깅
+        let gitStatus = '';
+        try {
+          gitStatus = execSync('git status', { cwd: harnessAbsPath, encoding: 'utf8', timeout: 5_000 }).trim();
+        } catch { /* git status 실패는 무시 */ }
+        const fullMsg = [msg, gitStatus ? `\n[git status]\n${gitStatus}` : ''].join('');
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit harness 실패] ${fullMsg.substring(0, 1000)}` });
+        console.error(`[deploy] harness commit 실패 — deploy 계속 진행: ${msg}`);
+        // commit 실패해도 deploy는 계속 진행 (return 하지 않음)
       }
     }
 
@@ -334,16 +342,17 @@ export class AgentRunner extends EventEmitter {
       }
     }
 
-    // ── 2. deploy (커밋 성공 이후에만 실행) ─────────────────
-    const deployScript = _findDeployScript(safeCwd);
+    // ── 2. deploy (커밋 결과와 무관하게 항상 실행) ─────────────────
+    const deployScript = _findDeployScript(safeCwd, harnessAbsPath);
     if (!deployScript) {
       await taskQueries.updateDeploy(task.id, 'skipped:no_script');
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[deploy] 배포 스크립트 없음 — 건너뜀' });
       console.log('[deploy] 배포 스크립트 없음 — 건너뜀');
       this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
-      return;
+      return 'skipped:no_script';
     }
 
+    let deployFailed = false;
     try {
       const output = execSync(deployScript.cmd, {
         cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000,
@@ -356,9 +365,11 @@ export class AgentRunner extends EventEmitter {
       await taskQueries.updateDeploy(task.id, 'failed');
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy 실패] ${msg.substring(0, 500)}` });
       console.error(`[deploy] 배포 실패: ${msg}`);
+      deployFailed = true;
     }
 
     this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+    return deployFailed ? 'deploy_failed' : 'success';
   }
 
   _buildGeneratorPrompt(plan, round, maxRounds) {
@@ -601,37 +612,45 @@ export class AgentRunner extends EventEmitter {
 
 // ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────
 // 우선순위: deploy.sh → Makefile (deploy target) → pm2 ecosystem
-// cwd 기준으로 파일 존재 여부를 확인하여 실행 커맨드 반환
-function _findDeployScript(cwd) {
-  const deployShPath = path.join(cwd, 'deploy.sh');
-  if (fs.existsSync(deployShPath)) {
-    return { cmd: 'bash deploy.sh', cwd };
+// safeCwd 기준으로 먼저 탐색하고, 없으면 harnessAbsPath 기준으로도 탐색
+function _findDeployScript(cwd, harnessAbsPath) {
+  // safeCwd 기준 탐색 후, 없으면 harnessAbsPath 기준으로 재탐색
+  const searchDirs = [cwd];
+  if (harnessAbsPath && harnessAbsPath !== cwd) {
+    searchDirs.push(harnessAbsPath);
   }
 
-  const makefilePath = path.join(cwd, 'Makefile');
-  if (fs.existsSync(makefilePath)) {
-    try {
-      const content = fs.readFileSync(makefilePath, 'utf8');
-      if (/^deploy:/m.test(content)) {
-        return { cmd: 'make deploy', cwd };
-      }
-    } catch { /* 읽기 실패 시 무시 */ }
-  }
+  for (const dir of searchDirs) {
+    const deployShPath = path.join(dir, 'deploy.sh');
+    if (fs.existsSync(deployShPath)) {
+      return { cmd: 'bash deploy.sh', cwd: dir };
+    }
 
-  const ecosystemPath = path.join(cwd, 'ecosystem.config.js');
-  const ecosystem2Path = path.join(cwd, 'ecosystem.config.cjs');
-  if (fs.existsSync(ecosystemPath) || fs.existsSync(ecosystem2Path)) {
-    return { cmd: 'pm2 reload ecosystem.config.js --update-env', cwd };
-  }
+    const makefilePath = path.join(dir, 'Makefile');
+    if (fs.existsSync(makefilePath)) {
+      try {
+        const content = fs.readFileSync(makefilePath, 'utf8');
+        if (/^deploy:/m.test(content)) {
+          return { cmd: 'make deploy', cwd: dir };
+        }
+      } catch { /* 읽기 실패 시 무시 */ }
+    }
 
-  const pkgPath = path.join(cwd, 'package.json');
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-      if (pkg.scripts?.deploy) {
-        return { cmd: 'npm run deploy', cwd };
-      }
-    } catch { /* 파싱 실패 시 무시 */ }
+    const ecosystemPath = path.join(dir, 'ecosystem.config.js');
+    const ecosystem2Path = path.join(dir, 'ecosystem.config.cjs');
+    if (fs.existsSync(ecosystemPath) || fs.existsSync(ecosystem2Path)) {
+      return { cmd: 'pm2 reload ecosystem.config.js --update-env', cwd: dir };
+    }
+
+    const pkgPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (pkg.scripts?.deploy) {
+          return { cmd: 'npm run deploy', cwd: dir };
+        }
+      } catch { /* 파싱 실패 시 무시 */ }
+    }
   }
 
   return null;
