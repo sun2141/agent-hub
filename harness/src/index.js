@@ -119,6 +119,11 @@ async function main() {
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[Boot] API 서버 127.0.0.1:${PORT} (localhost only)`);
     console.log(`[Boot] WebSocket ws://127.0.0.1:${PORT}/ws`);
+    console.log('');
+    console.log('  대시보드 외부 접근을 위해 SSH 터널을 시작하세요:');
+    console.log('    npm run tunnel');
+    console.log('  접속 주소: http://91.99.58.70:9090');
+    console.log('');
   });
 
   // 4. Telegram 봇
