@@ -220,8 +220,16 @@ export class AgentRunner extends EventEmitter {
     const output = await this._claudeRun({ taskId: task.id, phase: 'plan', round: 0, cwd: safeCwd, prompt });
 
     let plan;
-    try { plan = parseJson(output); }
-    catch { plan = { title: task.prompt, summary: output, features: [], acceptance_criteria: [] }; }
+    try {
+      plan = parseJson(output);
+      // 누락 필드 보정: title/summary가 없는 경우 task.prompt로 대체
+      if (!plan.title) plan.title = task.prompt.slice(0, 100);
+      if (!plan.summary) plan.summary = plan.title;
+      if (!Array.isArray(plan.features)) plan.features = [];
+      if (!Array.isArray(plan.acceptance_criteria)) plan.acceptance_criteria = [];
+    } catch {
+      plan = { title: task.prompt.slice(0, 100), summary: output.slice(0, 200), features: [], acceptance_criteria: [] };
+    }
 
     await taskQueries.updateStatus(task.id, PHASE.PLAN, { plan: JSON.stringify(plan) });
     this.emit('phase:complete', { taskId: task.id, phase: PHASE.PLAN, round: 0 });
@@ -374,7 +382,7 @@ export class AgentRunner extends EventEmitter {
 
   _buildGeneratorPrompt(plan, round, maxRounds) {
     return ['다음 계획에 따라 코드를 구현하세요.',
-      `## 작업\n${plan.title}`, `## 요약\n${plan.summary}`,
+      `## 작업\n${plan.title || plan.summary || '(제목 없음)'}`, `## 요약\n${plan.summary || plan.title || ''}`,
       `## 기능\n${(plan.features||[]).map((f,i)=>`${i+1}. ${f}`).join('\n')}`,
       `## 완료 기준\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
       `## 주의사항\n${plan.tech_notes||'없음'}`,
@@ -392,8 +400,8 @@ export class AgentRunner extends EventEmitter {
       : '없음';
     return [
       `이전 구현에 문제가 있습니다. Round ${round}/${maxRounds} 재시도합니다. (남은 라운드: ${remaining})`,
-      `## 원래 작업\n${plan.title}`,
-      `## 요약\n${plan.summary || ''}`,
+      `## 원래 작업\n${plan.title || plan.summary || '(제목 없음)'}`,
+      `## 요약\n${plan.summary || plan.title || ''}`,
       `## 완료 기준\n${(plan.acceptance_criteria || []).map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
       `## 평가 결과 (Round ${round - 1})\n점수: ${prevEval?.score ?? '?'}/100`,
       `## 반드시 해결해야 할 미충족 항목 (${issuesList.length}개)\n${issuesText}`,
@@ -428,8 +436,8 @@ export class AgentRunner extends EventEmitter {
       '- 반드시 score, passed, issues, suggestions, summary 필드를 모두 포함할 것',
       '',
       '[평가 대상]',
-      `작업: ${plan.title}`,
-      `요약: ${plan.summary}`,
+      `작업: ${plan.title || plan.summary || '(제목 없음)'}`,
+      `요약: ${plan.summary || plan.title || ''}`,
       '',
       `[완료 기준 — 각 항목의 충족 여부를 파일에서 직접 확인하세요]`,
       criteria,
