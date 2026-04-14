@@ -2,6 +2,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { useHarness } from './hooks/useHarness'
 
+// ── 진동 피드백 (iOS Safari 미지원 → try-catch) ──────────
+function vibrate(pattern = 10) {
+  try { navigator.vibrate?.(pattern) } catch {}
+}
+
 // ── 상수 ──────────────────────────────────────────────────
 const PHASE = {
   pending:    { icon: '○', label: '대기',     color: '#585870' },
@@ -53,8 +58,10 @@ function StatusBar({ status, connected, onRefresh }) {
           }}>{running.length}개 실행 중</span>
         )}
       </div>
-      <button onClick={onRefresh} style={{
-        background: 'none', border: 'none', color: 'var(--text3)', fontSize: 16, padding: 4,
+      <button onClick={() => { vibrate(); onRefresh() }} style={{
+        background: 'none', border: 'none', color: 'var(--text3)', fontSize: 20,
+        minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        borderRadius: 10, WebkitTapHighlightColor: 'transparent',
       }}>↻</button>
     </div>
   )
@@ -75,11 +82,12 @@ function ProjectCard({ project, tasks, running, onClick }) {
   const isInfra = INFRA_IDS.includes(project.id)
 
   return (
-    <button onClick={onClick} style={{
+    <button onClick={() => { vibrate(); onClick() }} style={{
       display: 'flex', alignItems: 'center', gap: 12,
-      padding: '12px 14px', background: 'var(--bg2)',
+      padding: '14px 16px', background: 'var(--bg2)',
       border: '1px solid var(--border)', borderRadius: 12,
-      textAlign: 'left', width: '100%',
+      textAlign: 'left', width: '100%', minHeight: 64,
+      WebkitTapHighlightColor: 'transparent', transition: 'opacity 0.1s, transform 0.1s',
     }}>
       <div style={{
         width: 40, height: 40, borderRadius: 10, flexShrink: 0,
@@ -203,8 +211,10 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0,
       }}>
-        <button onClick={onBack} style={{
-          background: 'none', border: 'none', color: 'var(--text3)', fontSize: 22, lineHeight: 1, padding: 0,
+        <button onClick={() => { vibrate(); onBack() }} style={{
+          background: 'none', border: 'none', color: 'var(--text3)', fontSize: 26, lineHeight: 1,
+          minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          borderRadius: 10, marginLeft: -8, WebkitTapHighlightColor: 'transparent',
         }}>‹</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700 }}>{project.name}</div>
@@ -217,28 +227,31 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             <span style={{ fontSize: 12, color: 'var(--blue)' }}>
               {PHASE[activeRun.phase]?.label} R{activeRun.round}
             </span>
-            <button onClick={() => onStop(activeRun.taskId)} style={{
+            <button onClick={() => { vibrate([10, 30, 10]); onStop(activeRun.taskId) }} style={{
               background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.3)',
-              color: 'var(--red)', borderRadius: 8, padding: '4px 10px', fontSize: 12,
+              color: 'var(--red)', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 600,
+              minHeight: 44, WebkitTapHighlightColor: 'transparent',
             }}>중지</button>
           </div>
         )}
 
         {!isRunning && pausedTask && (
-          <button onClick={() => onResume(pausedTask.id)} style={{
+          <button onClick={() => { vibrate(15); onResume(pausedTask.id) }} style={{
             background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)',
-            color: 'var(--orange)', borderRadius: 8, padding: '4px 10px', fontSize: 12,
+            color: 'var(--orange)', borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 600,
+            minHeight: 44, WebkitTapHighlightColor: 'transparent',
           }}>재개</button>
         )}
       </div>
 
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', padding: '0 16px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', padding: '0 8px', flexShrink: 0 }}>
         {[['tasks', '작업 이력'], ['logs', '실시간 로그']].map(([key, label]) => (
-          <button key={key} onClick={() => setTab(key)} style={{
-            background: 'none', border: 'none', padding: '10px 12px', fontSize: 13,
+          <button key={key} onClick={() => { vibrate(8); setTab(key) }} style={{
+            background: 'none', border: 'none', padding: '12px 16px', fontSize: 14,
             color: tab === key ? 'var(--text)' : 'var(--text3)',
             borderBottom: tab === key ? '2px solid var(--accent)' : '2px solid transparent',
             fontWeight: tab === key ? 600 : 400,
+            minHeight: 48, WebkitTapHighlightColor: 'transparent',
           }}>{label}</button>
         ))}
         {logs.length > 0 && tab !== 'logs' && (
@@ -332,19 +345,21 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             style={{
               flex: 1, background: isRunning ? 'var(--bg)' : 'var(--bg3)',
               border: '1px solid var(--border)', borderRadius: 10,
-              padding: '10px 12px', color: 'var(--text)',
-              fontSize: 13, resize: 'none', outline: 'none',
+              padding: '12px 14px', color: 'var(--text)',
+              fontSize: 16, resize: 'none', outline: 'none',
               opacity: isRunning ? 0.4 : 1,
             }}
           />
           <button
-            onClick={handleRun}
+            onClick={() => { vibrate(15); handleRun() }}
             disabled={!prompt.trim() || sending || isRunning}
             style={{
               background: (!prompt.trim() || sending || isRunning) ? 'rgba(107,94,248,0.1)' : 'var(--accent)',
               border: '1px solid ' + ((!prompt.trim() || sending || isRunning) ? 'var(--border)' : 'transparent'),
-              borderRadius: 10, padding: '0 18px', color: 'white', fontSize: 20,
+              borderRadius: 10, padding: '0 20px', color: 'white', fontSize: 22,
+              minWidth: 52, minHeight: 52,
               opacity: (!prompt.trim() || sending || isRunning) ? 0.3 : 1, transition: 'all 0.15s',
+              WebkitTapHighlightColor: 'transparent',
             }}
           >{sending ? '…' : '↑'}</button>
         </div>
@@ -479,9 +494,10 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
           )}
           <div>DB 등록: <span style={{ color: result.dbInserted ? 'var(--green)' : 'var(--red)' }}>{result.dbInserted ? '✓' : '×'}</span></div>
         </div>
-        <button onClick={onCancel} style={{
+        <button onClick={() => { vibrate(10); onCancel() }} style={{
           marginTop: 12, width: '100%', background: 'var(--accent)', border: 'none',
-          borderRadius: 8, padding: '9px', color: 'white', fontSize: 13, fontWeight: 600,
+          borderRadius: 8, padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+          minHeight: 52, WebkitTapHighlightColor: 'transparent',
         }}>닫기</button>
       </div>
     )
@@ -496,11 +512,12 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
       {/* 모드 탭 */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 2 }}>
         {[['create', '새 프로젝트 생성'], ['add', '기존 등록']].map(([m, label]) => (
-          <button key={m} onClick={() => setMode(m)} style={{
+          <button key={m} onClick={() => { vibrate(8); setMode(m) }} style={{
             flex: 1, background: mode === m ? 'rgba(107,94,248,0.2)' : 'none',
             border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
-            borderRadius: 8, padding: '6px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
-            fontSize: 12, fontWeight: mode === m ? 600 : 400,
+            borderRadius: 8, padding: '10px 6px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
+            fontSize: 13, fontWeight: mode === m ? 600 : 400,
+            minHeight: 44, WebkitTapHighlightColor: 'transparent',
           }}>{label}</button>
         ))}
       </div>
@@ -543,11 +560,11 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
           {form.githubRepo && (
             <div style={{ display: 'flex', gap: 6, paddingLeft: 22 }}>
               {[['private', '프라이빗'], ['public', '퍼블릭']].map(([val, label]) => (
-                <button key={val} onClick={() => setForm(f => ({ ...f, githubPrivate: val }))} style={{
+                <button key={val} onClick={() => { vibrate(8); setForm(f => ({ ...f, githubPrivate: val })) }} style={{
                   flex: 1, background: form.githubPrivate === val ? 'rgba(107,94,248,0.2)' : 'none',
                   border: '1px solid ' + (form.githubPrivate === val ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
-                  borderRadius: 7, padding: '5px', color: form.githubPrivate === val ? 'var(--accent2)' : 'var(--text3)',
-                  fontSize: 12,
+                  borderRadius: 7, padding: '9px 5px', color: form.githubPrivate === val ? 'var(--accent2)' : 'var(--text3)',
+                  fontSize: 13, minHeight: 44, WebkitTapHighlightColor: 'transparent',
                 }}>{label}</button>
               ))}
             </div>
@@ -558,18 +575,19 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
       {error && <div style={{ fontSize: 12, color: 'var(--red)' }}>{error}</div>}
 
       <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={handleSubmit} disabled={saving} style={{
+        <button onClick={() => { vibrate(15); handleSubmit() }} disabled={saving} style={{
           flex: 1, background: 'var(--accent)', border: 'none', borderRadius: 8,
-          padding: '9px', color: 'white', fontSize: 13, fontWeight: 600,
-          opacity: saving ? 0.5 : 1,
+          padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+          opacity: saving ? 0.5 : 1, minHeight: 52, WebkitTapHighlightColor: 'transparent',
         }}>{saving ? (
           mode === 'create' ? '생성 중…' : '등록 중…'
         ) : (
           mode === 'create' ? '프로젝트 생성' : '등록'
         )}</button>
-        <button onClick={onCancel} style={{
+        <button onClick={() => { vibrate(8); onCancel() }} style={{
           background: 'none', border: '1px solid var(--border)', borderRadius: 8,
-          padding: '9px 14px', color: 'var(--text3)', fontSize: 13,
+          padding: '13px 18px', color: 'var(--text3)', fontSize: 14,
+          minHeight: 52, WebkitTapHighlightColor: 'transparent',
         }}>취소</button>
       </div>
     </div>
@@ -692,7 +710,11 @@ export default function App() {
       ) : view === 'history' ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            <button onClick={() => setView('list')} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 22 }}>‹</button>
+            <button onClick={() => { vibrate(); setView('list') }} style={{
+              background: 'none', border: 'none', color: 'var(--text3)', fontSize: 26,
+              minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 10, marginLeft: -8, WebkitTapHighlightColor: 'transparent',
+            }}>‹</button>
             <span style={{ fontSize: 15, fontWeight: 700 }}>전체 작업 이력</span>
           </div>
           <TaskHistory tasks={tasks} projects={projects} />
@@ -714,11 +736,12 @@ export default function App() {
 
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', flex: 1 }}>프로젝트</div>
-            <button onClick={() => setShowAddForm(f => !f)} style={{
+            <button onClick={() => { vibrate(8); setShowAddForm(f => !f) }} style={{
               background: showAddForm ? 'rgba(107,94,248,0.2)' : 'none',
               border: '1px solid ' + (showAddForm ? 'rgba(107,94,248,0.4)' : 'var(--border)'),
-              borderRadius: 8, width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: showAddForm ? 'var(--accent2)' : 'var(--text3)', fontSize: 16, lineHeight: 1,
+              borderRadius: 8, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: showAddForm ? 'var(--accent2)' : 'var(--text3)', fontSize: 20, lineHeight: 1,
+              WebkitTapHighlightColor: 'transparent',
             }}>{showAddForm ? '×' : '+'}</button>
           </div>
           {showAddForm && (
@@ -728,7 +751,7 @@ export default function App() {
               onCancel={() => setShowAddForm(false)}
             />
           )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+          <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
             {productProjects.map(p => (
               <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
                 onClick={() => { setSelected(p); setView('detail') }} />
@@ -741,7 +764,7 @@ export default function App() {
           {infraProjects.length > 0 && (
             <>
               <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', marginBottom: 8, textTransform: 'uppercase' }}>인프라</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
+              <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
                 {infraProjects.map(p => (
                   <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
                     onClick={() => { setSelected(p); setView('detail') }} />
@@ -750,9 +773,10 @@ export default function App() {
             </>
           )}
 
-          <button onClick={() => setView('history')} style={{
+          <button onClick={() => { vibrate(8); setView('history') }} style={{
             width: '100%', background: 'none', border: '1px solid var(--border)',
-            borderRadius: 10, padding: '11px', color: 'var(--text3)', fontSize: 13,
+            borderRadius: 10, padding: '14px', color: 'var(--text3)', fontSize: 14,
+            minHeight: 52, WebkitTapHighlightColor: 'transparent',
           }}>전체 작업 이력 →</button>
         </div>
       )}
@@ -763,7 +787,35 @@ export default function App() {
           50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(96,165,250,0); }
         }
         * { -webkit-tap-highlight-color: transparent; }
-        button:active { opacity: 0.7; }
+
+        /* 모바일 버튼 active 피드백: 즉각적인 시각 변화 */
+        button:active {
+          opacity: 0.6;
+          transform: scale(0.96);
+          transition: opacity 0.05s, transform 0.05s !important;
+        }
+        button:not(:active) {
+          transition: opacity 0.15s, transform 0.15s;
+        }
+
+        /* 프로젝트 카드 active 시 배경색 변화 */
+        button[data-card]:active {
+          background: var(--bg3) !important;
+        }
+
+        /* 모바일 전용 스타일 */
+        @media (max-width: 480px) {
+          /* 프로젝트 목록 카드 간격 확대 */
+          .project-list { gap: 12px !important; }
+
+          /* textarea 모바일 최적화: 더 큰 폰트로 iOS 자동 확대 방지 */
+          textarea { font-size: 16px !important; }
+        }
+
+        /* 터치 디바이스에서 hover 효과 제거 (오터치 방지) */
+        @media (hover: none) {
+          button:hover { opacity: 1; }
+        }
       `}</style>
     </div>
   )
