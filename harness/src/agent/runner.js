@@ -302,20 +302,20 @@ export class AgentRunner extends EventEmitter {
         // git status로 변경사항 파악 (디버그)
         let statusOut = '';
         try {
-          statusOut = execSync('git status --short', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+          statusOut = execSync('git status --short', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
         } catch { /* 무시 */ }
         console.log(`[deploy] [${label}] git status:\n${statusOut || '(변경 없음)'}`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
           content: `[${label}] git status: ${statusOut || 'clean'}` });
 
         execSync(`git add -- ${JSON.stringify(stageTarget)}`, {
-          cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+          cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
         });
 
         // staged 내용 확인 (디버그)
         let stagedOut = '';
         try {
-          stagedOut = execSync('git diff --cached --name-only', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+          stagedOut = execSync('git diff --cached --name-only', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
         } catch { /* 무시 */ }
         console.log(`[deploy] [${label}] staged files: ${stagedOut || '(없음)'}`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
@@ -329,10 +329,10 @@ export class AgentRunner extends EventEmitter {
         }
 
         execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
-          cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+          cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
         });
         const sha = execSync('git rev-parse HEAD', {
-          cwd: gitRoot, encoding: 'utf8', timeout: 5_000,
+          cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
         }).trim();
         console.log(`[deploy] [${label}] commit 완료: ${sha}`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
@@ -340,7 +340,9 @@ export class AgentRunner extends EventEmitter {
         return sha;
       } catch (err) {
         const stderr = err.stderr?.toString().trim() || '';
-        const msg = stderr || err.message;
+        const stdout = err.stdout?.toString().trim() || '';
+        // nothing to commit 메시지는 stderr가 아닌 stdout에 있으므로 stdout도 확인
+        const msg = stderr || stdout || err.message;
         if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
           console.log(`[deploy] [${label}] 커밋할 변경사항 없음 — 건너뜀`);
           await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
@@ -350,7 +352,7 @@ export class AgentRunner extends EventEmitter {
         // 실패 시 git status로 원인 파악
         let gitStatus = '';
         try {
-          gitStatus = execSync('git status', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+          gitStatus = execSync('git status', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
         } catch { /* 무시 */ }
         const fullMsg = [msg, gitStatus ? `\n[git status]\n${gitStatus}` : ''].join('');
         console.error(`[deploy] [${label}] commit 실패: ${msg}`);
@@ -370,7 +372,7 @@ export class AgentRunner extends EventEmitter {
 
     try {
       harnessGitRoot = execSync('git rev-parse --show-toplevel', {
-        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000,
+        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
       }).trim();
     } catch (err) {
       console.error(`[deploy] harness git root 탐색 실패: ${err.message}`);
@@ -380,7 +382,7 @@ export class AgentRunner extends EventEmitter {
 
     try {
       projectGitRoot = execSync('git rev-parse --show-toplevel', {
-        cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000,
+        cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
       }).trim();
     } catch (err) {
       const msg = err.stderr?.toString().trim() || err.message;
