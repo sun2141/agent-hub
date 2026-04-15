@@ -136,6 +136,13 @@ export class AgentRunner extends EventEmitter {
     const project = await projectQueries.get(task.project_id);
     const safeCwd = this._validateProjectPath(project.path);
 
+    // 파이프라인 시작 시 _running에 초기 엔트리 등록 (concurrent 제한 및 stop 지원)
+    if (!this._running.has(taskId)) {
+      this._running.set(taskId, { process: null, phase: PHASE.PLAN, round: 0 });
+    }
+
+    console.log(`[pipeline] 시작: taskId=${taskId}, project=${project.name}(${project.path})`);
+
     try {
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd);
@@ -162,16 +169,29 @@ export class AgentRunner extends EventEmitter {
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
 
-        if (this._isEvalPassed(evalResult)) {
-          // eval 합격 — issues가 없음을 확인 로그
-          const passedIssues = Array.isArray(evalResult.issues) ? evalResult.issues : [];
-          console.log(`[pipeline] eval 합격 (score=${evalResult.score}, issues=${passedIssues.length}개) → commit/deploy 진행`);
+        const evalPassed = this._isEvalPassed(evalResult);
+        const passedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues : [];
+        console.log(`[pipeline] eval 결과: passed=${evalPassed}, score=${evalResult?.score ?? '?'}, issues=${passedIssues.length}개`);
+        await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info',
+          content: `[eval] passed=${evalPassed}, score=${evalResult?.score ?? '?'}, issues=${passedIssues.length}개` });
+
+        if (evalPassed) {
+          console.log(`[pipeline] eval 합격 → commit/deploy 진행`);
           await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info',
-            content: `[eval 합격] score=${evalResult.score}, issues=0, passed=true → commit/deploy 진행` });
-          const deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
+            content: `[eval 합격] score=${evalResult.score}, passed=true → commit/deploy 진행` });
+          let deployResult = 'skipped';
+          try {
+            deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
+          } catch (deployErr) {
+            // commit/deploy 에서 예외가 발생해도 task는 DONE으로 처리
+            console.error(`[pipeline] commit/deploy 예외 발생 (task는 DONE 처리): ${deployErr.message}`);
+            await logQueries.append({ task_id: taskId, phase: 'deploy', round, level: 'error',
+              content: `[commit/deploy 예외] ${deployErr.message.substring(0, 500)}` });
+            deployResult = 'deploy_failed';
+          }
           // deploy 실패 여부와 무관하게 DONE으로 기록하되, deploy_status는 이미 updateDeploy로 구분됨
-          // deploy_failed인 경우 task 완료 이벤트에 deployFailed 플래그 포함
           const deployFailed = deployResult === 'deploy_failed';
+          console.log(`[pipeline] 완료 처리: deployResult=${deployResult}, deployFailed=${deployFailed}`);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
           this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
           break;
@@ -180,6 +200,9 @@ export class AgentRunner extends EventEmitter {
         if (isLastRound) {
           // 최대 라운드 도달 — eval 불합격으로 종료 (커밋/배포 없음)
           const unresolvedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues.length : null;
+          console.log(`[pipeline] 최대 라운드(${round}/${currentTask.max_rounds}) 도달 — eval 불합격으로 종료. unresolvedIssues=${unresolvedIssues}`);
+          await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'warn',
+            content: `[eval 불합격] 최대 라운드 도달, unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
           await taskQueries.updateStatus(taskId, PHASE.DONE);
           this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: true, unresolvedIssues });
@@ -262,96 +285,163 @@ export class AgentRunner extends EventEmitter {
 
     const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
 
-    // ── 1a. harness git 저장소에 harness/ 변경사항 커밋 ─────
     // harness/ 절대 경로를 realpath로 확정 (symlink/상대경로 오류 방지)
     const harnessAbsPath = fs.realpathSync(path.resolve(__dirname, '../..'));
+    const safeCwdReal = fs.existsSync(safeCwd) ? fs.realpathSync(safeCwd) : safeCwd;
+
+    console.log(`[deploy] 커밋 시작 — task=${task.id}, round=${round}`);
+    console.log(`[deploy] harnessAbsPath=${harnessAbsPath}`);
+    console.log(`[deploy] safeCwdReal=${safeCwdReal}`);
+
     let commitSha = null;
-    try {
-      const harnessGitRoot = execSync('git rev-parse --show-toplevel', {
-        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000,
-      }).trim();
-      // harness/ 경로는 harnessGitRoot 기준 상대경로로 계산
-      const harnessRelPath = path.relative(harnessGitRoot, harnessAbsPath);
-      if (harnessRelPath.startsWith('..')) {
-        throw new Error(`harnessAbsPath(${harnessAbsPath})가 gitRoot(${harnessGitRoot}) 외부에 있음`);
-      }
-      execSync(`git add -- ${JSON.stringify(harnessRelPath)}`, {
-        cwd: harnessGitRoot, encoding: 'utf8', timeout: 15_000,
-      });
-      execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
-        cwd: harnessGitRoot, encoding: 'utf8', timeout: 15_000,
-      });
-      commitSha = execSync('git rev-parse HEAD', {
-        cwd: harnessGitRoot, encoding: 'utf8', timeout: 5_000,
-      }).trim();
-      await taskQueries.updateCommit(task.id, commitSha);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit harness] ${commitSha}` });
-      console.log(`[deploy] harness commit 완료: ${commitSha}`);
-    } catch (err) {
-      const stderr = err.stderr?.toString().trim() || '';
-      const msg = stderr || err.message;
-      // "nothing to commit" 은 정상 — harness 변경 없음으로 처리하고 계속 진행
-      if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
-        console.log('[deploy] harness: 커밋할 변경사항 없음 — 건너뜀');
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[commit harness] nothing to commit — skipped' });
-      } else {
-        // commit 실패 시 git status로 원인 파악 가능하도록 상세 로깅
+
+    // ── 커밋 헬퍼: 주어진 git root에서 stageTarget을 add 후 commit ──
+    const doCommit = async (label, gitRoot, stageTarget) => {
+      console.log(`[deploy] [${label}] git root=${gitRoot}, stageTarget=${stageTarget}`);
+      try {
+        // git status로 변경사항 파악 (디버그)
+        let statusOut = '';
+        try {
+          statusOut = execSync('git status --short', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+        } catch { /* 무시 */ }
+        console.log(`[deploy] [${label}] git status:\n${statusOut || '(변경 없음)'}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[${label}] git status: ${statusOut || 'clean'}` });
+
+        execSync(`git add -- ${JSON.stringify(stageTarget)}`, {
+          cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+        });
+
+        // staged 내용 확인 (디버그)
+        let stagedOut = '';
+        try {
+          stagedOut = execSync('git diff --cached --name-only', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+        } catch { /* 무시 */ }
+        console.log(`[deploy] [${label}] staged files: ${stagedOut || '(없음)'}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[${label}] staged: ${stagedOut || 'none'}` });
+
+        if (!stagedOut) {
+          console.log(`[deploy] [${label}] 스테이징된 변경사항 없음 — 커밋 건너뜀`);
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+            content: `[commit ${label}] nothing staged — skipped` });
+          return null;
+        }
+
+        execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
+          cwd: gitRoot, encoding: 'utf8', timeout: 15_000,
+        });
+        const sha = execSync('git rev-parse HEAD', {
+          cwd: gitRoot, encoding: 'utf8', timeout: 5_000,
+        }).trim();
+        console.log(`[deploy] [${label}] commit 완료: ${sha}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[commit ${label}] ${sha}` });
+        return sha;
+      } catch (err) {
+        const stderr = err.stderr?.toString().trim() || '';
+        const msg = stderr || err.message;
+        if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
+          console.log(`[deploy] [${label}] 커밋할 변경사항 없음 — 건너뜀`);
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+            content: `[commit ${label}] nothing to commit — skipped` });
+          return null;
+        }
+        // 실패 시 git status로 원인 파악
         let gitStatus = '';
         try {
-          gitStatus = execSync('git status', { cwd: harnessAbsPath, encoding: 'utf8', timeout: 5_000 }).trim();
-        } catch { /* git status 실패는 무시 */ }
+          gitStatus = execSync('git status', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000 }).trim();
+        } catch { /* 무시 */ }
         const fullMsg = [msg, gitStatus ? `\n[git status]\n${gitStatus}` : ''].join('');
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit harness 실패] ${fullMsg.substring(0, 1000)}` });
-        console.error(`[deploy] harness commit 실패 — deploy 계속 진행: ${msg}`);
-        // commit 실패해도 deploy는 계속 진행 (return 하지 않음)
+        console.error(`[deploy] [${label}] commit 실패: ${msg}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[commit ${label} 실패] ${fullMsg.substring(0, 1000)}` });
+        return null; // commit 실패해도 deploy는 계속 진행
+      }
+    };
+
+    // ── 1. 어느 git 저장소에 속하는지 판별하여 커밋 ──────────────
+    // 전략: safeCwdReal의 git root와 harness의 git root를 구한 뒤,
+    //   - 같은 저장소이면 한 번만 커밋 (stageTarget = '.' — 모든 변경사항 포함)
+    //   - 다른 저장소이면 각각 커밋
+
+    let harnessGitRoot = null;
+    let projectGitRoot = null;
+
+    try {
+      harnessGitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000,
+      }).trim();
+    } catch (err) {
+      console.error(`[deploy] harness git root 탐색 실패: ${err.message}`);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+        content: `[deploy] harness git root 탐색 실패: ${err.message}` });
+    }
+
+    try {
+      projectGitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000,
+      }).trim();
+    } catch (err) {
+      const msg = err.stderr?.toString().trim() || err.message;
+      if (!msg.includes('not a git repository')) {
+        console.error(`[deploy] project git root 탐색 실패: ${msg}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[deploy] project git root 탐색 실패: ${msg}` });
+      } else {
+        console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
       }
     }
 
-    // ── 1b. 외부 프로젝트가 별도 git 저장소인 경우 해당 저장소에 커밋 ──
-    // safeCwd가 harnessAbsPath와 다른 경우에만 외부 프로젝트 커밋 시도
-    const safeCwdReal = fs.existsSync(safeCwd) ? fs.realpathSync(safeCwd) : safeCwd;
-    if (safeCwdReal !== harnessAbsPath && !safeCwdReal.startsWith(harnessAbsPath + path.sep)) {
-      try {
-        const projectGitRoot = execSync('git rev-parse --show-toplevel', {
-          cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000,
-        }).trim();
-        const projectRelPath = path.relative(projectGitRoot, safeCwdReal);
-        // 프로젝트 경로가 해당 git 루트 내부인지 확인 (안전 검사)
-        const stageTarget = projectRelPath === '' ? '.' : projectRelPath;
-        if (!stageTarget.startsWith('..')) {
-          execSync(`git add -- ${JSON.stringify(stageTarget)}`, {
-            cwd: projectGitRoot, encoding: 'utf8', timeout: 15_000,
-          });
-          execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
-            cwd: projectGitRoot, encoding: 'utf8', timeout: 15_000,
-          });
-          const projectCommitSha = execSync('git rev-parse HEAD', {
-            cwd: projectGitRoot, encoding: 'utf8', timeout: 5_000,
-          }).trim();
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit project] ${projectCommitSha}` });
-          console.log(`[deploy] project commit 완료: ${projectCommitSha}`);
-          // harness 커밋이 없었으면 프로젝트 커밋 SHA로 대체
-          if (!commitSha) {
-            commitSha = projectCommitSha;
+    const sameRepo = harnessGitRoot && projectGitRoot && harnessGitRoot === projectGitRoot;
+    console.log(`[deploy] sameRepo=${sameRepo}, harnessGitRoot=${harnessGitRoot}, projectGitRoot=${projectGitRoot}`);
+
+    if (sameRepo) {
+      // 같은 저장소 — '.' 으로 모든 변경사항 스테이징 후 한 번만 커밋
+      const sha = await doCommit('repo', harnessGitRoot, '.');
+      if (sha) {
+        commitSha = sha;
+        await taskQueries.updateCommit(task.id, commitSha);
+      }
+    } else {
+      // 다른 저장소 — harness와 project 각각 커밋
+      if (harnessGitRoot) {
+        const harnessRelPath = path.relative(harnessGitRoot, harnessAbsPath);
+        // harnessRelPath가 '' 이면 git root 자체가 harness
+        const harnessStageTarget = harnessRelPath === '' ? '.' : harnessRelPath;
+        if (!harnessStageTarget.startsWith('..')) {
+          const sha = await doCommit('harness', harnessGitRoot, harnessStageTarget);
+          if (sha) {
+            commitSha = sha;
             await taskQueries.updateCommit(task.id, commitSha);
           }
-        }
-      } catch (err) {
-        const msg = err.stderr?.toString().trim() || err.message;
-        if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
-          console.log('[deploy] project: 커밋할 변경사항 없음 — 건너뜀');
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[commit project] nothing to commit — skipped' });
-        } else if (msg.includes('not a git repository')) {
-          console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
         } else {
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit project 실패] ${msg.substring(0, 500)}` });
-          console.error(`[deploy] project commit 실패 (계속): ${msg}`);
+          console.error(`[deploy] harnessAbsPath가 gitRoot 외부 — 건너뜀: ${harnessRelPath}`);
+        }
+      }
+
+      if (projectGitRoot) {
+        const projectRelPath = path.relative(projectGitRoot, safeCwdReal);
+        const projectStageTarget = projectRelPath === '' ? '.' : projectRelPath;
+        if (!projectStageTarget.startsWith('..')) {
+          const sha = await doCommit('project', projectGitRoot, projectStageTarget);
+          if (sha && !commitSha) {
+            commitSha = sha;
+            await taskQueries.updateCommit(task.id, commitSha);
+          }
+        } else {
+          console.error(`[deploy] safeCwdReal이 projectGitRoot 외부 — 건너뜀: ${projectRelPath}`);
         }
       }
     }
+
+    console.log(`[deploy] 커밋 단계 완료. commitSha=${commitSha || '(없음)'}`);
+    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+      content: `[deploy] 커밋 완료. sha=${commitSha || 'none'}` });
 
     // ── 2. deploy (커밋 결과와 무관하게 항상 실행) ─────────────────
     const deployScript = _findDeployScript(safeCwd, harnessAbsPath);
+    console.log(`[deploy] 배포 스크립트 탐색: ${deployScript ? `${deployScript.cmd} (cwd=${deployScript.cwd})` : '없음'}`);
     if (!deployScript) {
       await taskQueries.updateDeploy(task.id, 'skipped:no_script');
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: '[deploy] 배포 스크립트 없음 — 건너뜀' });
@@ -359,6 +449,10 @@ export class AgentRunner extends EventEmitter {
       this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
       return 'skipped:no_script';
     }
+
+    console.log(`[deploy] 배포 실행: ${deployScript.cmd}`);
+    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+      content: `[deploy] 배포 실행: ${deployScript.cmd}` });
 
     let deployFailed = false;
     try {
