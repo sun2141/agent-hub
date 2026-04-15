@@ -2,7 +2,7 @@
 // Claude Code CLI 래퍼 + Planner→Generator→Evaluator 파이프라인
 
 import { EventEmitter } from 'events';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs';
@@ -296,70 +296,98 @@ export class AgentRunner extends EventEmitter {
     let commitSha = null;
 
     // ── 커밋 헬퍼: 주어진 git root에서 stageTarget을 add 후 commit ──
+    // spawnSync를 사용하여 인수를 배열로 전달 → 쉘 이스케이프 문제 없음
     const doCommit = async (label, gitRoot, stageTarget) => {
       console.log(`[deploy] [${label}] git root=${gitRoot}, stageTarget=${stageTarget}`);
-      try {
-        // git status로 변경사항 파악 (디버그)
-        let statusOut = '';
-        try {
-          statusOut = execSync('git status --short', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
-        } catch { /* 무시 */ }
-        console.log(`[deploy] [${label}] git status:\n${statusOut || '(변경 없음)'}`);
+
+      // ── git status (디버그) ──
+      const statusRes = spawnSync('git', ['status', '--short'], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
+      });
+      const statusOut = (statusRes.stdout || '').trim();
+      console.log(`[deploy] [${label}] git status:\n${statusOut || '(변경 없음)'}`);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+        content: `[${label}] git status: ${statusOut || 'clean'}` });
+
+      // ── git add ──
+      const addRes = spawnSync('git', ['add', '--', stageTarget], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
+      });
+      if (addRes.error || addRes.status !== 0) {
+        const addStderr = (addRes.stderr || '').trim();
+        const addStdout = (addRes.stdout || '').trim();
+        const addMsg = addStderr || addStdout || (addRes.error?.message ?? 'git add 실패');
+        console.error(`[deploy] [${label}] git add 실패: stderr=${addStderr} | stdout=${addStdout}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[commit ${label} add 실패] stderr=${addStderr} | stdout=${addStdout} | msg=${addMsg}`.substring(0, 1000) });
+        return null;
+      }
+
+      // ── staged 확인 ──
+      const stagedRes = spawnSync('git', ['diff', '--cached', '--name-only'], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
+      });
+      const stagedOut = (stagedRes.stdout || '').trim();
+      console.log(`[deploy] [${label}] staged files: ${stagedOut || '(없음)'}`);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+        content: `[${label}] staged: ${stagedOut || 'none'}` });
+
+      if (!stagedOut) {
+        console.log(`[deploy] [${label}] 스테이징된 변경사항 없음 — 커밋 건너뜀`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[${label}] git status: ${statusOut || 'clean'}` });
+          content: `[commit ${label}] nothing staged — skipped` });
+        return null;
+      }
 
-        execSync(`git add -- ${JSON.stringify(stageTarget)}`, {
-          cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
-        });
-
-        // staged 내용 확인 (디버그)
-        let stagedOut = '';
-        try {
-          stagedOut = execSync('git diff --cached --name-only', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
-        } catch { /* 무시 */ }
-        console.log(`[deploy] [${label}] staged files: ${stagedOut || '(없음)'}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[${label}] staged: ${stagedOut || 'none'}` });
-
-        if (!stagedOut) {
-          console.log(`[deploy] [${label}] 스테이징된 변경사항 없음 — 커밋 건너뜀`);
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-            content: `[commit ${label}] nothing staged — skipped` });
-          return null;
-        }
-
-        execSync(`git commit -m ${JSON.stringify(commitMsg)}`, {
-          cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
-        });
-        const sha = execSync('git rev-parse HEAD', {
-          cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
-        }).trim();
-        console.log(`[deploy] [${label}] commit 완료: ${sha}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[commit ${label}] ${sha}` });
-        return sha;
-      } catch (err) {
-        const stderr = err.stderr?.toString().trim() || '';
-        const stdout = err.stdout?.toString().trim() || '';
-        // nothing to commit 메시지는 stderr가 아닌 stdout에 있으므로 stdout도 확인
-        const msg = stderr || stdout || err.message;
-        if (msg.includes('nothing to commit') || msg.includes('nothing added to commit')) {
+      // ── git commit ──
+      const commitRes = spawnSync('git', ['commit', '-m', commitMsg], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
+      });
+      if (commitRes.error || commitRes.status !== 0) {
+        const cStderr = (commitRes.stderr || '').trim();
+        const cStdout = (commitRes.stdout || '').trim();
+        const cMsg = cStderr || cStdout || (commitRes.error?.message ?? 'git commit 실패');
+        // nothing to commit 메시지는 stdout에 있는 경우도 있음
+        if (cMsg.includes('nothing to commit') || cMsg.includes('nothing added to commit')) {
           console.log(`[deploy] [${label}] 커밋할 변경사항 없음 — 건너뜀`);
           await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
             content: `[commit ${label}] nothing to commit — skipped` });
           return null;
         }
-        // 실패 시 git status로 원인 파악
-        let gitStatus = '';
-        try {
-          gitStatus = execSync('git status', { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).trim();
-        } catch { /* 무시 */ }
-        const fullMsg = [msg, gitStatus ? `\n[git status]\n${gitStatus}` : ''].join('');
-        console.error(`[deploy] [${label}] commit 실패: ${msg}`);
+        // 실패 시 git status로 원인 추가 파악
+        const gitStatusRes = spawnSync('git', ['status'], {
+          cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
+        });
+        const gitStatusOut = (gitStatusRes.stdout || '').trim();
+        console.error(`[deploy] [${label}] commit 실패: stderr=${cStderr} | stdout=${cStdout}`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[commit ${label} 실패] ${fullMsg.substring(0, 1000)}` });
+          content: `[commit ${label} 실패] stderr=${cStderr} | stdout=${cStdout} | status=${gitStatusOut}`.substring(0, 1000) });
         return null; // commit 실패해도 deploy는 계속 진행
       }
+
+      // ── 커밋 stdout/stderr info 로깅 (hook 메시지 등 포함) ──
+      const cSuccessStdout = (commitRes.stdout || '').trim();
+      const cSuccessStderr = (commitRes.stderr || '').trim();
+      if (cSuccessStdout) {
+        console.log(`[deploy] [${label}] commit stdout: ${cSuccessStdout}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[commit ${label} stdout] ${cSuccessStdout}`.substring(0, 1000) });
+      }
+      if (cSuccessStderr) {
+        console.log(`[deploy] [${label}] commit stderr: ${cSuccessStderr}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[commit ${label} stderr] ${cSuccessStderr}`.substring(0, 1000) });
+      }
+
+      // ── SHA 조회 ──
+      const shaRes = spawnSync('git', ['rev-parse', 'HEAD'], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
+      });
+      const sha = (shaRes.stdout || '').trim();
+      console.log(`[deploy] [${label}] commit 완료: ${sha}`);
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+        content: `[commit ${label}] sha=${sha}` });
+      return sha;
     };
 
     // ── 1. 어느 git 저장소에 속하는지 판별하여 커밋 ──────────────
@@ -370,28 +398,35 @@ export class AgentRunner extends EventEmitter {
     let harnessGitRoot = null;
     let projectGitRoot = null;
 
-    try {
-      harnessGitRoot = execSync('git rev-parse --show-toplevel', {
+    {
+      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], {
         cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
-      }).trim();
-    } catch (err) {
-      console.error(`[deploy] harness git root 탐색 실패: ${err.message}`);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-        content: `[deploy] harness git root 탐색 실패: ${err.message}` });
+      });
+      if (res.error || res.status !== 0) {
+        const errMsg = (res.stderr || '').trim() || (res.error?.message ?? 'git rev-parse 실패');
+        console.error(`[deploy] harness git root 탐색 실패: stderr=${errMsg}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[deploy] harness git root 탐색 실패: ${errMsg}` });
+      } else {
+        harnessGitRoot = (res.stdout || '').trim();
+      }
     }
 
-    try {
-      projectGitRoot = execSync('git rev-parse --show-toplevel', {
+    {
+      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], {
         cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
-      }).trim();
-    } catch (err) {
-      const msg = err.stderr?.toString().trim() || err.message;
-      if (!msg.includes('not a git repository')) {
-        console.error(`[deploy] project git root 탐색 실패: ${msg}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[deploy] project git root 탐색 실패: ${msg}` });
+      });
+      if (res.error || res.status !== 0) {
+        const errMsg = (res.stderr || '').trim() || (res.error?.message ?? 'git rev-parse 실패');
+        if (!errMsg.includes('not a git repository')) {
+          console.error(`[deploy] project git root 탐색 실패: stderr=${errMsg}`);
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+            content: `[deploy] project git root 탐색 실패: ${errMsg}` });
+        } else {
+          console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
+        }
       } else {
-        console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
+        projectGitRoot = (res.stdout || '').trim();
       }
     }
 
