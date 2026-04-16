@@ -10,7 +10,8 @@
     "stop": "bash scripts/start.sh stop",
     "status": "bash scripts/start.sh status",
     "dev": "node --watch src/index.js",
-    "tunnel": "bash scripts/tunnel.sh"
+    "tunnel": "bash scripts/tunnel.sh",
+    "watchdog": "node src/watchdog.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

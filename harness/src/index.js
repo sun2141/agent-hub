@@ -57,7 +57,7 @@ function checkPortAvailable(port) {
     server.once('listening', () => {
       server.close(() => resolve());
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, '0.0.0.0');
   });
 }
 
@@ -115,10 +115,12 @@ async function main() {
     process.exit(1);
   }
 
+  const BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
   const { server } = createApiServer(agent);
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[Boot] API 서버 127.0.0.1:${PORT} (localhost only)`);
-    console.log(`[Boot] WebSocket ws://127.0.0.1:${PORT}/ws`);
+  server.listen(PORT, BIND_HOST, () => {
+    console.log(`[Boot] API 서버 ${BIND_HOST}:${PORT}`);
+    console.log(`[Boot] WebSocket ws://${BIND_HOST}:${PORT}/ws`);
+    console.log(`[Boot] 헬스체크: http://${BIND_HOST}:${PORT}/health`);
     console.log('');
     console.log('  대시보드 외부 접근을 위해 SSH 터널을 시작하세요:');
     console.log('    npm run tunnel');

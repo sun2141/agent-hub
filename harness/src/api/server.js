@@ -74,6 +74,19 @@ export function createApiServer(agentRunner) {
     next();
   });
 
+  // ── 헬스체크 (인증 없이 외부 접근 가능) ──────────────────────
+  // GET /health — 하네스 상태 확인 (watchdog, 외부 모니터링용)
+  app.get('/health', (req, res) => {
+    const status = agentRunner.getStatus();
+    res.json({
+      ok: true,
+      pid: process.pid,
+      uptime: Math.floor(process.uptime()),
+      harness: status,
+      ts: Date.now(),
+    });
+  });
+
   app.use('/api', authMiddleware);
 
   // ── 대시보드 정적 파일 서빙 (빌드된 dist/) ─────────────────
