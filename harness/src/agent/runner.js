@@ -2,7 +2,7 @@
 // Claude Code CLI 래퍼 + Planner→Generator→Evaluator 파이프라인
 
 import { EventEmitter } from 'events';
-import { spawn, execSync, spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs';
@@ -387,6 +387,23 @@ export class AgentRunner extends EventEmitter {
       console.log(`[deploy] [${label}] commit 완료: ${sha}`);
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
         content: `[commit ${label}] sha=${sha}` });
+
+      // ── git push ──
+      const pushRes = spawnSync('git', ['push'], {
+        cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe',
+      });
+      const pushStdout = (pushRes.stdout || '').trim();
+      const pushStderr = (pushRes.stderr || '').trim();
+      if (pushRes.error || pushRes.status !== 0) {
+        console.error(`[deploy] [${label}] git push 실패: stderr=${pushStderr} | stdout=${pushStdout}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[push ${label} 실패] stderr=${pushStderr} | stdout=${pushStdout}`.substring(0, 1000) });
+      } else {
+        console.log(`[deploy] [${label}] git push 완료: ${pushStderr || pushStdout || 'ok'}`);
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[push ${label}] stdout=${pushStdout} | stderr=${pushStderr}`.substring(0, 1000) });
+      }
+
       return sha;
     };
 
@@ -492,19 +509,28 @@ export class AgentRunner extends EventEmitter {
       content: `[deploy] 배포 실행: ${deployScript.cmd}` });
 
     let deployFailed = false;
-    try {
-      const output = execSync(deployScript.cmd, {
-        cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000,
+    {
+      const deployArgs = deployScript.cmd.split(/\s+/);
+      const deployCli = deployArgs[0];
+      const deployCliArgs = deployArgs.slice(1);
+      const deployRes = spawnSync(deployCli, deployCliArgs, {
+        cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000, stdio: 'pipe',
       });
-      await taskQueries.updateDeploy(task.id, 'success');
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy 성공] ${output.substring(0, 500)}` });
-      console.log(`[deploy] 배포 성공: ${deployScript.cmd}`);
-    } catch (err) {
-      const msg = (err.stderr?.toString() || err.stdout?.toString() || err.message).trim();
-      await taskQueries.updateDeploy(task.id, 'failed');
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy 실패] ${msg.substring(0, 500)}` });
-      console.error(`[deploy] 배포 실패: ${msg}`);
-      deployFailed = true;
+      const deployStdout = (deployRes.stdout || '').trim();
+      const deployStderr = (deployRes.stderr || '').trim();
+      if (deployRes.error || deployRes.status !== 0) {
+        const deployMsg = deployStderr || deployStdout || (deployRes.error?.message ?? 'deploy 실패');
+        await taskQueries.updateDeploy(task.id, 'failed');
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
+          content: `[deploy 실패] stderr=${deployStderr} | stdout=${deployStdout}`.substring(0, 500) });
+        console.error(`[deploy] 배포 실패: ${deployMsg}`);
+        deployFailed = true;
+      } else {
+        await taskQueries.updateDeploy(task.id, 'success');
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+          content: `[deploy 성공] stdout=${deployStdout} | stderr=${deployStderr}`.substring(0, 500) });
+        console.log(`[deploy] 배포 성공: ${deployScript.cmd}`);
+      }
     }
 
     this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
