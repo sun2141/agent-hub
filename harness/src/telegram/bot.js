@@ -32,6 +32,10 @@ function loadCooldownData() {
 // 쿨다운 데이터 저장
 function saveCooldownData(map) {
   try {
+    const dir = path.dirname(COOLDOWN_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     const obj = Object.fromEntries(map.entries());
     fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(obj, null, 2), 'utf8');
   } catch (err) {
