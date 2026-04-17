@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { taskQueries, logQueries, projectQueries } from '../db/db.js';
+import { taskQueries, logQueries, projectQueries, deleteTask } from '../db/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -128,6 +128,28 @@ export class AgentRunner extends EventEmitter {
     await taskQueries.updateStatus(taskId, PHASE.PAUSED, { error: 'manual_stop' });
     this._running.delete(taskId);
     this.emit('task:paused', { taskId, reason: 'manual_stop' });
+  }
+
+  async deleteTask(taskId) {
+    const task = await taskQueries.get(taskId);
+    if (!task) throw new Error(`작업 없음: ${taskId}`);
+
+    // building 상태이면 프로세스 kill 후 _running에서 제거
+    const entry = this._running.get(taskId);
+    if (entry?.process) {
+      entry.process.kill('SIGTERM');
+    }
+    this._running.delete(taskId);
+
+    // 큐에서도 제거
+    const queueIdx = this._queue.indexOf(taskId);
+    if (queueIdx !== -1) this._queue.splice(queueIdx, 1);
+
+    // DB에서 logs → tasks 순서로 삭제
+    await deleteTask(taskId);
+
+    this.emit('task:deleted', { taskId, projectId: task.project_id });
+    return { taskId, projectId: task.project_id };
   }
 
   getStatus() {

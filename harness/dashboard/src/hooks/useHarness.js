@@ -77,6 +77,10 @@ export function useHarness() {
             loadTasks()
             loadStatus()
           }
+          if (msg.type === 'task:deleted') {
+            setTasks(prev => prev.filter(t => t.id !== msg.taskId))
+            loadStatus()
+          }
         } catch {}
       }
 
@@ -154,6 +158,14 @@ export function useHarness() {
     return apiFetch(`/stop/${taskId}`, { method: 'DELETE' })
   }, [])
 
+  const deleteTask = useCallback(async (taskId) => {
+    const result = await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' })
+    if (!result?.error) {
+      setTasks(prev => prev.filter(t => t.id !== taskId))
+    }
+    return result
+  }, [])
+
   const resumeTask = useCallback((taskId) => {
     return apiFetch('/resume', {
       method: 'POST',
@@ -196,7 +208,7 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, getTaskLogs, fetchTaskLogs, addProject, createProject,
+    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, addProject, createProject,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }
 }

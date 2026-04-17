@@ -245,5 +245,15 @@ export const logQueries = {
       'SELECT * FROM logs WHERE task_id = ? ORDER BY created_at DESC LIMIT ?',
       [task_id, limit]
     );
-  }
+  },
+
+  async deleteForTask(task_id) {
+    await dbRun('DELETE FROM logs WHERE task_id = ?', [task_id]);
+  },
 };
+
+// ── 작업 삭제 (logs → tasks 순서로 삭제하여 FK 제약 준수) ──────
+export async function deleteTask(task_id) {
+  await logQueries.deleteForTask(task_id);
+  await dbRun('DELETE FROM tasks WHERE id = ?', [task_id]);
+}

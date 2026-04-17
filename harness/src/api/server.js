@@ -306,6 +306,29 @@ export function createApiServer(agentRunner) {
     }
   });
 
+  // ── 작업 영구 삭제 (failed / paused / building 상태만) ────────
+  // DELETE /api/tasks/:taskId
+  app.delete('/api/tasks/:taskId', async (req, res) => {
+    const { taskId } = req.params;
+    if (!/^task_[0-9]+_[a-z0-9]+$/.test(taskId)) {
+      return res.status(400).json({ error: '잘못된 taskId 형식' });
+    }
+    try {
+      const task = await taskQueries.get(taskId);
+      if (!task) return res.status(404).json({ error: '작업 없음' });
+
+      const DELETABLE = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating'];
+      if (!DELETABLE.includes(task.status)) {
+        return res.status(409).json({ error: `삭제 불가 상태: ${task.status}. failed/paused/building 상태만 삭제 가능합니다.` });
+      }
+
+      const result = await agentRunner.deleteTask(taskId);
+      res.json({ taskId, projectId: result.projectId, status: 'deleted' });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── 웹훅 배포 트리거 ──────────────────────────────────────
   // POST /api/deploy — git push + harness 재시작을 분리 프로세스로 실행
   // self-kill 방지: detached 자식 프로세스가 harness 재시작을 처리
@@ -413,6 +436,7 @@ export function createApiServer(agentRunner) {
   agentRunner.on('task:complete',  d => broadcast('task:complete',  d));
   agentRunner.on('task:paused',    d => broadcast('task:paused',    d));
   agentRunner.on('task:failed',    d => broadcast('task:failed',    d));
+  agentRunner.on('task:deleted',   d => broadcast('task:deleted',   d));
   agentRunner.on('phase:start',    d => broadcast('phase:start',    d));
   agentRunner.on('phase:complete', d => broadcast('phase:complete', d));
   agentRunner.on('agent:text',     d => broadcast('agent:text',     d));

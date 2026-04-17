@@ -126,10 +126,11 @@ function ProjectCard({ project, tasks, running, onClick }) {
 }
 
 // ── 프로젝트 상세 ─────────────────────────────────────────
-function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onBack, fetchTaskLogs }) {
+function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onDelete, onBack, fetchTaskLogs }) {
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [tab, setTab] = useState('tasks')
+  const [deleteConfirm, setDeleteConfirm] = useState(null) // { taskId, status, prompt }
   const [dbLogs, setDbLogs] = useState([])
   const logRef = useRef(null)
   const autoScrollRef = useRef(true)
@@ -205,8 +206,63 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
     }
   }
 
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirm) return
+    const { taskId } = deleteConfirm
+    setDeleteConfirm(null)
+    await onDelete(taskId)
+  }
+
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      {deleteConfirm && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 100,
+          background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '0 24px',
+        }}>
+          <div style={{
+            background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 16,
+            padding: '24px', width: '100%', maxWidth: 360,
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginBottom: 8 }}>
+              작업을 삭제하시겠습니까?
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>
+              상태: <span style={{ color: (PHASE[deleteConfirm.status] || PHASE.pending).color, fontWeight: 600 }}>
+                {(PHASE[deleteConfirm.status] || PHASE.pending).label}
+              </span>
+            </div>
+            <div style={{
+              fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 16,
+              padding: '8px 10px', background: 'var(--bg3)', borderRadius: 8, wordBreak: 'break-word',
+            }}>
+              {deleteConfirm.prompt?.slice(0, 120)}{deleteConfirm.prompt?.length > 120 ? '…' : ''}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 16 }}>
+              이 작업과 관련된 모든 로그가 영구 삭제됩니다.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => { vibrate(10); handleDeleteConfirm() }}
+                style={{
+                  flex: 1, background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.4)',
+                  color: 'var(--red)', borderRadius: 10, padding: '13px', fontSize: 14, fontWeight: 600,
+                  minHeight: 52, WebkitTapHighlightColor: 'transparent',
+                }}
+              >삭제</button>
+              <button
+                onClick={() => { vibrate(8); setDeleteConfirm(null) }}
+                style={{
+                  flex: 1, background: 'none', border: '1px solid var(--border)',
+                  color: 'var(--text3)', borderRadius: 10, padding: '13px', fontSize: 14,
+                  minHeight: 52, WebkitTapHighlightColor: 'transparent',
+                }}
+              >취소</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10,
         padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0,
@@ -275,6 +331,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             </div>
           ) : projectTasks.map(t => {
             const p = PHASE[t.status] || PHASE.pending
+            const canDelete = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating'].includes(t.status)
             return (
               <div key={t.id} style={{
                 padding: '10px 12px', background: 'var(--bg3)',
@@ -286,6 +343,16 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                   <span style={{ fontSize: 11, color: 'var(--text3)', marginLeft: 'auto' }}>
                     {timeAgo(t.created_at)}
                   </span>
+                  {canDelete && (
+                    <button
+                      onClick={() => { vibrate(10); setDeleteConfirm({ taskId: t.id, status: t.status, prompt: t.prompt }) }}
+                      style={{
+                        background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.25)',
+                        color: 'var(--red)', borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 500,
+                        minHeight: 28, WebkitTapHighlightColor: 'transparent', lineHeight: 1,
+                      }}
+                    >삭제</button>
+                  )}
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.4 }}>{t.prompt}</div>
                 {t.round > 0 && (
@@ -679,7 +746,7 @@ function TaskReport({ task }) {
 
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, fetchTaskLogs, addProject, createProject, refresh } = useHarness()
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, addProject, createProject, refresh } = useHarness()
   const [view, setView]         = useState('list')
   const [selected, setSelected] = useState(null)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -704,6 +771,7 @@ export default function App() {
           onRun={handleRun}
           onStop={async id => { await stopTask(id); refresh() }}
           onResume={async id => { await resumeTask(id); refresh() }}
+          onDelete={async id => { await deleteTask(id); refresh() }}
           onBack={() => setView('list')}
           fetchTaskLogs={fetchTaskLogs}
         />
