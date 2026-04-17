@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "vercel-build": "cd harness/dashboard && npm install && npm run build"
+  },
   "dependencies": {
     "node-fetch": "^2.7.0"
   }
