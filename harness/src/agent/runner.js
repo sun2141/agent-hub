@@ -89,6 +89,12 @@ export class AgentRunner extends EventEmitter {
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
     this._validateProjectPath(project.path);
 
+    // 동일 프로젝트에 활성 task가 있으면 중복 실행 방지
+    const activeTask = await taskQueries.getActiveForProject(projectId);
+    if (activeTask) {
+      throw new Error(`이미 실행 중인 task가 있습니다: ${activeTask.id} (${activeTask.status}). 완료 후 다시 시도하세요.`);
+    }
+
     // maxRounds는 MAX_ROUNDS 이상으로 보장 (외부 입력으로 하향 불가)
     const effectiveMaxRounds = Math.max(
       typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : MAX_ROUNDS,
@@ -193,7 +199,7 @@ export class AgentRunner extends EventEmitter {
           const deployFailed = deployResult === 'deploy_failed';
           console.log(`[pipeline] 완료 처리: deployResult=${deployResult}, deployFailed=${deployFailed}`);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
+          this.emit('task:complete', { taskId, projectId: task?.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
           break;
         }
 
@@ -205,7 +211,7 @@ export class AgentRunner extends EventEmitter {
             content: `[eval 불합격] 최대 라운드 도달, unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, round, evalResult, maxRoundsReached: true, unresolvedIssues });
+          this.emit('task:complete', { taskId, projectId: task?.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues });
           break;
         }
       }
@@ -216,7 +222,7 @@ export class AgentRunner extends EventEmitter {
       } else {
         const safeError = err.message.replace(/\/Users\/[^\s]+/g, '[path]');
         await taskQueries.updateStatus(taskId, PHASE.FAILED, { error: safeError });
-        this.emit('task:failed', { taskId, error: safeError });
+        this.emit('task:failed', { taskId, projectId: task?.project_id, error: safeError });
       }
     } finally {
       this._running.delete(taskId);

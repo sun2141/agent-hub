@@ -221,6 +221,14 @@ export const taskQueries = {
   async updateDeploy(id, deployStatus) {
     await dbRun('UPDATE tasks SET deploy_status = ? WHERE id = ?', [deployStatus, id]);
   },
+
+  // 특정 프로젝트에 현재 활성 중인 task가 있는지 확인
+  async getActiveForProject(projectId) {
+    return dbGet(
+      "SELECT id, status FROM tasks WHERE project_id = ? AND status NOT IN ('done','failed','paused') ORDER BY created_at DESC LIMIT 1",
+      [projectId]
+    );
+  },
 };
 
 // ── logs ──────────────────────────────────────────────────────

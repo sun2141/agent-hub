@@ -11,6 +11,34 @@ import fs from 'fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS_ROOT = path.resolve(__dirname, '../..');
 
+// ── 쿨다운 영속화 파일 경로 ────────────────────────────────────
+const COOLDOWN_FILE = path.join(HARNESS_ROOT, 'data', 'fail_notify_cooldown.json');
+
+// 쿨다운 데이터 로드 (재시작 시에도 유지)
+function loadCooldownData() {
+  try {
+    if (fs.existsSync(COOLDOWN_FILE)) {
+      const raw = fs.readFileSync(COOLDOWN_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      // Map으로 변환
+      return new Map(Object.entries(parsed));
+    }
+  } catch (err) {
+    console.warn('[Telegram] 쿨다운 파일 로드 실패 (초기화):', err.message);
+  }
+  return new Map();
+}
+
+// 쿨다운 데이터 저장
+function saveCooldownData(map) {
+  try {
+    const obj = Object.fromEntries(map.entries());
+    fs.writeFileSync(COOLDOWN_FILE, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[Telegram] 쿨다운 파일 저장 실패:', err.message);
+  }
+}
+
 const PHASE_EMOJI = {
   planning:   '📋',
   building:   '🔨',
@@ -259,13 +287,30 @@ export function createTelegramBot(agentRunner) {
   }
 
   // ── 에이전트 이벤트 → 텔레그램 알림 ───────────────────────
+  // 프로젝트별 마지막 실패 알림 시간 (알림 쿨다운 추적용)
+  // 파일에서 로드하여 하네스 재시작 시에도 쿨다운 유지
+  const _lastFailNotify = loadCooldownData(); // projectId → { lastNotify, failCount }
+  const FAIL_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000; // 10분 쿨다운
+  // 연속 실패 횟수가 이 이상이면 알림 완전 억제 (빌드 실패 반복 방지)
+  const MAX_CONSECUTIVE_FAIL_NOTIFY = 3;
+
   function registerAgentEvents() {
     agentRunner.on('phase:start', ({ taskId, phase, round }) => {
-      notify(`${PHASE_EMOJI[phase] || '▶'} <b>${phase}</b> Round ${round}\n<code>${taskId}</code>`);
+      // planning 시작만 알림 (building/evaluating은 중간 단계라 생략)
+      if (phase === 'planning') {
+        notify(`${PHASE_EMOJI[phase] || '▶'} <b>${phase}</b>\n<code>${taskId}</code>`);
+      }
     });
 
-    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached }) => {
+    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached, projectId }) => {
       const flag = maxRoundsReached ? ' (최대 라운드 도달)' : '';
+      // 작업 완료 시 해당 프로젝트의 연속 실패 카운터 리셋
+      const pid = projectId || taskId;
+      if (_lastFailNotify.has(pid)) {
+        const entry = _lastFailNotify.get(pid);
+        entry.failCount = 0;
+        saveCooldownData(_lastFailNotify);
+      }
       notify(
         `✅ <b>완료</b>${flag}\n\n` +
         `ID: <code>${taskId}</code>\n` +
@@ -284,11 +329,45 @@ export function createTelegramBot(agentRunner) {
       );
     });
 
-    agentRunner.on('task:failed', ({ taskId, error }) => {
+    agentRunner.on('task:failed', ({ taskId, error, projectId }) => {
+      const now = Date.now();
+      const pid = projectId || taskId;
+
+      // 기존 쿨다운 항목 읽기
+      const entry = _lastFailNotify.get(pid) || { lastNotify: 0, failCount: 0 };
+      const lastNotify = entry.lastNotify || 0;
+      const failCount = (entry.failCount || 0) + 1;
+
+      // 연속 실패 횟수가 MAX_CONSECUTIVE_FAIL_NOTIFY 초과 시 알림 완전 억제
+      if (failCount > MAX_CONSECUTIVE_FAIL_NOTIFY) {
+        console.log(`[Telegram] task:failed 연속 실패 ${failCount}회 — 알림 완전 억제 (${pid})`);
+        // 카운트만 업데이트, lastNotify는 갱신 안 함
+        _lastFailNotify.set(pid, { lastNotify, failCount });
+        saveCooldownData(_lastFailNotify);
+        return;
+      }
+
+      // 10분 쿨다운: 같은 프로젝트 실패 알림이 10분 내 반복되면 생략
+      if (now - lastNotify < FAIL_NOTIFY_COOLDOWN_MS) {
+        console.log(`[Telegram] task:failed 알림 쿨다운 중 (${pid}, failCount=${failCount}) — 생략`);
+        _lastFailNotify.set(pid, { lastNotify, failCount });
+        saveCooldownData(_lastFailNotify);
+        return;
+      }
+
+      // 알림 발송
+      _lastFailNotify.set(pid, { lastNotify: now, failCount });
+      saveCooldownData(_lastFailNotify);
+
+      const suppressNote = failCount >= MAX_CONSECUTIVE_FAIL_NOTIFY
+        ? `\n⚠️ 연속 ${failCount}회 실패. 이후 알림이 억제됩니다.`
+        : '';
+
       notify(
         `❌ <b>실패</b>\n\n` +
         `ID: <code>${taskId}</code>\n` +
-        `오류: ${(error || '').substring(0, 200)}`
+        `오류: ${(error || '').substring(0, 200)}` +
+        suppressNote
       );
     });
   }
@@ -339,9 +418,12 @@ export function createTelegramBot(agentRunner) {
     });
 
     registerCommands();
-    registerAgentEvents();
     console.log('[Telegram] 봇 시작됨');
   }
+
+  // agentRunner 이벤트 핸들러는 initBot() 밖에서 한 번만 등록
+  // (initBot은 재연결 시에도 호출되므로 중복 등록 방지)
+  registerAgentEvents();
 
   initBot();
 
