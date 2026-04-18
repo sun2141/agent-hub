@@ -31,8 +31,6 @@ const PHASE = {
 
 function parseJson(text) {
   const stripped = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  // 첫 { 부터 매칭되는 } 까지 추출 (문자열 내 중괄호 무시)
-  // 여러 후보를 모두 시도하여 유효한 JSON을 반환
   let searchFrom = 0;
   while (true) {
     const start = stripped.indexOf('{', searchFrom);
@@ -55,14 +53,12 @@ function parseJson(text) {
           try {
             return JSON.parse(stripped.slice(start, i + 1));
           } catch {
-            // 이 후보는 실패 — 다음 { 부터 재탐색
             searchFrom = start + 1;
             break;
           }
         }
       }
     }
-    // 닫히지 않은 중괄호 또는 모든 후보 소진 — 탐색 종료
     if (!foundEnd) break;
   }
   throw new Error('유효한 JSON 객체를 찾을 수 없음');
@@ -73,7 +69,7 @@ export class AgentRunner extends EventEmitter {
     super();
     this._running = new Map();
     this._queue   = [];
-    this._deleted = new Set(); // 삭제 진행 중인 taskId 추적
+    this._deleted = new Set();
   }
 
   _validateProjectPath(projectPath) {
@@ -90,13 +86,11 @@ export class AgentRunner extends EventEmitter {
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
     this._validateProjectPath(project.path);
 
-    // 동일 프로젝트에 활성 task가 있으면 중복 실행 방지
     const activeTask = await taskQueries.getActiveForProject(projectId);
     if (activeTask) {
       throw new Error(`이미 실행 중인 task가 있습니다: ${activeTask.id} (${activeTask.status}). 완료 후 다시 시도하세요.`);
     }
 
-    // maxRounds는 MAX_ROUNDS 이상으로 보장 (외부 입력으로 하향 불가)
     const effectiveMaxRounds = Math.max(
       typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : MAX_ROUNDS,
       MAX_ROUNDS
@@ -135,25 +129,19 @@ export class AgentRunner extends EventEmitter {
     const task = await taskQueries.get(taskId);
     if (!task) throw new Error(`작업 없음: ${taskId}`);
 
-    // 삭제 플래그 먼저 설정 — _startPipeline catch/finally에서 DB 쿼리 스킵하도록
     this._deleted.add(taskId);
 
-    // building 상태이면 프로세스 kill 후 _running에서 제거
     const entry = this._running.get(taskId);
     if (entry?.process) {
       entry.process.kill('SIGTERM');
     }
     this._running.delete(taskId);
 
-    // 큐에서도 제거
     const queueIdx = this._queue.indexOf(taskId);
     if (queueIdx !== -1) this._queue.splice(queueIdx, 1);
 
-    // DB에서 logs → tasks 순서로 삭제
     await deleteTask(taskId);
 
-    // _deleted에서 제거하지 않고 일정 시간 후 정리
-    // (_startPipeline 비동기 흐름이 완전히 중단될 때까지 플래그 유지)
     setTimeout(() => this._deleted.delete(taskId), 5000);
     this.emit('task:deleted', { taskId, projectId: task.project_id });
     return { taskId, projectId: task.project_id };
@@ -171,7 +159,6 @@ export class AgentRunner extends EventEmitter {
     const project = await projectQueries.get(task.project_id);
     const safeCwd = this._validateProjectPath(project.path);
 
-    // 파이프라인 시작 시 _running에 초기 엔트리 등록 (concurrent 제한 및 stop 지원)
     if (!this._running.has(taskId)) {
       this._running.set(taskId, { process: null, phase: PHASE.PLAN, round: 0 });
     }
@@ -181,14 +168,11 @@ export class AgentRunner extends EventEmitter {
     try {
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd);
-      // planner 완료 후 삭제 여부 확인
       if (this._deleted.has(taskId)) return;
 
       let round = task.round || 0;
       let evalResult = null;
-      // 매 반복마다 DB에서 최신 max_rounds 및 eval 결과를 읽기 위해 루프 시작 시 재로드
       while (true) {
-        // 삭제 요청이 있으면 즉시 중단
         if (this._deleted.has(taskId)) break;
         const currentTask = await taskQueries.get(taskId);
         if (round >= currentTask.max_rounds) break;
@@ -200,14 +184,12 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
         await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd);
-        // build 완료 후 삭제 여부 재확인
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
         evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
-        // eval 완료 후 삭제 여부 재확인
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
@@ -226,13 +208,11 @@ export class AgentRunner extends EventEmitter {
           try {
             deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
           } catch (deployErr) {
-            // commit/deploy 에서 예외가 발생해도 task는 DONE으로 처리
             console.error(`[pipeline] commit/deploy 예외 발생 (task는 DONE 처리): ${deployErr.message}`);
             await logQueries.append({ task_id: taskId, phase: 'deploy', round, level: 'error',
               content: `[commit/deploy 예외] ${deployErr.message.substring(0, 500)}` });
             deployResult = 'deploy_failed';
           }
-          // deploy 실패 여부와 무관하게 DONE으로 기록하되, deploy_status는 이미 updateDeploy로 구분됨
           const deployFailed = deployResult === 'deploy_failed';
           console.log(`[pipeline] 완료 처리: deployResult=${deployResult}, deployFailed=${deployFailed}`);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
@@ -241,7 +221,6 @@ export class AgentRunner extends EventEmitter {
         }
 
         if (isLastRound) {
-          // 최대 라운드 도달 — eval 불합격으로 종료 (커밋/배포 없음)
           const unresolvedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues.length : null;
           console.log(`[pipeline] 최대 라운드(${round}/${currentTask.max_rounds}) 도달 — eval 불합격으로 종료. unresolvedIssues=${unresolvedIssues}`);
           await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'warn',
@@ -253,7 +232,6 @@ export class AgentRunner extends EventEmitter {
         }
       }
     } catch (err) {
-      // 삭제된 태스크이면 DB 업데이트 스킵 (deleteTask가 이미 처리함)
       if (this._deleted.has(taskId)) {
         console.log(`[pipeline] taskId=${taskId} 삭제 진행 중 — catch 블록 스킵`);
       } else if (err.message === 'RATE_LIMIT') {
@@ -291,7 +269,6 @@ export class AgentRunner extends EventEmitter {
     let plan;
     try {
       plan = parseJson(output);
-      // 누락 필드 보정: title/summary가 없는 경우 task.prompt로 대체
       if (!plan.title) plan.title = task.prompt.slice(0, 100);
       if (!plan.summary) plan.summary = plan.title;
       if (!Array.isArray(plan.features)) plan.features = [];
@@ -312,9 +289,6 @@ export class AgentRunner extends EventEmitter {
     await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
   }
 
-  // eval 합격 여부 판정
-  // issues 배열이 존재(Array.isArray)하면 비어있어야 합격으로 인정
-  // 빈 문자열, null, whitespace-only 항목은 실질적 이슈가 아닌 것으로 처리
   _isEvalPassed(evalResult) {
     if (!evalResult || evalResult.passed !== true || (evalResult.score ?? 0) < 80) return false;
     if (Array.isArray(evalResult.issues)) {
@@ -330,8 +304,6 @@ export class AgentRunner extends EventEmitter {
     this.emit('phase:start', { taskId: task.id, phase: 'deploying', round });
 
     const commitMsg = `feat: ${plan.title || task.prompt.slice(0, 60)} (task=${task.id}, round=${round})`;
-
-    // harness/ 절대 경로를 realpath로 확정 (symlink/상대경로 오류 방지)
     const harnessAbsPath = fs.realpathSync(path.resolve(__dirname, '../..'));
     const safeCwdReal = fs.existsSync(safeCwd) ? fs.realpathSync(safeCwd) : safeCwd;
 
@@ -341,150 +313,94 @@ export class AgentRunner extends EventEmitter {
 
     let commitSha = null;
 
-    // ── 커밋 헬퍼: 주어진 git root에서 stageTarget을 add 후 commit ──
-    // spawnSync를 사용하여 인수를 배열로 전달 → 쉘 이스케이프 문제 없음
     const doCommit = async (label, gitRoot, stageTarget) => {
       console.log(`[deploy] [${label}] git root=${gitRoot}, stageTarget=${stageTarget}`);
 
-      // ── git status (디버그) ──
-      const statusRes = spawnSync('git', ['status', '--short'], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
-      });
+      const statusRes = spawnSync('git', ['status', '--short'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
       const statusOut = (statusRes.stdout || '').trim();
       console.log(`[deploy] [${label}] git status:\n${statusOut || '(변경 없음)'}`);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-        content: `[${label}] git status: ${statusOut || 'clean'}` });
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[${label}] git status: ${statusOut || 'clean'}` });
 
-      // ── git add ──
-      const addRes = spawnSync('git', ['add', '--', stageTarget], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
-      });
+      const addRes = spawnSync('git', ['add', '--', stageTarget], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
       if (addRes.error || addRes.status !== 0) {
         const addStderr = (addRes.stderr || '').trim();
         const addStdout = (addRes.stdout || '').trim();
-        const addMsg = addStderr || addStdout || (addRes.error?.message ?? 'git add 실패');
         console.error(`[deploy] [${label}] git add 실패: stderr=${addStderr} | stdout=${addStdout}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[commit ${label} add 실패] stderr=${addStderr} | stdout=${addStdout} | msg=${addMsg}`.substring(0, 1000) });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit ${label} add 실패] stderr=${addStderr} | stdout=${addStdout}`.substring(0, 1000) });
         return null;
       }
 
-      // ── staged 확인 ──
-      const stagedRes = spawnSync('git', ['diff', '--cached', '--name-only'], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
-      });
+      const stagedRes = spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
       const stagedOut = (stagedRes.stdout || '').trim();
       console.log(`[deploy] [${label}] staged files: ${stagedOut || '(없음)'}`);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-        content: `[${label}] staged: ${stagedOut || 'none'}` });
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[${label}] staged: ${stagedOut || 'none'}` });
 
       if (!stagedOut) {
         console.log(`[deploy] [${label}] 스테이징된 변경사항 없음 — 커밋 건너뜀`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[commit ${label}] nothing staged — skipped` });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label}] nothing staged — skipped` });
         return null;
       }
 
-      // ── git commit ──
-      const commitRes = spawnSync('git', ['commit', '-m', commitMsg], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe',
-      });
+      const commitRes = spawnSync('git', ['commit', '-m', commitMsg], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
       if (commitRes.error || commitRes.status !== 0) {
         const cStderr = (commitRes.stderr || '').trim();
         const cStdout = (commitRes.stdout || '').trim();
         const cMsg = cStderr || cStdout || (commitRes.error?.message ?? 'git commit 실패');
-        // nothing to commit 메시지는 stdout에 있는 경우도 있음
         if (cMsg.includes('nothing to commit') || cMsg.includes('nothing added to commit')) {
           console.log(`[deploy] [${label}] 커밋할 변경사항 없음 — 건너뜀`);
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-            content: `[commit ${label}] nothing to commit — skipped` });
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label}] nothing to commit — skipped` });
           return null;
         }
-        // 실패 시 git status로 원인 추가 파악
-        const gitStatusRes = spawnSync('git', ['status'], {
-          cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
-        });
-        const gitStatusOut = (gitStatusRes.stdout || '').trim();
         console.error(`[deploy] [${label}] commit 실패: stderr=${cStderr} | stdout=${cStdout}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[commit ${label} 실패] stderr=${cStderr} | stdout=${cStdout} | status=${gitStatusOut}`.substring(0, 1000) });
-        return null; // commit 실패해도 deploy는 계속 진행
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit ${label} 실패] stderr=${cStderr} | stdout=${cStdout}`.substring(0, 1000) });
+        return null;
       }
 
-      // ── 커밋 stdout/stderr info 로깅 (hook 메시지 등 포함) ──
       const cSuccessStdout = (commitRes.stdout || '').trim();
       const cSuccessStderr = (commitRes.stderr || '').trim();
-      if (cSuccessStdout) {
-        console.log(`[deploy] [${label}] commit stdout: ${cSuccessStdout}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[commit ${label} stdout] ${cSuccessStdout}`.substring(0, 1000) });
-      }
-      if (cSuccessStderr) {
-        console.log(`[deploy] [${label}] commit stderr: ${cSuccessStderr}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[commit ${label} stderr] ${cSuccessStderr}`.substring(0, 1000) });
-      }
+      if (cSuccessStdout) await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label} stdout] ${cSuccessStdout}`.substring(0, 1000) });
+      if (cSuccessStderr) await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label} stderr] ${cSuccessStderr}`.substring(0, 1000) });
 
-      // ── SHA 조회 ──
-      const shaRes = spawnSync('git', ['rev-parse', 'HEAD'], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe',
-      });
+      const shaRes = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
       const sha = (shaRes.stdout || '').trim();
       console.log(`[deploy] [${label}] commit 완료: ${sha}`);
-      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-        content: `[commit ${label}] sha=${sha}` });
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label}] sha=${sha}` });
 
-      // ── git push ──
-      const pushRes = spawnSync('git', ['push'], {
-        cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe',
-      });
+      const pushRes = spawnSync('git', ['push'], { cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe' });
       const pushStdout = (pushRes.stdout || '').trim();
       const pushStderr = (pushRes.stderr || '').trim();
       if (pushRes.error || pushRes.status !== 0) {
         console.error(`[deploy] [${label}] git push 실패: stderr=${pushStderr} | stdout=${pushStdout}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[push ${label} 실패] stderr=${pushStderr} | stdout=${pushStdout}`.substring(0, 1000) });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[push ${label} 실패] stderr=${pushStderr} | stdout=${pushStdout}`.substring(0, 1000) });
       } else {
         console.log(`[deploy] [${label}] git push 완료: ${pushStderr || pushStdout || 'ok'}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[push ${label}] stdout=${pushStdout} | stderr=${pushStderr}`.substring(0, 1000) });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[push ${label}] stdout=${pushStdout} | stderr=${pushStderr}`.substring(0, 1000) });
       }
 
       return sha;
     };
 
-    // ── 1. 어느 git 저장소에 속하는지 판별하여 커밋 ──────────────
-    // 전략: safeCwdReal의 git root와 harness의 git root를 구한 뒤,
-    //   - 같은 저장소이면 한 번만 커밋 (stageTarget = '.' — 모든 변경사항 포함)
-    //   - 다른 저장소이면 각각 커밋
-
     let harnessGitRoot = null;
     let projectGitRoot = null;
 
     {
-      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-        cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
-      });
+      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: harnessAbsPath, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
       if (res.error || res.status !== 0) {
         const errMsg = (res.stderr || '').trim() || (res.error?.message ?? 'git rev-parse 실패');
         console.error(`[deploy] harness git root 탐색 실패: stderr=${errMsg}`);
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[deploy] harness git root 탐색 실패: ${errMsg}` });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy] harness git root 탐색 실패: ${errMsg}` });
       } else {
         harnessGitRoot = (res.stdout || '').trim();
       }
     }
 
     {
-      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-        cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000, stdio: 'pipe',
-      });
+      const res = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: safeCwdReal, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
       if (res.error || res.status !== 0) {
         const errMsg = (res.stderr || '').trim() || (res.error?.message ?? 'git rev-parse 실패');
         if (!errMsg.includes('not a git repository')) {
           console.error(`[deploy] project git root 탐색 실패: stderr=${errMsg}`);
-          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-            content: `[deploy] project git root 탐색 실패: ${errMsg}` });
+          await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy] project git root 탐색 실패: ${errMsg}` });
         } else {
           console.log(`[deploy] project(${safeCwdReal}): git 저장소 아님 — 건너뜀`);
         }
@@ -497,24 +413,15 @@ export class AgentRunner extends EventEmitter {
     console.log(`[deploy] sameRepo=${sameRepo}, harnessGitRoot=${harnessGitRoot}, projectGitRoot=${projectGitRoot}`);
 
     if (sameRepo) {
-      // 같은 저장소 — '.' 으로 모든 변경사항 스테이징 후 한 번만 커밋
       const sha = await doCommit('repo', harnessGitRoot, '.');
-      if (sha) {
-        commitSha = sha;
-        await taskQueries.updateCommit(task.id, commitSha);
-      }
+      if (sha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
     } else {
-      // 다른 저장소 — harness와 project 각각 커밋
       if (harnessGitRoot) {
         const harnessRelPath = path.relative(harnessGitRoot, harnessAbsPath);
-        // harnessRelPath가 '' 이면 git root 자체가 harness
         const harnessStageTarget = harnessRelPath === '' ? '.' : harnessRelPath;
         if (!harnessStageTarget.startsWith('..')) {
           const sha = await doCommit('harness', harnessGitRoot, harnessStageTarget);
-          if (sha) {
-            commitSha = sha;
-            await taskQueries.updateCommit(task.id, commitSha);
-          }
+          if (sha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
         } else {
           console.error(`[deploy] harnessAbsPath가 gitRoot 외부 — 건너뜀: ${harnessRelPath}`);
         }
@@ -525,10 +432,7 @@ export class AgentRunner extends EventEmitter {
         const projectStageTarget = projectRelPath === '' ? '.' : projectRelPath;
         if (!projectStageTarget.startsWith('..')) {
           const sha = await doCommit('project', projectGitRoot, projectStageTarget);
-          if (sha && !commitSha) {
-            commitSha = sha;
-            await taskQueries.updateCommit(task.id, commitSha);
-          }
+          if (sha && !commitSha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
         } else {
           console.error(`[deploy] safeCwdReal이 projectGitRoot 외부 — 건너뜀: ${projectRelPath}`);
         }
@@ -536,10 +440,8 @@ export class AgentRunner extends EventEmitter {
     }
 
     console.log(`[deploy] 커밋 단계 완료. commitSha=${commitSha || '(없음)'}`);
-    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-      content: `[deploy] 커밋 완료. sha=${commitSha || 'none'}` });
+    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy] 커밋 완료. sha=${commitSha || 'none'}` });
 
-    // ── 2. deploy (커밋 결과와 무관하게 항상 실행) ─────────────────
     const deployScript = _findDeployScript(safeCwd, harnessAbsPath);
     console.log(`[deploy] 배포 스크립트 탐색: ${deployScript ? `${deployScript.cmd} (cwd=${deployScript.cwd})` : '없음'}`);
     if (!deployScript) {
@@ -551,30 +453,25 @@ export class AgentRunner extends EventEmitter {
     }
 
     console.log(`[deploy] 배포 실행: ${deployScript.cmd}`);
-    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-      content: `[deploy] 배포 실행: ${deployScript.cmd}` });
+    await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy] 배포 실행: ${deployScript.cmd}` });
 
     let deployFailed = false;
     {
       const deployArgs = deployScript.cmd.split(/\s+/);
       const deployCli = deployArgs[0];
       const deployCliArgs = deployArgs.slice(1);
-      const deployRes = spawnSync(deployCli, deployCliArgs, {
-        cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000, stdio: 'pipe',
-      });
+      const deployRes = spawnSync(deployCli, deployCliArgs, { cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000, stdio: 'pipe' });
       const deployStdout = (deployRes.stdout || '').trim();
       const deployStderr = (deployRes.stderr || '').trim();
       if (deployRes.error || deployRes.status !== 0) {
         const deployMsg = deployStderr || deployStdout || (deployRes.error?.message ?? 'deploy 실패');
         await taskQueries.updateDeploy(task.id, 'failed');
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error',
-          content: `[deploy 실패] stderr=${deployStderr} | stdout=${deployStdout}`.substring(0, 500) });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[deploy 실패] stderr=${deployStderr} | stdout=${deployStdout}`.substring(0, 500) });
         console.error(`[deploy] 배포 실패: ${deployMsg}`);
         deployFailed = true;
       } else {
         await taskQueries.updateDeploy(task.id, 'success');
-        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
-          content: `[deploy 성공] stdout=${deployStdout} | stderr=${deployStderr}`.substring(0, 500) });
+        await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy 성공] stdout=${deployStdout} | stderr=${deployStderr}`.substring(0, 500) });
         console.log(`[deploy] 배포 성공: ${deployScript.cmd}`);
       }
     }
@@ -650,14 +547,12 @@ export class AgentRunner extends EventEmitter {
     try { return parseJson(output); }
     catch (e) {
       console.error(`[eval] JSON 파싱 실패: ${e.message}\n출력(500자): ${output.substring(0, 500)}`);
-      // 텍스트에서 score/passed 값을 정규식으로 추출 시도
       const scoreMatch = output.match(/"score"\s*:\s*(\d+)/);
       const passedMatch = output.match(/"passed"\s*:\s*(true|false)/);
       const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
       const passed = passedMatch ? passedMatch[1] === 'true' : false;
 
-      // issues 배열: 깊이 추적으로 첫 번째 완결된 배열을 추출
-      let issues = null; // null = 파싱 미시도 또는 실패
+      let issues = null;
       let issuesParseFailed = false;
       const issuesKeyIdx = output.indexOf('"issues"');
       if (issuesKeyIdx !== -1) {
@@ -676,30 +571,19 @@ export class AgentRunner extends EventEmitter {
           if (arrEnd !== -1) {
             try { issues = JSON.parse(output.slice(arrStart, arrEnd + 1)); }
             catch { issuesParseFailed = true; }
-          } else {
-            issuesParseFailed = true;
-          }
-        } else {
-          issuesParseFailed = true;
-        }
-      } else {
-        // issues 키 자체가 출력에 없는 경우도 파싱 실패로 처리
-        issuesParseFailed = true;
-      }
+          } else { issuesParseFailed = true; }
+        } else { issuesParseFailed = true; }
+      } else { issuesParseFailed = true; }
 
-      // suggestions/summary: 멀티라인 문자열을 처리하기 위해 s 플래그 사용
       const suggestionsMatch = output.match(/"suggestions"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
       const summaryMatch = output.match(/"summary"\s*:\s*"((?:[^"\\]|\\[\s\S])*)"/s);
       const suggestions = suggestionsMatch ? suggestionsMatch[1] : output.substring(0, 500);
       const summary = summaryMatch ? summaryMatch[1] : '';
 
-      // passed=true이면서 issues 파싱 실패 → 빈 배열로 보정 (합격 판정 보호)
-      // passed=false이면서 issues 파싱 실패 → suggestions 텍스트를 issue로 사용
       if (issues === null) {
         if (passed) {
           issues = [];
         } else if (issuesParseFailed) {
-          // suggestions에서 의미있는 정보 추출, 없으면 출력 앞부분 사용
           const fallbackText = suggestions && suggestions !== output.substring(0, 500)
             ? suggestions.substring(0, 200)
             : output.replace(/```[\s\S]*?```/g, '').trim().substring(0, 200);
@@ -714,8 +598,8 @@ export class AgentRunner extends EventEmitter {
   }
 
   // ── Claude CLI 실행 ────────────────────────────────────────
-  // 모든 단계 동일 args: --print --verbose --output-format stream-json
-  // stdio: ['ignore', 'pipe', 'pipe'] → stdin 닫기로 인터랙티브 모드 방지
+  // --setting-sources user 제거: CLAUDE_CONFIG_DIR(harness 전용)을 우선 사용
+  // hasTrustDialogAccepted는 .claude.json의 projects 항목에서 true로 설정 필요
 
   _claudeRun({ taskId, phase, round, cwd, prompt }) {
     return new Promise((resolve, reject) => {
@@ -725,13 +609,12 @@ export class AgentRunner extends EventEmitter {
         '--output-format', 'stream-json',
         '--model', CLAUDE_MODEL,
         '--dangerously-skip-permissions',
-        '--setting-sources', 'user',
+        // '--setting-sources user' 제거 — CLAUDE_CONFIG_DIR의 harness 전용 설정 사용
         prompt,
       ];
 
-      console.log(`[CLI spawn:${phase}] round=${round}`);
+      console.log(`[CLI spawn:${phase}] round=${round} cwd=${cwd}`);
 
-      // 삭제된 태스크이면 즉시 resolve (프로세스 실행 불필요)
       if (this._deleted.has(taskId)) {
         resolve('');
         return;
@@ -740,15 +623,21 @@ export class AgentRunner extends EventEmitter {
       const entry = { process: null, phase, round };
       this._running.set(taskId, entry);
 
+      // CLAUDE_CONFIG_DIR을 명시적으로 env에 포함하여 harness 전용 설정 사용
+      const spawnEnv = {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+      };
+
       const proc = spawn(CLAUDE_CLI, args, {
         cwd,
-        env: process.env,
+        env: spawnEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       entry.process = proc;
 
-      let finalResult    = null; // result 타입에서 추출한 최종 응답
-      let assistantTexts = [];   // assistant 블록 텍스트 누적 (폴백용)
+      let finalResult    = null;
+      let assistantTexts = [];
       let buffer         = '';
       let rejected       = false;
 
@@ -780,13 +669,11 @@ export class AgentRunner extends EventEmitter {
       });
 
       proc.on('close', (code) => {
-        // 우선순위: result 타입 > assistant 블록 누적 텍스트
         const output = (finalResult && finalResult.trim())
           ? finalResult
           : assistantTexts.join('\n').trim();
         console.log(`[CLI close:${phase}] code=${code} outputLen=${output.length} source=${finalResult ? 'result' : 'assistant'}`);
         if (rejected) return;
-        // 삭제 진행 중인 태스크이면 에러 없이 resolve (SIGTERM에 의한 종료)
         if (this._deleted.has(taskId)) {
           resolve(output.trim());
           return;
@@ -805,7 +692,6 @@ export class AgentRunner extends EventEmitter {
         if (block.type === 'text') {
           logQueries.append({ task_id: taskId, phase, round, level: 'info', content: block.text });
           this.emit('agent:text', { taskId, phase, round, content: block.text });
-          // assistant 블록 텍스트를 별도 누적 (result가 빈 경우 폴백으로 사용)
           if (onAssistantText) onAssistantText(block.text);
         } else if (block.type === 'tool_use') {
           logQueries.append({ task_id: taskId, phase, round, level: 'tool', content: `[도구: ${block.name}]` });
@@ -813,7 +699,6 @@ export class AgentRunner extends EventEmitter {
         }
       }
     } else if (msg.type === 'result') {
-      // result 타입: Claude CLI 최종 응답
       if (msg.is_error) {
         logQueries.append({ task_id: taskId, phase, round, level: 'error', content: `[result error] ${JSON.stringify(msg.result||'')}` });
       } else if (msg.result != null) {
@@ -833,10 +718,7 @@ export class AgentRunner extends EventEmitter {
 }
 
 // ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────
-// 우선순위: deploy.sh → Makefile (deploy target) → pm2 ecosystem
-// safeCwd 기준으로 먼저 탐색하고, 없으면 harnessAbsPath 기준으로도 탐색
 function _findDeployScript(cwd, harnessAbsPath) {
-  // safeCwd 기준 탐색 후, 없으면 harnessAbsPath 기준으로 재탐색
   const searchDirs = [cwd];
   if (harnessAbsPath && harnessAbsPath !== cwd) {
     searchDirs.push(harnessAbsPath);
