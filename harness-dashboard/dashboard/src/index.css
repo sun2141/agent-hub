@@ -1,0 +1,31 @@
+/* index.css */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0c0c0e;
+  --bg2:     #141417;
+  --bg3:     #1c1c21;
+  --border:  rgba(255, 255, 255, 0.08);
+  --text:    #e8e8f0;
+  --text2:   #9090a8;
+  --text3:   #585870;
+  --accent:  #6b5ef8;
+  --accent2: #8b7fff;
+  --green:   #3dd68c;
+  --orange:  #f59e0b;
+  --red:     #f87171;
+  --blue:    #60a5fa;
+  --font:    'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono:    'SF Mono', 'Fira Code', monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { cursor: pointer; font-family: inherit; border: none; background: none; }
+input, textarea { font-family: inherit; }

@@ -17,3 +17,12 @@ __pycache__/
 # 하네스 데이터 (DB, 민감 정보)
 harness/data/
 harness/.env
+
+# harness-dashboard
+harness-dashboard/harness/data/
+harness-dashboard/harness/.env
+harness-dashboard/harness/logs/
+harness-dashboard/harness/*.pid
+harness-dashboard/dashboard/.env.local
+harness-dashboard/dashboard/dist/
+harness-dashboard/harness.pid
