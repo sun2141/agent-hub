@@ -73,6 +73,7 @@ export class AgentRunner extends EventEmitter {
     super();
     this._running = new Map();
     this._queue   = [];
+    this._deleted = new Set(); // 삭제 진행 중인 taskId 추적
   }
 
   _validateProjectPath(projectPath) {
@@ -134,6 +135,9 @@ export class AgentRunner extends EventEmitter {
     const task = await taskQueries.get(taskId);
     if (!task) throw new Error(`작업 없음: ${taskId}`);
 
+    // 삭제 플래그 먼저 설정 — _startPipeline catch/finally에서 DB 쿼리 스킵하도록
+    this._deleted.add(taskId);
+
     // building 상태이면 프로세스 kill 후 _running에서 제거
     const entry = this._running.get(taskId);
     if (entry?.process) {
@@ -148,6 +152,9 @@ export class AgentRunner extends EventEmitter {
     // DB에서 logs → tasks 순서로 삭제
     await deleteTask(taskId);
 
+    // _deleted에서 제거하지 않고 일정 시간 후 정리
+    // (_startPipeline 비동기 흐름이 완전히 중단될 때까지 플래그 유지)
+    setTimeout(() => this._deleted.delete(taskId), 5000);
     this.emit('task:deleted', { taskId, projectId: task.project_id });
     return { taskId, projectId: task.project_id };
   }
@@ -174,11 +181,15 @@ export class AgentRunner extends EventEmitter {
     try {
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd);
+      // planner 완료 후 삭제 여부 확인
+      if (this._deleted.has(taskId)) return;
 
       let round = task.round || 0;
       let evalResult = null;
       // 매 반복마다 DB에서 최신 max_rounds 및 eval 결과를 읽기 위해 루프 시작 시 재로드
       while (true) {
+        // 삭제 요청이 있으면 즉시 중단
+        if (this._deleted.has(taskId)) break;
         const currentTask = await taskQueries.get(taskId);
         if (round >= currentTask.max_rounds) break;
         round++;
@@ -189,11 +200,15 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
         await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd);
+        // build 완료 후 삭제 여부 재확인
+        if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
         evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+        // eval 완료 후 삭제 여부 재확인
+        if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
 
@@ -238,7 +253,10 @@ export class AgentRunner extends EventEmitter {
         }
       }
     } catch (err) {
-      if (err.message === 'RATE_LIMIT') {
+      // 삭제된 태스크이면 DB 업데이트 스킵 (deleteTask가 이미 처리함)
+      if (this._deleted.has(taskId)) {
+        console.log(`[pipeline] taskId=${taskId} 삭제 진행 중 — catch 블록 스킵`);
+      } else if (err.message === 'RATE_LIMIT') {
         await taskQueries.updateStatus(taskId, PHASE.PAUSED);
         this.emit('task:paused', { taskId, reason: 'rate_limit' });
       } else {
@@ -713,6 +731,12 @@ export class AgentRunner extends EventEmitter {
 
       console.log(`[CLI spawn:${phase}] round=${round}`);
 
+      // 삭제된 태스크이면 즉시 resolve (프로세스 실행 불필요)
+      if (this._deleted.has(taskId)) {
+        resolve('');
+        return;
+      }
+
       const entry = { process: null, phase, round };
       this._running.set(taskId, entry);
 
@@ -762,6 +786,11 @@ export class AgentRunner extends EventEmitter {
           : assistantTexts.join('\n').trim();
         console.log(`[CLI close:${phase}] code=${code} outputLen=${output.length} source=${finalResult ? 'result' : 'assistant'}`);
         if (rejected) return;
+        // 삭제 진행 중인 태스크이면 에러 없이 resolve (SIGTERM에 의한 종료)
+        if (this._deleted.has(taskId)) {
+          resolve(output.trim());
+          return;
+        }
         if (code !== 0 && !output) reject(new Error(`Claude CLI 비정상 종료 (code: ${code})`));
         else resolve(output.trim());
       });
