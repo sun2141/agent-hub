@@ -1,5 +1,6 @@
 {
-  "buildCommand": "echo 'project-hub build'",
-  "outputDirectory": "public",
-  "installCommand": "echo 'skip install'"
+  "framework": null,
+  "installCommand": "echo 'skip root install'",
+  "buildCommand": "cd harness-dashboard/dashboard && npm install && npm run build",
+  "outputDirectory": "harness-dashboard/dashboard/dist"
 }
