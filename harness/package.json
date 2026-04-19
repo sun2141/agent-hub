@@ -11,6 +11,7 @@
     "status": "bash scripts/start.sh status",
     "dev": "node --watch src/index.js",
     "tunnel": "bash scripts/tunnel.sh",
+    "tunnel:quick": "bash scripts/tunnel.sh --quick",
     "watchdog": "node src/watchdog.js"
   },
   "dependencies": {
