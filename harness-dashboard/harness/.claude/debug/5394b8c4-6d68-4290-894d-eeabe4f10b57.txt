@@ -1,0 +1,277 @@
+2026-04-18T16:26:28.510Z [ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat '/Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json'
+2026-04-18T16:26:28.510Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588510
+2026-04-18T16:26:28.510Z [DEBUG] Setting permissions for new file: 600
+2026-04-18T16:26:28.511Z [DEBUG] Temp file written successfully, size: 50 bytes
+2026-04-18T16:26:28.511Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588510 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.511Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.511Z [DEBUG] [init] configureGlobalMTLS starting
+2026-04-18T16:26:28.511Z [DEBUG] [init] configureGlobalMTLS complete
+2026-04-18T16:26:28.511Z [DEBUG] [init] configureGlobalAgents starting
+2026-04-18T16:26:28.511Z [DEBUG] [init] configureGlobalAgents complete
+2026-04-18T16:26:28.512Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588512
+2026-04-18T16:26:28.512Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.512Z [DEBUG] Temp file written successfully, size: 130 bytes
+2026-04-18T16:26:28.512Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.513Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588512 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.513Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.515Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588515
+2026-04-18T16:26:28.515Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.515Z [DEBUG] Temp file written successfully, size: 166 bytes
+2026-04-18T16:26:28.515Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.515Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588515 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.515Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.520Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-04-18T16:26:28.526Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-04-18T16:26:28.527Z [DEBUG] [claudeai-mcp] Checking gate (cached)...
+2026-04-18T16:26:28.527Z [DEBUG] [claudeai-mcp] Gate returned: false
+2026-04-18T16:26:28.527Z [DEBUG] [claudeai-mcp] Disabled via gate
+2026-04-18T16:26:28.527Z [DEBUG] [ToolSearch:optimistic] mode=tst-auto, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-04-18T16:26:28.528Z [DEBUG] [STARTUP] Running setup()...
+2026-04-18T16:26:28.530Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/sun/agent-hub/harness-dashboard/harness/.claude/skills, project=[/Users/sun/face-product/.claude/skills]
+2026-04-18T16:26:28.530Z [DEBUG] Error log sink initialized
+2026-04-18T16:26:28.530Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-04-18T16:26:28.530Z [DEBUG] Total plugin skills loaded: 0
+2026-04-18T16:26:28.530Z [DEBUG] Total plugin commands loaded: 0
+2026-04-18T16:26:28.533Z [DEBUG] [STARTUP] setup() completed in 5ms
+2026-04-18T16:26:28.533Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-04-18T16:26:28.534Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-04-18T16:26:28.534Z [DEBUG] Total plugin agents loaded: 0
+2026-04-18T16:26:28.534Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-04-18T16:26:28.534Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 2 bundled skills
+2026-04-18T16:26:28.535Z [DEBUG] [STARTUP] Commands and agents loaded in 2ms
+2026-04-18T16:26:28.535Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-04-18T16:26:28.535Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-04-18T16:26:28.535Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-04-18T16:26:28.536Z [DEBUG] Total LSP servers loaded: 0
+2026-04-18T16:26:28.539Z [DEBUG] [STARTUP] MCP configs loaded in 19ms
+2026-04-18T16:26:28.539Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-04-18T16:26:28.539Z [DEBUG] LSP manager initialized with 0 servers
+2026-04-18T16:26:28.539Z [DEBUG] LSP server manager initialized successfully
+2026-04-18T16:26:28.539Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-04-18T16:26:28.549Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-04-18T16:26:28.549Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-04-18T16:26:28.555Z [DEBUG] Watching for changes in setting files /Users/sun/agent-hub/harness-dashboard/harness/.claude/settings.json, /Users/sun/face-product/.claude/settings.json, /Users/sun/face-product/.claude/settings.local.json...
+2026-04-18T16:26:28.569Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-04-18T16:26:28.577Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-04-18T16:26:28.577Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:26:28.577Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-04-18T16:26:28.578Z [DEBUG] installPluginsForHeadless: starting
+2026-04-18T16:26:28.578Z [DEBUG] Found 0 installed plugins (V2 format)
+2026-04-18T16:26:28.578Z [DEBUG] installPluginsForHeadless: no missing plugins or marketplaces configured
+2026-04-18T16:26:28.584Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588584
+2026-04-18T16:26:28.584Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.584Z [DEBUG] Temp file written successfully, size: 243 bytes
+2026-04-18T16:26:28.584Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.584Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588584 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.584Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.584Z [DEBUG] Total plugin output styles loaded: 0
+2026-04-18T16:26:28.599Z [DEBUG] Watching for changes in skill/command directories: /Users/sun/face-product/.claude/skills...
+2026-04-18T16:26:28.609Z [DEBUG] Ripgrep first use test: PASSED (mode=builtin, path=/Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/arm64-darwin/rg)
+2026-04-18T16:26:28.625Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-04-18T16:26:28.625Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-04-18T16:26:28.625Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-04-18T16:26:28.625Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-04-18T16:26:28.626Z [DEBUG] Getting matching hook commands for UserPromptSubmit with query: undefined
+2026-04-18T16:26:28.626Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:26:28.626Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-04-18T16:26:28.628Z [DEBUG] autocompact: tokens=153 threshold=167000 effectiveWindow=180000
+2026-04-18T16:26:28.636Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:26:28.636Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:26:28.636Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:26:28.648Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)\n    at async file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:3741\n    at async file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:2624\n    at async w99 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:960:3930)\n    at async NL7 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:2557)\n    at async pU1 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10195)\n    at async Yc (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10891)"
+2026-04-18T16:26:28.648Z [DEBUG] countTokensWithFallback: API returned null, trying haiku fallback (18 tools)
+2026-04-18T16:26:28.648Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:26:28.648Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:26:28.648Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:26:28.649Z [DEBUG] countTokensWithFallback: haiku fallback failed: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:26:28.649Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)\n    at async RL7 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:4563)\n    at async pU1 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10467)\n    at async Yc (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10891)\n    at async n1q (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3547:554)"
+2026-04-18T16:26:28.649Z [DEBUG] countToolDefinitionTokens returned null for 18 tools: Task, TaskOutput, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWri...
+2026-04-18T16:26:28.978Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588978
+2026-04-18T16:26:28.978Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.978Z [DEBUG] Temp file written successfully, size: 315 bytes
+2026-04-18T16:26:28.978Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.978Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588978 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.978Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.980Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588980
+2026-04-18T16:26:28.980Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.980Z [DEBUG] Temp file written successfully, size: 343 bytes
+2026-04-18T16:26:28.980Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.980Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588980 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.981Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.983Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588983
+2026-04-18T16:26:28.983Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.983Z [DEBUG] Temp file written successfully, size: 395 bytes
+2026-04-18T16:26:28.983Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.983Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588983 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.984Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.985Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588985
+2026-04-18T16:26:28.985Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.985Z [DEBUG] Temp file written successfully, size: 581 bytes
+2026-04-18T16:26:28.985Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.985Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588985 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.985Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.987Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588987
+2026-04-18T16:26:28.987Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.987Z [DEBUG] Temp file written successfully, size: 624 bytes
+2026-04-18T16:26:28.987Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.987Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588987 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.988Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.989Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588989
+2026-04-18T16:26:28.989Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.990Z [DEBUG] Temp file written successfully, size: 663 bytes
+2026-04-18T16:26:28.990Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.990Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588989 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.990Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.991Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588991
+2026-04-18T16:26:28.991Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.992Z [DEBUG] Temp file written successfully, size: 702 bytes
+2026-04-18T16:26:28.992Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.992Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588991 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.992Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.993Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588993
+2026-04-18T16:26:28.993Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.993Z [DEBUG] Temp file written successfully, size: 740 bytes
+2026-04-18T16:26:28.993Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.993Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588993 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.993Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.995Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588995
+2026-04-18T16:26:28.995Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.995Z [DEBUG] Temp file written successfully, size: 772 bytes
+2026-04-18T16:26:28.995Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.995Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588995 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.995Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.996Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588996
+2026-04-18T16:26:28.996Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.996Z [DEBUG] Temp file written successfully, size: 802 bytes
+2026-04-18T16:26:28.996Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.996Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588996 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.996Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.997Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588997
+2026-04-18T16:26:28.997Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.997Z [DEBUG] Temp file written successfully, size: 835 bytes
+2026-04-18T16:26:28.997Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.997Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588997 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.998Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:28.998Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588998
+2026-04-18T16:26:28.998Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:28.999Z [DEBUG] Temp file written successfully, size: 887 bytes
+2026-04-18T16:26:28.999Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:28.999Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529588998 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:28.999Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.000Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589000
+2026-04-18T16:26:29.000Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.000Z [DEBUG] Temp file written successfully, size: 923 bytes
+2026-04-18T16:26:29.000Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.000Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589000 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.000Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.002Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589002
+2026-04-18T16:26:29.002Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.002Z [DEBUG] Temp file written successfully, size: 953 bytes
+2026-04-18T16:26:29.002Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.002Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589002 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.002Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.003Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589003
+2026-04-18T16:26:29.003Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.004Z [DEBUG] Temp file written successfully, size: 977 bytes
+2026-04-18T16:26:29.004Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.004Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589003 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.004Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.005Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589005
+2026-04-18T16:26:29.005Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.005Z [DEBUG] Temp file written successfully, size: 1014 bytes
+2026-04-18T16:26:29.005Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.005Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589005 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.005Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.006Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589006
+2026-04-18T16:26:29.006Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.006Z [DEBUG] Temp file written successfully, size: 1049 bytes
+2026-04-18T16:26:29.006Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.006Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589006 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.006Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.007Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589007
+2026-04-18T16:26:29.007Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.008Z [DEBUG] Temp file written successfully, size: 1094 bytes
+2026-04-18T16:26:29.008Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.008Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589007 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.008Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.009Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589009
+2026-04-18T16:26:29.009Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.009Z [DEBUG] Temp file written successfully, size: 1138 bytes
+2026-04-18T16:26:29.009Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.009Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589009 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.009Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.010Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589010
+2026-04-18T16:26:29.010Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.010Z [DEBUG] Temp file written successfully, size: 1173 bytes
+2026-04-18T16:26:29.010Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.010Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589010 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.010Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.011Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589011
+2026-04-18T16:26:29.011Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.011Z [DEBUG] Temp file written successfully, size: 1220 bytes
+2026-04-18T16:26:29.011Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.011Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589011 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.011Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.012Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589012
+2026-04-18T16:26:29.012Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.012Z [DEBUG] Temp file written successfully, size: 1258 bytes
+2026-04-18T16:26:29.012Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.012Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589012 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.012Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.013Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589013
+2026-04-18T16:26:29.013Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.013Z [DEBUG] Temp file written successfully, size: 1296 bytes
+2026-04-18T16:26:29.013Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.013Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589013 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.013Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.014Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589014
+2026-04-18T16:26:29.014Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.014Z [DEBUG] Temp file written successfully, size: 1341 bytes
+2026-04-18T16:26:29.014Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.014Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589014 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.014Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.015Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589015
+2026-04-18T16:26:29.015Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.015Z [DEBUG] Temp file written successfully, size: 1387 bytes
+2026-04-18T16:26:29.015Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.015Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589015 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.015Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.016Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589016
+2026-04-18T16:26:29.016Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.016Z [DEBUG] Temp file written successfully, size: 1429 bytes
+2026-04-18T16:26:29.016Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.016Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589016 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.016Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.017Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-04-18T16:26:29.019Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589019
+2026-04-18T16:26:29.019Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.019Z [DEBUG] Temp file written successfully, size: 1496 bytes
+2026-04-18T16:26:29.019Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.019Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589019 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.019Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.021Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.39.9af; cc_entrypoint=sdk-cli; cch=00000;
+2026-04-18T16:26:29.021Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:26:29.021Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:26:29.023Z [DEBUG] Writing to temp file: /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589023
+2026-04-18T16:26:29.023Z [DEBUG] Preserving file permissions: 100600
+2026-04-18T16:26:29.023Z [DEBUG] Temp file written successfully, size: 1534 bytes
+2026-04-18T16:26:29.023Z [DEBUG] Applied original permissions to temp file
+2026-04-18T16:26:29.023Z [DEBUG] Renaming /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json.tmp.36858.1776529589023 to /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json
+2026-04-18T16:26:29.023Z [DEBUG] File /Users/sun/agent-hub/harness-dashboard/harness/.claude/.claude.json written atomically
+2026-04-18T16:26:29.023Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:26:29.024Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.39.2c2; cc_entrypoint=sdk-cli; cch=00000;
+2026-04-18T16:26:29.026Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:26:29.026Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:26:29.027Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:26:29.028Z [ERROR] API error (attempt 1/11): Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:26:29.028Z [ERROR] Error in API request: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:26:29.028Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)"
+2026-04-18T16:26:29.028Z [ERROR] API error (attempt 1/11): Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:26:29.028Z [ERROR] Error in API request: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:26:29.028Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)"
+2026-04-18T16:26:29.030Z [DEBUG] Getting matching hook commands for Stop with query: undefined
+2026-04-18T16:26:29.030Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:26:29.030Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-04-18T16:26:29.031Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-04-18T16:26:29.031Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:26:29.031Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)

@@ -1,5 +1,5 @@
 // dashboard/src/App.jsx
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useHarness } from './hooks/useHarness';
 
 // ── 상수 ──────────────────────────────────────────────────
@@ -85,28 +85,166 @@ function TabBar({ active, onChange }) {
   );
 }
 
+const FILE_SIZE_WARN = 5 * 1024 * 1024; // 5MB
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const TEXT_TYPES  = ['text/plain', 'text/markdown', 'text/csv', 'application/json'];
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => {
+      // result: "data:<mime>;base64,<data>" → extract base64 part
+      const result = reader.result;
+      const comma  = result.indexOf(',');
+      resolve(comma !== -1 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+}
+
+// ── 컴포넌트: 첨부 파일 미리보기 ──────────────────────────
+function AttachmentPreview({ attachments, onRemove }) {
+  if (!attachments.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {attachments.map((att, i) => (
+        <div key={i} style={{
+          position: 'relative',
+          display: 'inline-flex', alignItems: 'center',
+          background: 'var(--bg3)', border: '1px solid var(--border)',
+          borderRadius: 6, overflow: 'hidden',
+          maxWidth: 100,
+        }}>
+          {att.type === 'image' ? (
+            <img
+              src={`data:${att.mimeType};base64,${att.data}`}
+              alt={att.name}
+              style={{ width: 72, height: 72, objectFit: 'cover', display: 'block' }}
+            />
+          ) : (
+            <div style={{
+              width: 72, height: 72, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', gap: 4, padding: 4,
+            }}>
+              <span style={{ fontSize: 22 }}>📄</span>
+              <span style={{
+                fontSize: 9, color: 'var(--text2)', textAlign: 'center',
+                wordBreak: 'break-all', lineHeight: 1.2,
+                maxWidth: 64, overflow: 'hidden',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              }}>
+                {att.name}
+              </span>
+            </div>
+          )}
+          <button
+            onClick={() => onRemove(i)}
+            title="제거"
+            style={{
+              position: 'absolute', top: 2, right: 2,
+              width: 16, height: 16, borderRadius: '50%',
+              background: 'rgba(0,0,0,0.6)', color: '#fff',
+              fontSize: 10, lineHeight: '16px', textAlign: 'center',
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── 컴포넌트: 프로젝트 카드 ───────────────────────────────
 function ProjectCard({ project, onRun, currentTask }) {
-  const [showForm, setShowForm] = useState(false);
-  const [prompt, setPrompt]     = useState('');
-  const [sending, setSending]   = useState(false);
-  const [err, setErr]           = useState('');
+  const [showForm, setShowForm]       = useState(false);
+  const [prompt, setPrompt]           = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [sending, setSending]         = useState(false);
+  const [err, setErr]                 = useState('');
+  const fileInputRef = useRef(null);
 
-  const latest  = project.latestTask;
+  const latest    = project.latestTask;
   const phaseInfo = latest ? (PHASE[latest.status] || PHASE.pending) : null;
-  const isActive = currentTask?.project === project.id;
+  const isActive  = currentTask?.project === project.id;
+
+  async function handleFileSelect(e) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const warnings = [];
+    const newAttachments = [];
+
+    for (const file of files) {
+      if (file.size > FILE_SIZE_WARN) {
+        warnings.push(`${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) — 5MB 초과. 큰 파일은 API 비용과 지연을 증가시킵니다.`);
+      }
+
+      const isImage = IMAGE_TYPES.includes(file.type);
+      const isText  = TEXT_TYPES.includes(file.type) || file.type.startsWith('text/');
+
+      if (isImage) {
+        const data = await readFileAsBase64(file);
+        newAttachments.push({ type: 'image', name: file.name, mimeType: file.type, data });
+      } else if (isText) {
+        const text = await readFileAsText(file);
+        newAttachments.push({ type: 'text', name: file.name, mimeType: file.type, text });
+      } else {
+        warnings.push(`${file.name}: 지원하지 않는 파일 형식 (이미지 또는 텍스트 파일만 가능)`);
+      }
+    }
+
+    if (warnings.length) {
+      setErr(warnings.join('\n'));
+    } else {
+      setErr('');
+    }
+
+    if (newAttachments.length) {
+      setAttachments(prev => [...prev, ...newAttachments]);
+    }
+
+    // 같은 파일 재선택 허용을 위해 초기화
+    e.target.value = '';
+  }
+
+  function removeAttachment(index) {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
+  }
 
   async function handleRun() {
     if (!prompt.trim()) { setErr('작업 내용을 입력하세요'); return; }
     setSending(true); setErr('');
     try {
-      await onRun({ projectId: project.id, prompt: prompt.trim() });
-      setPrompt(''); setShowForm(false);
+      await onRun({
+        projectId: project.id,
+        prompt: prompt.trim(),
+        attachments: attachments.length ? attachments : undefined,
+      });
+      setPrompt(''); setAttachments([]); setShowForm(false);
     } catch (e) {
       setErr(e.message);
     } finally {
       setSending(false);
     }
+  }
+
+  function handleCancel() {
+    setShowForm(false);
+    setPrompt('');
+    setAttachments([]);
+    setErr('');
   }
 
   return (
@@ -172,7 +310,53 @@ function ProjectCard({ project, onRun, currentTask }) {
               marginBottom: 8,
             }}
           />
-          {err && <p style={{ color: 'var(--red)', fontSize: 12, marginBottom: 6 }}>{err}</p>}
+
+          {/* 첨부 파일 미리보기 */}
+          <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
+
+          {/* 파일 첨부 버튼 */}
+          <div style={{ marginBottom: 8 }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,.md,.txt,.csv,.json"
+              onChange={handleFileSelect}
+              style={{ display: 'none' }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                padding: '5px 12px', borderRadius: 6,
+                background: 'var(--bg3)', border: '1px solid var(--border)',
+                color: 'var(--text2)', fontSize: 12,
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+              }}
+            >
+              <span>📎</span>
+              파일 첨부
+              {attachments.length > 0 && (
+                <span style={{
+                  background: 'var(--accent)', color: '#fff',
+                  borderRadius: 10, padding: '0 5px', fontSize: 10, fontWeight: 700,
+                }}>
+                  {attachments.length}
+                </span>
+              )}
+            </button>
+            <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 8 }}>
+              이미지(PNG/JPG/GIF/WEBP), 텍스트 파일 지원
+            </span>
+          </div>
+
+          {err && (
+            <p style={{
+              color: 'var(--red)', fontSize: 12, marginBottom: 6,
+              whiteSpace: 'pre-line',
+            }}>
+              {err}
+            </p>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={handleRun}
@@ -187,7 +371,7 @@ function ProjectCard({ project, onRun, currentTask }) {
               {sending ? '실행 중...' : '실행'}
             </button>
             <button
-              onClick={() => { setShowForm(false); setPrompt(''); setErr(''); }}
+              onClick={handleCancel}
               style={{
                 padding: '8px 16px', borderRadius: 8,
                 background: 'var(--bg3)', color: 'var(--text2)', fontSize: 13,

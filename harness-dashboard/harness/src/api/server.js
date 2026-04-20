@@ -59,7 +59,7 @@ export function createApiServer(agentRunner) {
   const app = express();
   const httpServer = createServer(app);
 
-  app.use(express.json({ limit: '10kb' }));
+  app.use(express.json({ limit: '50mb' }));
   app.use(rateLimit);
 
   // CORS
@@ -200,7 +200,7 @@ export function createApiServer(agentRunner) {
   });
 
   app.post('/api/run', async (req, res) => {
-    const { projectId, prompt, maxRounds } = req.body;
+    const { projectId, prompt, maxRounds, attachments } = req.body;
     if (!validateString(projectId, 50) || !/^[a-z0-9-]+$/.test(projectId)) {
       return res.status(400).json({ error: 'projectId: 영문 소문자/숫자/하이픈만 허용' });
     }
@@ -214,8 +214,45 @@ export function createApiServer(agentRunner) {
         return res.status(400).json({ error: 'maxRounds: 1~20 사이 정수' });
       }
     }
+
+    // attachments 검증
+    let parsedAttachments;
+    if (attachments !== undefined) {
+      if (!Array.isArray(attachments)) {
+        return res.status(400).json({ error: 'attachments: 배열 형식 필요' });
+      }
+      if (attachments.length > 10) {
+        return res.status(400).json({ error: 'attachments: 최대 10개까지 첨부 가능' });
+      }
+      const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+      for (const att of attachments) {
+        if (!att || typeof att !== 'object') {
+          return res.status(400).json({ error: 'attachments: 각 항목은 객체여야 합니다' });
+        }
+        if (!['image', 'text'].includes(att.type)) {
+          return res.status(400).json({ error: 'attachments[].type: image 또는 text만 허용' });
+        }
+        if (typeof att.name !== 'string' || att.name.length > 255) {
+          return res.status(400).json({ error: 'attachments[].name: 255자 이하 문자열 필요' });
+        }
+        if (att.type === 'image') {
+          if (!ALLOWED_IMAGE_TYPES.includes(att.mimeType)) {
+            return res.status(400).json({ error: `attachments[].mimeType: PNG/JPEG/GIF/WEBP만 허용 (받은 값: ${att.mimeType})` });
+          }
+          if (typeof att.data !== 'string' || !att.data) {
+            return res.status(400).json({ error: 'attachments[].data: base64 문자열 필요' });
+          }
+        } else if (att.type === 'text') {
+          if (typeof att.text !== 'string') {
+            return res.status(400).json({ error: 'attachments[].text: 문자열 필요' });
+          }
+        }
+      }
+      parsedAttachments = attachments;
+    }
+
     try {
-      const taskId = await agentRunner.run({ projectId, prompt, maxRounds: parsedMaxRounds });
+      const taskId = await agentRunner.run({ projectId, prompt, maxRounds: parsedMaxRounds, attachments: parsedAttachments });
       res.json({ taskId, status: 'started' });
     } catch (err) { res.status(400).json({ error: err.message }); }
   });

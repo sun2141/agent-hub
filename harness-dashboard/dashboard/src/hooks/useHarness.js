@@ -139,10 +139,10 @@ export function useHarness() {
   }, []);
 
   // ── 액션 ────────────────────────────────────────────────
-  const runTask = useCallback(async ({ projectId, prompt, maxRounds }) => {
+  const runTask = useCallback(async ({ projectId, prompt, maxRounds, attachments }) => {
     const result = await apiFetch('/api/run', {
       method: 'POST',
-      body: JSON.stringify({ projectId, prompt, maxRounds }),
+      body: JSON.stringify({ projectId, prompt, maxRounds, attachments }),
     });
     await refresh();
     return result;

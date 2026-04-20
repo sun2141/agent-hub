@@ -1,0 +1,93 @@
+2026-04-18T16:31:31.729Z [DEBUG] [init] configureGlobalMTLS starting
+2026-04-18T16:31:31.730Z [DEBUG] [init] configureGlobalMTLS complete
+2026-04-18T16:31:31.730Z [DEBUG] [init] configureGlobalAgents starting
+2026-04-18T16:31:31.730Z [DEBUG] [init] configureGlobalAgents complete
+2026-04-18T16:31:31.736Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-04-18T16:31:31.742Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-04-18T16:31:31.742Z [DEBUG] [claudeai-mcp] Checking gate (cached)...
+2026-04-18T16:31:31.743Z [DEBUG] [claudeai-mcp] Gate returned: true
+2026-04-18T16:31:31.743Z [DEBUG] [claudeai-mcp] No access token
+2026-04-18T16:31:31.743Z [DEBUG] [ToolSearch:optimistic] mode=standard, ENABLE_TOOL_SEARCH=undefined, result=false
+2026-04-18T16:31:31.744Z [DEBUG] [STARTUP] Running setup()...
+2026-04-18T16:31:31.746Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/sun/agent-hub/harness-dashboard/harness/.claude/skills, project=[]
+2026-04-18T16:31:31.746Z [DEBUG] Error log sink initialized
+2026-04-18T16:31:31.747Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-04-18T16:31:31.747Z [DEBUG] Total plugin skills loaded: 0
+2026-04-18T16:31:31.747Z [DEBUG] Total plugin commands loaded: 0
+2026-04-18T16:31:31.749Z [DEBUG] [STARTUP] setup() completed in 5ms
+2026-04-18T16:31:31.749Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-04-18T16:31:31.750Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-04-18T16:31:31.751Z [DEBUG] Total plugin agents loaded: 0
+2026-04-18T16:31:31.751Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-04-18T16:31:31.751Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 2 bundled skills
+2026-04-18T16:31:31.751Z [DEBUG] [STARTUP] Commands and agents loaded in 2ms
+2026-04-18T16:31:31.752Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-04-18T16:31:31.752Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-04-18T16:31:31.752Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-04-18T16:31:31.752Z [DEBUG] Total LSP servers loaded: 0
+2026-04-18T16:31:31.754Z [DEBUG] [STARTUP] MCP configs loaded in 18ms
+2026-04-18T16:31:31.755Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-04-18T16:31:31.755Z [DEBUG] LSP manager initialized with 0 servers
+2026-04-18T16:31:31.755Z [DEBUG] LSP server manager initialized successfully
+2026-04-18T16:31:31.755Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-04-18T16:31:31.767Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-04-18T16:31:31.767Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-04-18T16:31:31.772Z [DEBUG] Watching for changes in setting files /Users/sun/agent-hub/harness-dashboard/harness/.claude/settings.json, /Users/sun/agent-hub/.claude/settings.json, /Users/sun/agent-hub/.claude/settings.local.json...
+2026-04-18T16:31:31.785Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-04-18T16:31:31.792Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-04-18T16:31:31.792Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:31:31.792Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-04-18T16:31:31.793Z [DEBUG] installPluginsForHeadless: starting
+2026-04-18T16:31:31.793Z [DEBUG] Found 0 installed plugins (V2 format)
+2026-04-18T16:31:31.793Z [DEBUG] installPluginsForHeadless: no missing plugins or marketplaces configured
+2026-04-18T16:31:31.794Z [DEBUG] [SystemPrompt] path=simple proactive=false
+2026-04-18T16:31:31.796Z [DEBUG] Total plugin output styles loaded: 0
+2026-04-18T16:31:31.811Z [DEBUG] Ripgrep first use test: PASSED (mode=builtin, path=/Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/arm64-darwin/rg)
+2026-04-18T16:31:31.814Z [DEBUG] Stats cache does not exist, returning empty cache
+2026-04-18T16:31:31.814Z [DEBUG] Stats cache empty, processing all historical data in background
+2026-04-18T16:31:31.817Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-04-18T16:31:31.817Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-04-18T16:31:31.818Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-04-18T16:31:31.818Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-04-18T16:31:31.818Z [DEBUG] Sending 1 skills via attachment (initial, 1 total sent)
+2026-04-18T16:31:31.819Z [DEBUG] Getting matching hook commands for UserPromptSubmit with query: undefined
+2026-04-18T16:31:31.819Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:31:31.819Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-04-18T16:31:31.821Z [DEBUG] autocompact: tokens=119 threshold=167000 effectiveWindow=180000
+2026-04-18T16:31:31.833Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:31:31.833Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:31:31.833Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:31:31.846Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)\n    at async file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:3741\n    at async file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:2624\n    at async w99 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:960:3930)\n    at async NL7 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:2557)\n    at async pU1 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10195)\n    at async Yc (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10891)"
+2026-04-18T16:31:31.846Z [DEBUG] countTokensWithFallback: API returned null, trying haiku fallback (17 tools)
+2026-04-18T16:31:31.846Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:31:31.846Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:31:31.846Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:31:31.847Z [DEBUG] countTokensWithFallback: haiku fallback failed: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:31:31.847Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)\n    at async RL7 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:961:4563)\n    at async pU1 (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10467)\n    at async Yc (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3530:10891)\n    at async n1q (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:3547:554)"
+2026-04-18T16:31:31.847Z [DEBUG] countToolDefinitionTokens returned null for 17 tools: Task, TaskOutput, Bash, Glob, Grep, ExitPlanMode, Read, Edit, Write, NotebookEdit, WebFetch, TodoWri...
+2026-04-18T16:31:32.105Z [DEBUG] Tool search disabled: ToolSearchTool is not available (may have been disallowed via disallowedTools).
+2026-04-18T16:31:32.108Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.39.c39; cc_entrypoint=sdk-cli; cch=00000;
+2026-04-18T16:31:32.110Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:31:32.110Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:31:32.111Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:31:32.112Z [ERROR] API error (attempt 1/11): Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:31:32.112Z [ERROR] Error in API request: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:31:32.112Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)"
+2026-04-18T16:31:32.114Z [DEBUG] Getting matching hook commands for Stop with query: undefined
+2026-04-18T16:31:32.114Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:31:32.114Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-04-18T16:31:32.114Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-04-18T16:31:32.114Z [DEBUG] Found 0 hook matchers in settings
+2026-04-18T16:31:32.114Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)
+2026-04-18T16:31:32.122Z [DEBUG] LSP server manager shut down successfully
+2026-04-18T16:31:32.122Z [DEBUG] BigQuery metrics exporter flush complete
+2026-04-18T16:31:32.122Z [DEBUG] BigQuery metrics exporter flush complete
+2026-04-18T16:31:32.122Z [DEBUG] BigQuery metrics exporter shutdown complete
+2026-04-18T16:31:32.316Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-04-18T16:31:32.316Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.39.9af; cc_entrypoint=sdk-cli; cch=00000;
+2026-04-18T16:31:32.316Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-04-18T16:31:32.316Z [DEBUG] [API:auth] OAuth token check starting
+2026-04-18T16:31:32.317Z [DEBUG] [API:auth] OAuth token check complete
+2026-04-18T16:31:32.317Z [ERROR] API error (attempt 1/11): Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:31:32.317Z [ERROR] Error in API request: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-04-18T16:31:32.317Z [ERROR] "Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the \"X-Api-Key\" or \"Authorization\" headers to be explicitly omitted\n    at aC.validateHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:1008)\n    at aC.buildHeaders (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:8565)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async aC.buildRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:7623)\n    at async aC.makeRequest (file:///Users/sun/.nvm/versions/node/v22.14.0/lib/node_modules/@anthropic-ai/claude-code/cli.js:393:3388)"
