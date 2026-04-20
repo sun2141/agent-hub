@@ -589,7 +589,7 @@ export class AgentRunner extends EventEmitter {
       for (const block of msg.message.content) {
         if (block.type === 'text') {
           logQueries.append({ task_id: taskId, phase, round, level: 'info', content: block.text });
-          this.emit('agent:text', { taskId, phase, round, content: block.text });
+          this.emit('agent:text', { taskId, phase, round, text: block.text });
           onText(block.text);
         } else if (block.type === 'tool_use') {
           logQueries.append({ task_id: taskId, phase, round, level: 'tool', content: `[tool: ${block.name}]` });

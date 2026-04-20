@@ -327,25 +327,27 @@ function ProjectCard({ project, onRun, currentTask }) {
             <button
               onClick={() => fileInputRef.current?.click()}
               style={{
-                padding: '5px 12px', borderRadius: 6,
-                background: 'var(--bg3)', border: '1px solid var(--border)',
-                color: 'var(--text2)', fontSize: 12,
-                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '6px 14px', borderRadius: 6,
+                background: 'var(--bg3)',
+                border: '1px solid rgba(255,255,255,0.18)',
+                color: 'var(--text)', fontSize: 12,
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                fontWeight: 500,
               }}
             >
-              <span>📎</span>
+              <span style={{ fontSize: 14 }}>📎</span>
               파일 첨부
               {attachments.length > 0 && (
                 <span style={{
                   background: 'var(--accent)', color: '#fff',
-                  borderRadius: 10, padding: '0 5px', fontSize: 10, fontWeight: 700,
+                  borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700,
                 }}>
                   {attachments.length}
                 </span>
               )}
             </button>
             <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 8 }}>
-              이미지(PNG/JPG/GIF/WEBP), 텍스트 파일 지원
+              이미지 · 텍스트 파일 지원
             </span>
           </div>
 
