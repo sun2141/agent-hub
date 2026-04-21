@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask } from '../db/db.js';
 
@@ -81,7 +82,7 @@ export class AgentRunner extends EventEmitter {
     return resolved;
   }
 
-  async run({ projectId, prompt, maxRounds }) {
+  async run({ projectId, prompt, maxRounds, attachments }) {
     const project = await projectQueries.get(projectId);
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
     this._validateProjectPath(project.path);
@@ -97,6 +98,12 @@ export class AgentRunner extends EventEmitter {
     );
 
     const taskId = `task_${Date.now()}_${randomUUID().slice(0, 6)}`;
+
+    // 첨부 파일을 임시 디렉토리에 저장
+    if (attachments?.length) {
+      this._saveAttachments(taskId, attachments);
+    }
+
     await taskQueries.create({ id: taskId, project_id: projectId, prompt, max_rounds: effectiveMaxRounds });
     this.emit('task:created', { taskId, projectId });
 
@@ -107,6 +114,46 @@ export class AgentRunner extends EventEmitter {
     }
     this._startPipeline(taskId);
     return taskId;
+  }
+
+  _saveAttachments(taskId, attachments) {
+    const tmpDir = path.join(os.tmpdir(), `harness-attach-${taskId}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const paths = [];
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i];
+      try {
+        if (att.type === 'image') {
+          const ext = att.mimeType === 'image/png' ? '.png'
+            : att.mimeType === 'image/gif' ? '.gif'
+            : att.mimeType === 'image/webp' ? '.webp' : '.jpg';
+          const fileName = `attachment_${i}${ext}`;
+          const filePath = path.join(tmpDir, fileName);
+          fs.writeFileSync(filePath, Buffer.from(att.data, 'base64'));
+          paths.push(filePath);
+        } else if (att.type === 'text') {
+          const fileName = `attachment_${i}_${path.basename(att.name || 'file.txt').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+          const filePath = path.join(tmpDir, fileName);
+          fs.writeFileSync(filePath, att.text, 'utf8');
+          paths.push(filePath);
+        }
+      } catch (err) {
+        console.error(`[attachments] 파일 저장 실패: ${err.message}`);
+      }
+    }
+    this._attachments = this._attachments || new Map();
+    this._attachments.set(taskId, paths);
+    console.log(`[attachments] taskId=${taskId}, ${paths.length}개 저장: ${tmpDir}`);
+  }
+
+  _cleanupAttachments(taskId) {
+    if (!this._attachments?.has(taskId)) return;
+    const paths = this._attachments.get(taskId);
+    this._attachments.delete(taskId);
+    if (paths.length > 0) {
+      const tmpDir = path.dirname(paths[0]);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    }
   }
 
   async resume(taskId) {
@@ -158,16 +205,17 @@ export class AgentRunner extends EventEmitter {
     let task      = await taskQueries.get(taskId);
     const project = await projectQueries.get(task.project_id);
     const safeCwd = this._validateProjectPath(project.path);
+    const attachmentPaths = this._attachments?.get(taskId) || [];
 
     if (!this._running.has(taskId)) {
       this._running.set(taskId, { process: null, phase: PHASE.PLAN, round: 0 });
     }
 
-    console.log(`[pipeline] 시작: taskId=${taskId}, project=${project.name}(${project.path})`);
+    console.log(`[pipeline] 시작: taskId=${taskId}, project=${project.name}(${project.path}), attachments=${attachmentPaths.length}`);
 
     try {
       let plan = task.plan ? JSON.parse(task.plan) : null;
-      if (!plan) plan = await this._runPlanner(task, project, safeCwd);
+      if (!plan) plan = await this._runPlanner(task, project, safeCwd, attachmentPaths);
       if (this._deleted.has(taskId)) return;
 
       let round = task.round || 0;
@@ -183,7 +231,7 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.updateStatus(taskId, PHASE.BUILD);
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
-        await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd);
+        await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd, attachmentPaths);
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
@@ -244,15 +292,16 @@ export class AgentRunner extends EventEmitter {
       }
     } finally {
       this._running.delete(taskId);
+      this._cleanupAttachments(taskId);
       this._drainQueue();
     }
   }
 
-  async _runPlanner(task, project, safeCwd) {
+  async _runPlanner(task, project, safeCwd, attachmentPaths = []) {
     await taskQueries.updateStatus(task.id, PHASE.PLAN);
     this.emit('phase:start', { taskId: task.id, phase: PHASE.PLAN, round: 0 });
 
-    const prompt = [
+    const promptParts = [
       '[지시사항]',
       '당신은 소프트웨어 프로젝트 플래너입니다.',
       '사용자의 요청을 분석하여 구체적인 구현 계획을 JSON으로 반환하세요.',
@@ -262,8 +311,17 @@ export class AgentRunner extends EventEmitter {
       '',
       '[작업 요청]',
       task.prompt,
-    ].join('\n');
+    ];
 
+    if (attachmentPaths.length) {
+      promptParts.push('', '[첨부 파일]');
+      for (const ap of attachmentPaths) {
+        promptParts.push(`- ${ap}`);
+      }
+      promptParts.push('위 첨부 파일들을 참고하여 계획을 수립하세요.');
+    }
+
+    const prompt = promptParts.join('\n');
     const output = await this._claudeRun({ taskId: task.id, phase: 'plan', round: 0, cwd: safeCwd, prompt });
 
     let plan;
@@ -282,10 +340,17 @@ export class AgentRunner extends EventEmitter {
     return plan;
   }
 
-  async _runGenerator(task, project, plan, round, maxRounds, prevEval, safeCwd) {
-    const prompt = round === 1
+  async _runGenerator(task, project, plan, round, maxRounds, prevEval, safeCwd, attachmentPaths = []) {
+    let prompt = round === 1
       ? this._buildGeneratorPrompt(plan, round, maxRounds)
       : this._buildRetryPrompt(plan, prevEval, round, maxRounds);
+    if (round === 1 && attachmentPaths.length) {
+      prompt += '\n\n[첨부 파일]\n';
+      for (const ap of attachmentPaths) {
+        prompt += `- ${ap}\n`;
+      }
+      prompt += '위 첨부 파일들의 내용을 참고하여 작업을 수행하세요.';
+    }
     await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
   }
 
@@ -691,7 +756,7 @@ export class AgentRunner extends EventEmitter {
       for (const block of msg.message.content) {
         if (block.type === 'text') {
           logQueries.append({ task_id: taskId, phase, round, level: 'info', content: block.text });
-          this.emit('agent:text', { taskId, phase, round, content: block.text });
+          this.emit('agent:text', { taskId, phase, round, content: block.text, text: block.text });
           if (onAssistantText) onAssistantText(block.text);
         } else if (block.type === 'tool_use') {
           logQueries.append({ task_id: taskId, phase, round, level: 'tool', content: `[도구: ${block.name}]` });
