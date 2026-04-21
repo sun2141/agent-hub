@@ -119,7 +119,7 @@ export class AgentRunner extends EventEmitter {
   _saveAttachments(taskId, attachments) {
     const tmpDir = path.join(os.tmpdir(), `harness-attach-${taskId}`);
     fs.mkdirSync(tmpDir, { recursive: true });
-    const paths = [];
+    const saved = [];
     for (let i = 0; i < attachments.length; i++) {
       const att = attachments[i];
       try {
@@ -130,28 +130,29 @@ export class AgentRunner extends EventEmitter {
           const fileName = `attachment_${i}${ext}`;
           const filePath = path.join(tmpDir, fileName);
           fs.writeFileSync(filePath, Buffer.from(att.data, 'base64'));
-          paths.push(filePath);
+          saved.push({ type: 'image', name: att.name || fileName, path: filePath, mimeType: att.mimeType || 'image/jpeg' });
         } else if (att.type === 'text') {
-          const fileName = `attachment_${i}_${path.basename(att.name || 'file.txt').replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+          const safeName = path.basename(att.name || 'file.txt').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const fileName = `attachment_${i}_${safeName}`;
           const filePath = path.join(tmpDir, fileName);
-          fs.writeFileSync(filePath, att.text, 'utf8');
-          paths.push(filePath);
+          fs.writeFileSync(filePath, att.text || '', 'utf8');
+          saved.push({ type: 'text', name: att.name || safeName, path: filePath, content: (att.text || '').slice(0, 8000) });
         }
       } catch (err) {
         console.error(`[attachments] 파일 저장 실패: ${err.message}`);
       }
     }
     this._attachments = this._attachments || new Map();
-    this._attachments.set(taskId, paths);
-    console.log(`[attachments] taskId=${taskId}, ${paths.length}개 저장: ${tmpDir}`);
+    this._attachments.set(taskId, saved);
+    console.log(`[attachments] taskId=${taskId}, ${saved.length}개 저장: ${tmpDir}`);
   }
 
   _cleanupAttachments(taskId) {
     if (!this._attachments?.has(taskId)) return;
-    const paths = this._attachments.get(taskId);
+    const saved = this._attachments.get(taskId);
     this._attachments.delete(taskId);
-    if (paths.length > 0) {
-      const tmpDir = path.dirname(paths[0]);
+    if (saved.length > 0) {
+      const tmpDir = path.dirname(saved[0].path);
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     }
   }
@@ -314,9 +315,13 @@ export class AgentRunner extends EventEmitter {
     ];
 
     if (attachmentPaths.length) {
-      promptParts.push('', '[첨부 파일]');
+      promptParts.push('', '[첨부 파일 컨텍스트]', '다음 파일들이 작업 컨텍스트로 제공됩니다:');
       for (const ap of attachmentPaths) {
-        promptParts.push(`- ${ap}`);
+        if (ap.type === 'text') {
+          promptParts.push(`\n--- 첨부파일: ${ap.name} ---\n${ap.content || ''}\n--- 끝: ${ap.name} ---`);
+        } else if (ap.type === 'image') {
+          promptParts.push(`- 이미지 파일: ${ap.name}`);
+        }
       }
       promptParts.push('위 첨부 파일들을 참고하여 계획을 수립하세요.');
     }
@@ -345,11 +350,14 @@ export class AgentRunner extends EventEmitter {
       ? this._buildGeneratorPrompt(plan, round, maxRounds)
       : this._buildRetryPrompt(plan, prevEval, round, maxRounds);
     if (round === 1 && attachmentPaths.length) {
-      prompt += '\n\n[첨부 파일]\n';
+      prompt += '\n\n[첨부 파일 컨텍스트]\n다음 파일들을 참고하여 작업을 수행하세요:\n';
       for (const ap of attachmentPaths) {
-        prompt += `- ${ap}\n`;
+        if (ap.type === 'text') {
+          prompt += `\n--- 첨부파일: ${ap.name} ---\n${ap.content || ''}\n--- 끝: ${ap.name} ---\n`;
+        } else if (ap.type === 'image') {
+          prompt += `- 이미지 파일: ${ap.name}\n`;
+        }
       }
-      prompt += '위 첨부 파일들의 내용을 참고하여 작업을 수행하세요.';
     }
     await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
   }

@@ -86,22 +86,8 @@ function TabBar({ active, onChange }) {
 }
 
 const FILE_SIZE_WARN = 5 * 1024 * 1024; // 5MB
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-const TEXT_TYPES  = ['text/plain', 'text/markdown', 'text/csv', 'application/json'];
-
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => {
-      // result: "data:<mime>;base64,<data>" → extract base64 part
-      const result = reader.result;
-      const comma  = result.indexOf(',');
-      resolve(comma !== -1 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
+// 텍스트로 읽을 수 있는 파일 확장자
+const TEXT_EXTENSIONS = /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|env|toml|xml|sql|java|c|cpp|h|go|rs|rb|php|swift|kt|vue|svelte|prisma|graphql|csv|log|conf|ini|gitignore|dockerfile)$/i;
 
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
@@ -112,56 +98,31 @@ function readFileAsText(file) {
   });
 }
 
-// ── 컴포넌트: 첨부 파일 미리보기 ──────────────────────────
-function AttachmentPreview({ attachments, onRemove }) {
-  if (!attachments.length) return null;
+// ── 첨부된 파일명 뱃지 ────────────────────────────────────
+function AttachedFileBadges({ fileNames, onRemoveAll }) {
+  if (!fileNames.length) return null;
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-      {attachments.map((att, i) => (
-        <div key={i} style={{
-          position: 'relative',
-          display: 'inline-flex', alignItems: 'center',
-          background: 'var(--bg3)', border: '1px solid var(--border)',
-          borderRadius: 6, overflow: 'hidden',
-          maxWidth: 100,
+    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {fileNames.map((name, i) => (
+        <span key={i} style={{
+          background: 'var(--accent)22',
+          border: '1px solid var(--accent)',
+          borderRadius: 12,
+          padding: '2px 10px',
+          fontSize: 11, color: 'var(--accent2)',
+          display: 'inline-flex', alignItems: 'center', gap: 4,
         }}>
-          {att.type === 'image' ? (
-            <img
-              src={`data:${att.mimeType};base64,${att.data}`}
-              alt={att.name}
-              style={{ width: 72, height: 72, objectFit: 'cover', display: 'block' }}
-            />
-          ) : (
-            <div style={{
-              width: 72, height: 72, display: 'flex', flexDirection: 'column',
-              alignItems: 'center', justifyContent: 'center', gap: 4, padding: 4,
-            }}>
-              <span style={{ fontSize: 22 }}>📄</span>
-              <span style={{
-                fontSize: 9, color: 'var(--text2)', textAlign: 'center',
-                wordBreak: 'break-all', lineHeight: 1.2,
-                maxWidth: 64, overflow: 'hidden',
-                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-              }}>
-                {att.name}
-              </span>
-            </div>
-          )}
-          <button
-            onClick={() => onRemove(i)}
-            title="제거"
-            style={{
-              position: 'absolute', top: 2, right: 2,
-              width: 16, height: 16, borderRadius: '50%',
-              background: 'rgba(0,0,0,0.6)', color: '#fff',
-              fontSize: 10, lineHeight: '16px', textAlign: 'center',
-              padding: 0,
-            }}
-          >
-            ×
-          </button>
-        </div>
+          📄 {name}
+        </span>
       ))}
+      {fileNames.length > 1 && (
+        <button
+          onClick={onRemoveAll}
+          style={{ fontSize: 11, color: 'var(--text3)', padding: '2px 6px' }}
+        >
+          모두 제거
+        </button>
+      )}
     </div>
   );
 }
@@ -170,7 +131,7 @@ function AttachmentPreview({ attachments, onRemove }) {
 function ProjectCard({ project, onRun, currentTask }) {
   const [showForm, setShowForm]       = useState(false);
   const [prompt, setPrompt]           = useState('');
-  const [attachments, setAttachments] = useState([]);
+  const [attachedFiles, setAttachedFiles] = useState([]); // { name, text }
   const [sending, setSending]         = useState(false);
   const [err, setErr]                 = useState('');
   const fileInputRef = useRef(null);
@@ -183,56 +144,53 @@ function ProjectCard({ project, onRun, currentTask }) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    const warnings = [];
-    const newAttachments = [];
+    const errors = [];
+    const newFiles = [];
 
     for (const file of files) {
       if (file.size > FILE_SIZE_WARN) {
-        warnings.push(`${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) — 5MB 초과. 큰 파일은 API 비용과 지연을 증가시킵니다.`);
+        errors.push(`${file.name}: 5MB 초과 파일입니다`);
+        continue;
       }
 
-      const isImage = IMAGE_TYPES.includes(file.type);
-      const isText  = TEXT_TYPES.includes(file.type) || file.type.startsWith('text/');
+      const isText = file.type.startsWith('text/') || TEXT_EXTENSIONS.test(file.name);
+      if (!isText) {
+        errors.push(`${file.name}: 텍스트/코드 파일만 지원합니다 (이미지 불가)`);
+        continue;
+      }
 
-      if (isImage) {
-        const data = await readFileAsBase64(file);
-        newAttachments.push({ type: 'image', name: file.name, mimeType: file.type, data });
-      } else if (isText) {
+      try {
         const text = await readFileAsText(file);
-        newAttachments.push({ type: 'text', name: file.name, mimeType: file.type, text });
-      } else {
-        warnings.push(`${file.name}: 지원하지 않는 파일 형식 (이미지 또는 텍스트 파일만 가능)`);
+        newFiles.push({ name: file.name, text });
+      } catch {
+        errors.push(`${file.name}: 파일 읽기 실패`);
       }
     }
 
-    if (warnings.length) {
-      setErr(warnings.join('\n'));
-    } else {
-      setErr('');
-    }
+    if (newFiles.length) setAttachedFiles(prev => [...prev, ...newFiles]);
+    if (errors.length) setErr(errors.join('\n'));
+    else setErr('');
 
-    if (newAttachments.length) {
-      setAttachments(prev => [...prev, ...newAttachments]);
-    }
-
-    // 같은 파일 재선택 허용을 위해 초기화
     e.target.value = '';
   }
 
-  function removeAttachment(index) {
-    setAttachments(prev => prev.filter((_, i) => i !== index));
+  function handleRemoveAllAttachments() {
+    setAttachedFiles([]);
   }
 
   async function handleRun() {
     if (!prompt.trim()) { setErr('작업 내용을 입력하세요'); return; }
     setSending(true); setErr('');
     try {
+      const attachments = attachedFiles.length > 0
+        ? attachedFiles.map(f => ({ type: 'text', name: f.name, text: f.text }))
+        : undefined;
       await onRun({
         projectId: project.id,
         prompt: prompt.trim(),
-        attachments: attachments.length ? attachments : undefined,
+        attachments,
       });
-      setPrompt(''); setAttachments([]); setShowForm(false);
+      setPrompt(''); setAttachedFiles([]); setShowForm(false);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -243,7 +201,7 @@ function ProjectCard({ project, onRun, currentTask }) {
   function handleCancel() {
     setShowForm(false);
     setPrompt('');
-    setAttachments([]);
+    setAttachedFiles([]);
     setErr('');
   }
 
@@ -285,12 +243,12 @@ function ProjectCard({ project, onRun, currentTask }) {
         </p>
       )}
 
-      {/* 파일 input (항상 존재, display:none) */}
+      {/* 파일 input (항상 DOM에 존재, display:none) */}
       <input
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,.md,.txt,.csv,.json"
+        accept=".md,.txt,.json,.js,.ts,.jsx,.tsx,.py,.yaml,.yml,.html,.css,.sh,.env,.toml,.xml,.sql,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.prisma,.graphql,.csv,.log,.conf,.ini"
         onChange={handleFileSelect}
         style={{ display: 'none' }}
       />
@@ -308,7 +266,7 @@ function ProjectCard({ project, onRun, currentTask }) {
             + 작업 실행
           </button>
           <button
-            onClick={() => { setShowForm(true); fileInputRef.current?.click(); }}
+            onClick={() => { setShowForm(true); setTimeout(() => fileInputRef.current?.click(), 50); }}
             title="파일 첨부 후 작업 실행"
             style={{
               padding: '8px 12px', borderRadius: 8,
@@ -320,14 +278,6 @@ function ProjectCard({ project, onRun, currentTask }) {
             }}
           >
             <span style={{ fontSize: 16 }}>📎</span>
-            {attachments.length > 0 && (
-              <span style={{
-                background: 'var(--accent)', color: '#fff',
-                borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700,
-              }}>
-                {attachments.length}
-              </span>
-            )}
           </button>
         </div>
       ) : (
@@ -336,20 +286,24 @@ function ProjectCard({ project, onRun, currentTask }) {
             value={prompt}
             onChange={e => { setPrompt(e.target.value); setErr(''); }}
             placeholder="작업 내용을 입력하세요..."
-            rows={3}
+            rows={4}
             style={{
               width: '100%', padding: '10px', borderRadius: 8,
               background: 'var(--bg3)', border: '1px solid var(--border)',
               color: 'var(--text)', fontSize: 13, resize: 'vertical',
               marginBottom: 8,
+              fontFamily: 'var(--mono)',
             }}
           />
 
-          {/* 첨부 파일 미리보기 */}
-          <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
+          {/* 첨부된 파일명 뱃지 */}
+          <AttachedFileBadges
+            fileNames={attachedFiles.map(f => f.name)}
+            onRemoveAll={handleRemoveAllAttachments}
+          />
 
-          {/* 파일 첨부 버튼 - 항상 표시 */}
-          <div style={{ marginBottom: 8 }}>
+          {/* 파일 첨부 버튼 */}
+          <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
             <button
               onClick={() => fileInputRef.current?.click()}
               style={{
@@ -363,17 +317,17 @@ function ProjectCard({ project, onRun, currentTask }) {
             >
               <span style={{ fontSize: 14 }}>📎</span>
               파일 첨부
-              {attachments.length > 0 && (
+              {attachedFiles.length > 0 && (
                 <span style={{
                   background: 'var(--accent)', color: '#fff',
                   borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700,
                 }}>
-                  {attachments.length}
+                  {attachedFiles.length}
                 </span>
               )}
             </button>
-            <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 8 }}>
-              이미지 · 텍스트 파일 지원
+            <span style={{ color: 'var(--text3)', fontSize: 11 }}>
+              텍스트·코드 파일 지원 (내용이 지시에 포함됨)
             </span>
           </div>
 
@@ -385,6 +339,7 @@ function ProjectCard({ project, onRun, currentTask }) {
               {err}
             </p>
           )}
+
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={handleRun}

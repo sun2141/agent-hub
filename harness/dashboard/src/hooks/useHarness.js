@@ -147,10 +147,10 @@ export function useHarness() {
     }
   }, [loadProjects])
 
-  const runTask = useCallback((projectId, prompt, maxRounds = 10) => {
+  const runTask = useCallback((projectId, prompt, maxRounds = 10, attachments) => {
     return apiFetch('/run', {
       method: 'POST',
-      body: JSON.stringify({ projectId, prompt, maxRounds }),
+      body: JSON.stringify({ projectId, prompt, maxRounds, attachments }),
     })
   }, [])
 

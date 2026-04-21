@@ -21,18 +21,29 @@ const PHASE = {
 const INFRA_IDS = ['agent-hub']
 
 // 브라우저 locale + 시간대 기반 상대 시간
-// SQLite는 UTC 기준 "2026-04-08 01:23:45" 형식으로 저장 → 'Z' 추가로 UTC 명시 파싱
 const rtf = new Intl.RelativeTimeFormat(navigator.language || 'ko', { numeric: 'auto' })
 
 function timeAgo(dateStr) {
   if (!dateStr) return ''
   const utcStr = dateStr.endsWith('Z') ? dateStr : dateStr.replace(' ', 'T') + 'Z'
-  const diffSec = (new Date(utcStr).getTime() - Date.now()) / 1000 // 음수
+  const diffSec = (new Date(utcStr).getTime() - Date.now()) / 1000
   const abs = Math.abs(diffSec)
   if (abs < 60)    return rtf.format(Math.round(diffSec), 'second')
   if (abs < 3600)  return rtf.format(Math.round(diffSec / 60), 'minute')
   if (abs < 86400) return rtf.format(Math.round(diffSec / 3600), 'hour')
   return rtf.format(Math.round(diffSec / 86400), 'day')
+}
+
+// ── 파일 읽기 헬퍼 ────────────────────────────────────────
+const TEXT_EXTENSIONS = /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|env|toml|xml|sql|java|c|cpp|h|go|rs|rb|php|swift|kt|vue|svelte|prisma|graphql|csv|log|conf|ini)$/i
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsText(file)
+  })
 }
 
 // ── 상태바 ────────────────────────────────────────────────
@@ -130,10 +141,13 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [tab, setTab] = useState('tasks')
-  const [deleteConfirm, setDeleteConfirm] = useState(null) // { taskId, status, prompt }
+  const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [dbLogs, setDbLogs] = useState([])
+  const [attachedFiles, setAttachedFiles] = useState([]) // { name, text }
+  const [attachErr, setAttachErr] = useState('')
   const logRef = useRef(null)
   const autoScrollRef = useRef(true)
+  const fileInputRef = useRef(null)
 
   const projectTasks = [...tasks.filter(t => t.project_id === project.id)]
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
@@ -145,16 +159,13 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const isRunning = activeRun !== null
   const pausedTask = projectTasks.find(t => t.status === 'paused')
 
-  // 로그 fetch 대상 taskId: 실행 중인 작업 또는 가장 최근 작업
   const targetTaskId = activeRun?.taskId || projectTasks[0]?.id || null
 
-  // 로그 탭 전환 또는 targetTaskId 변경 시 DB 로그 로드
   useEffect(() => {
     if (tab !== 'logs' || !targetTaskId) return
     fetchTaskLogs(targetTaskId).then(setDbLogs)
   }, [tab, targetTaskId])
 
-  // 실행 중일 때 주기적으로 DB 로그 갱신
   useEffect(() => {
     if (tab !== 'logs' || !targetTaskId || !isRunning) return
     const timer = setInterval(() => {
@@ -170,12 +181,9 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
      'task:complete', 'task:failed', 'task:paused', 'task:created'].includes(e.type)
   )
 
-  // DB 로그와 WS 이벤트 병합 (중복 제거: WS 이벤트는 ts가 ms 단위, DB 로그는 초 단위이므로
-  // DB 로그를 기본으로 하고 WS 이벤트 중 DB에 없는 것(1초 이내 같은 type+content)만 추가)
   const logs = (() => {
     if (dbLogs.length === 0) return wsLogs
     if (wsLogs.length === 0) return dbLogs
-    // DB 로그 ts를 초 단위로 버킷화하여 중복 탐지
     const dbBuckets = new Set(dbLogs.map(d => `${d.type}:${Math.floor((d.ts || 0) / 1000)}`))
     const wsOnly = wsLogs.filter(e => !dbBuckets.has(`${e.type}:${Math.floor((e.ts || 0) / 1000)}`))
     return [...dbLogs, ...wsOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0))
@@ -187,19 +195,55 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
     }
   }, [logs])
 
-  // 스크롤 이벤트: 사용자가 위로 올리면 자동 스크롤 중단
   function handleLogScroll() {
     if (!logRef.current) return
     const { scrollTop, scrollHeight, clientHeight } = logRef.current
     autoScrollRef.current = scrollTop + clientHeight >= scrollHeight - 40
   }
 
+  // ── 파일 첨부 핸들러 ──────────────────────────────────────
+  async function handleFileSelect(e) {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    setAttachErr('')
+
+    const errors = []
+    const newFiles = []
+
+    for (const file of files) {
+      if (file.size > 5 * 1024 * 1024) {
+        errors.push(`${file.name}: 5MB 초과`)
+        continue
+      }
+      const isText = file.type.startsWith('text/') || TEXT_EXTENSIONS.test(file.name)
+      if (!isText) {
+        errors.push(`${file.name}: 텍스트·코드 파일만 지원`)
+        continue
+      }
+      try {
+        const text = await readFileAsText(file)
+        newFiles.push({ name: file.name, text })
+      } catch {
+        errors.push(`${file.name}: 읽기 실패`)
+      }
+    }
+
+    if (newFiles.length) setAttachedFiles(prev => [...prev, ...newFiles])
+    if (errors.length) setAttachErr(errors.join(' · '))
+    e.target.value = ''
+  }
+
   const handleRun = async () => {
     if (!prompt.trim() || sending || isRunning) return
     setSending(true)
     try {
-      await onRun(project.id, prompt.trim())
+      const attachments = attachedFiles.length > 0
+        ? attachedFiles.map(f => ({ type: 'text', name: f.name, text: f.text }))
+        : undefined
+      await onRun(project.id, prompt.trim(), attachments)
       setPrompt('')
+      setAttachedFiles([])
+      setAttachErr('')
       setTab('logs')
     } finally {
       setSending(false)
@@ -393,13 +437,60 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
         </div>
       </div>
 
+      {/* ── 하단 입력 영역 ── */}
       <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg)', flexShrink: 0 }}>
         {isRunning && (
           <div style={{ fontSize: 11, color: 'var(--blue)', marginBottom: 8, textAlign: 'center' }}>
             작업 실행 중에는 새 작업을 시작할 수 없습니다
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8 }}>
+
+        {/* 첨부된 파일명 표시 */}
+        {attachedFiles.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {attachedFiles.map((f, i) => (
+              <span key={i} style={{
+                fontSize: 11, padding: '2px 9px', borderRadius: 12,
+                background: 'rgba(107,94,248,0.15)', color: 'var(--accent2)',
+                border: '1px solid rgba(107,94,248,0.3)',
+              }}>📄 {f.name}</span>
+            ))}
+          </div>
+        )}
+
+        {/* 에러 메시지 */}
+        {attachErr && (
+          <div style={{ fontSize: 11, color: 'var(--red)', marginBottom: 6 }}>{attachErr}</div>
+        )}
+
+        {/* 숨김 파일 input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".md,.txt,.json,.js,.ts,.jsx,.tsx,.py,.yaml,.yml,.html,.css,.sh,.env,.toml,.xml,.sql,.java,.c,.cpp,.h,.go,.rs,.rb,.php,.swift,.kt,.vue,.svelte,.prisma,.graphql,.csv,.log,.conf,.ini"
+          onChange={handleFileSelect}
+          style={{ display: 'none' }}
+        />
+
+        {/* 입력 행: 📎 | textarea | ↑ */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          {/* 파일 첨부 버튼 */}
+          <button
+            onClick={() => { vibrate(8); fileInputRef.current?.click() }}
+            disabled={isRunning}
+            title="파일 첨부 (텍스트·코드 파일)"
+            style={{
+              background: attachedFiles.length > 0 ? 'rgba(107,94,248,0.2)' : 'var(--bg3)',
+              border: '1px solid ' + (attachedFiles.length > 0 ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
+              borderRadius: 10, minWidth: 44, minHeight: 52,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 20, flexShrink: 0,
+              opacity: isRunning ? 0.3 : 1,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >📎</button>
+
           <textarea
             id={`prompt-${project.id}`}
             name={`prompt-${project.id}`}
@@ -468,7 +559,7 @@ function TaskHistory({ tasks, projects }) {
 
 // ── 프로젝트 생성 폼 (GitHub 연동 포함) ────────────────────
 function AddProjectForm({ onAdd, onCreate, onCancel }) {
-  const [mode, setMode] = useState('create') // 'create' | 'add'
+  const [mode, setMode] = useState('create')
   const [form, setForm] = useState({
     name: '', path: '', stack: '', description: '',
     githubRepo: true,
@@ -483,7 +574,6 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
     setForm(f => ({ ...f, [key]: val }))
   }
 
-  // 이름 입력 시 경로 자동 야
   const handleNameChange = (e) => {
     const name = e.target.value
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -539,7 +629,6 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
   }
   const labelStyle = { fontSize: 11, color: 'var(--text3)', fontWeight: 600, marginBottom: 4, display: 'block' }
 
-  // 성공 화면
   if (result) {
     return (
       <div style={{
@@ -576,7 +665,6 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
       border: '1px solid var(--border)', borderRadius: 12,
       display: 'flex', flexDirection: 'column', gap: 10,
     }}>
-      {/* 모드 탭 */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 2 }}>
         {[['create', '새 프로젝트 생성'], ['add', '기존 등록']].map(([m, label]) => (
           <button key={m} onClick={() => { vibrate(8); setMode(m) }} style={{
@@ -594,7 +682,7 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
         <input value={form.name} onChange={handleNameChange} placeholder="My Project" style={fieldStyle} />
       </div>
       <div>
-        <label style={labelStyle}>로컈 경로 *</label>
+        <label style={labelStyle}>로컬 경로 *</label>
         <input value={form.path} onChange={set('path')} placeholder="/Users/sun/my-project" style={fieldStyle} />
       </div>
       <div>
@@ -755,8 +843,8 @@ export default function App() {
   const infraProjects   = projects.filter(p => INFRA_IDS.includes(p.id))
   const running = status?.running || []
 
-  const handleRun = async (projectId, prompt) => {
-    const result = await runTask(projectId, prompt)
+  const handleRun = async (projectId, prompt, attachments) => {
+    const result = await runTask(projectId, prompt, 10, attachments)
     if (result?.taskId) setTimeout(refresh, 500)
     return result
   }
@@ -855,8 +943,6 @@ export default function App() {
           50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(96,165,250,0); }
         }
         * { -webkit-tap-highlight-color: transparent; }
-
-        /* 모바일 버튼 active 피드백: 즉각적인 시각 변화 */
         button:active {
           opacity: 0.6;
           transform: scale(0.96);
@@ -865,22 +951,13 @@ export default function App() {
         button:not(:active) {
           transition: opacity 0.15s, transform 0.15s;
         }
-
-        /* 프로젝트 카드 active 시 배경색 변화 */
         button[data-card]:active {
           background: var(--bg3) !important;
         }
-
-        /* 모바일 전용 스타일 */
         @media (max-width: 480px) {
-          /* 프로젝트 목록 카드 간격 확대 */
           .project-list { gap: 12px !important; }
-
-          /* textarea 모바일 최적화: 더 큰 폰트로 iOS 자동 확대 방지 */
           textarea { font-size: 16px !important; }
         }
-
-        /* 터치 디바이스에서 hover 효과 제거 (오터치 방지) */
         @media (hover: none) {
           button:hover { opacity: 1; }
         }
