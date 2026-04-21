@@ -148,6 +148,17 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const logRef = useRef(null)
   const autoScrollRef = useRef(true)
   const fileInputRef = useRef(null)
+  const textareaRef = useRef(null)
+
+  const PROMPT_MAX = 10000
+
+  // textarea 높이 자동 조정
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 300) + 'px'
+  }, [prompt])
 
   const projectTasks = [...tasks.filter(t => t.project_id === project.id)]
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
@@ -491,23 +502,39 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             }}
           >📎</button>
 
-          <textarea
-            id={`prompt-${project.id}`}
-            name={`prompt-${project.id}`}
-            value={prompt}
-            onChange={e => setPrompt(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRun() } }}
-            placeholder={isRunning ? '실행 중...' : '작업 지시 입력 (Enter 실행, Shift+Enter 줄바꿈)'}
-            disabled={isRunning}
-            rows={2}
-            style={{
-              flex: 1, background: isRunning ? 'var(--bg)' : 'var(--bg3)',
-              border: '1px solid var(--border)', borderRadius: 10,
-              padding: '12px 14px', color: 'var(--text)',
-              fontSize: 16, resize: 'none', outline: 'none',
-              opacity: isRunning ? 0.4 : 1,
-            }}
-          />
+          <div style={{ flex: 1, position: 'relative' }}>
+            <textarea
+              ref={textareaRef}
+              id={`prompt-${project.id}`}
+              name={`prompt-${project.id}`}
+              value={prompt}
+              onChange={e => setPrompt(e.target.value.slice(0, PROMPT_MAX))}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRun() } }}
+              placeholder={isRunning ? '실행 중...' : '작업 지시 입력 (Enter 실행, Shift+Enter 줄바꿈)'}
+              disabled={isRunning}
+              rows={2}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                background: isRunning ? 'var(--bg)' : 'var(--bg3)',
+                border: '1px solid ' + (prompt.length >= PROMPT_MAX * 0.95 ? 'var(--red, #ff5555)' : 'var(--border)'),
+                borderRadius: 10,
+                padding: '12px 14px', paddingBottom: prompt.length > 200 ? '24px' : '12px',
+                color: 'var(--text)',
+                fontSize: 16, resize: 'none', outline: 'none',
+                opacity: isRunning ? 0.4 : 1,
+                minHeight: 52, overflow: 'hidden',
+              }}
+            />
+            {prompt.length > 200 && (
+              <span style={{
+                position: 'absolute', bottom: 6, right: 10,
+                fontSize: 11, color: prompt.length >= PROMPT_MAX * 0.95 ? 'var(--red, #ff5555)' : 'var(--text3)',
+                pointerEvents: 'none', userSelect: 'none',
+              }}>
+                {prompt.length.toLocaleString()} / {PROMPT_MAX.toLocaleString()}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => { vibrate(15); handleRun() }}
             disabled={!prompt.trim() || sending || isRunning}

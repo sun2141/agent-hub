@@ -46,7 +46,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-function validateString(value, maxLen = 2000) {
+function validateString(value, maxLen = 10000) {
   if (typeof value !== 'string') return false;
   if (value.trim().length === 0) return false;
   if (value.length > maxLen) return false;
