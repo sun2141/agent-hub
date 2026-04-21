@@ -285,17 +285,51 @@ function ProjectCard({ project, onRun, currentTask }) {
         </p>
       )}
 
+      {/* 파일 input (항상 존재, display:none) */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,.md,.txt,.csv,.json"
+        onChange={handleFileSelect}
+        style={{ display: 'none' }}
+      />
+
       {!showForm ? (
-        <button
-          onClick={() => setShowForm(true)}
-          style={{
-            width: '100%', padding: '8px', borderRadius: 8,
-            background: 'var(--accent)', color: '#fff',
-            fontSize: 13, fontWeight: 600,
-          }}
-        >
-          + 작업 실행
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setShowForm(true)}
+            style={{
+              flex: 1, padding: '8px', borderRadius: 8,
+              background: 'var(--accent)', color: '#fff',
+              fontSize: 13, fontWeight: 600,
+            }}
+          >
+            + 작업 실행
+          </button>
+          <button
+            onClick={() => { setShowForm(true); fileInputRef.current?.click(); }}
+            title="파일 첨부 후 작업 실행"
+            style={{
+              padding: '8px 12px', borderRadius: 8,
+              background: 'var(--bg3)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)', fontSize: 13,
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontWeight: 500,
+            }}
+          >
+            <span style={{ fontSize: 16 }}>📎</span>
+            {attachments.length > 0 && (
+              <span style={{
+                background: 'var(--accent)', color: '#fff',
+                borderRadius: 10, padding: '1px 6px', fontSize: 10, fontWeight: 700,
+              }}>
+                {attachments.length}
+              </span>
+            )}
+          </button>
+        </div>
       ) : (
         <div>
           <textarea
@@ -314,16 +348,8 @@ function ProjectCard({ project, onRun, currentTask }) {
           {/* 첨부 파일 미리보기 */}
           <AttachmentPreview attachments={attachments} onRemove={removeAttachment} />
 
-          {/* 파일 첨부 버튼 */}
+          {/* 파일 첨부 버튼 - 항상 표시 */}
           <div style={{ marginBottom: 8 }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/png,image/jpeg,image/gif,image/webp,text/plain,text/markdown,text/csv,application/json,.md,.txt,.csv,.json"
-              onChange={handleFileSelect}
-              style={{ display: 'none' }}
-            />
             <button
               onClick={() => fileInputRef.current?.click()}
               style={{
