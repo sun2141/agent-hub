@@ -150,14 +150,16 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const fileInputRef = useRef(null)
   const textareaRef = useRef(null)
 
-  const PROMPT_MAX = 10000
+  const PROMPT_MAX = 100000
 
-  // textarea 높이 자동 조정
+  // textarea 높이 자동 조정 (최대 400px, 초과 시 스크롤)
   useEffect(() => {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 300) + 'px'
+    const newHeight = Math.min(el.scrollHeight, 400)
+    el.style.height = newHeight + 'px'
+    el.style.overflowY = el.scrollHeight > 400 ? 'auto' : 'hidden'
   }, [prompt])
 
   const projectTasks = [...tasks.filter(t => t.project_id === project.id)]
@@ -522,7 +524,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                 color: 'var(--text)',
                 fontSize: 16, resize: 'none', outline: 'none',
                 opacity: isRunning ? 0.4 : 1,
-                minHeight: 52, overflow: 'hidden',
+                minHeight: 52, overflowY: 'hidden',
               }}
             />
             {prompt.length > 200 && (
@@ -533,6 +535,17 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
               }}>
                 {prompt.length.toLocaleString()} / {PROMPT_MAX.toLocaleString()}
               </span>
+            )}
+            {prompt.length >= 50000 && (
+              <div style={{
+                position: 'absolute', top: 6, left: 10,
+                fontSize: 10, color: 'var(--orange, #f59e0b)',
+                background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)',
+                borderRadius: 6, padding: '2px 7px',
+                pointerEvents: 'none', userSelect: 'none',
+              }}>
+                ⚠ 토큰 한도 근접 (한글 ~50K자)
+              </div>
             )}
           </div>
           <button

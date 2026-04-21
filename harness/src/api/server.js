@@ -238,8 +238,8 @@ export function createApiServer(agentRunner) {
     if (!validateString(projectId, 50) || !/^[a-z0-9-]+$/.test(projectId)) {
       return res.status(400).json({ error: 'projectId: 영문 소문자/숫자/하이픈만 허용' });
     }
-    if (!validateString(prompt, 10000)) {
-      return res.status(400).json({ error: 'prompt: 1~10000자 문자열 필요' });
+    if (!validateString(prompt, 100000)) {
+      return res.status(400).json({ error: 'prompt: 1~100000자 문자열 필요' });
     }
     let parsedMaxRounds;
     if (maxRounds !== undefined) {
