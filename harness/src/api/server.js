@@ -46,7 +46,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-function validateString(value, maxLen = 10000) {
+function validateString(value, maxLen = 500000) {
   if (typeof value !== 'string') return false;
   if (value.trim().length === 0) return false;
   if (value.length > maxLen) return false;
@@ -74,8 +74,7 @@ export function createApiServer(agentRunner) {
     next();
   });
 
-  // ── 헬스체크 (인증 없이 외부 접근 가능) ──────────────────────
-  // GET /health — 하네스 상태 확인 (watchdog, 외부 모니터링용)
+  // ── 헬스체크 ──────────────────────────────────────────────
   app.get('/health', (req, res) => {
     const status = agentRunner.getStatus();
     res.json({
@@ -89,27 +88,22 @@ export function createApiServer(agentRunner) {
 
   app.use('/api', authMiddleware);
 
-  // ── 대시보드 정적 파일 서빙 (빌드된 dist/) ─────────────────
-  // API 라우트 등록 후에 정적 파일과 SPA fallback을 등록해야
-  // /api/* 요청이 authMiddleware를 거친 뒤 올바르게 처리됨
   if (fs.existsSync(DASHBOARD_DIST)) {
     app.use(express.static(DASHBOARD_DIST));
   }
 
-  // ── 프로젝트 생성 (폴더 + GitHub 레포 + DB) ───────────────
+  // ── 프로젝트 생성 ─────────────────────────────────────────
   app.post('/api/projects/create', async (req, res) => {
     const { name, path: projectPath, stack, description, githubRepo, githubPrivate } = req.body;
 
     if (!validateString(name, 100)) return res.status(400).json({ error: 'name: 1~100자 필수' });
     if (!validateString(projectPath, 500)) return res.status(400).json({ error: 'path: 1~500자 필수' });
 
-    // 경로 안전 검증: /Users/sun/ 하위만 허용
     const resolvedPath = path.resolve(projectPath);
     if (!resolvedPath.startsWith('/Users/sun/')) {
       return res.status(400).json({ error: '경로는 /Users/sun/ 하위여야 합니다' });
     }
 
-    // slug 기반 ID 생성
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
     const suffix = crypto.randomBytes(3).toString('hex');
     const id = `${slug}-${suffix}`;
@@ -117,16 +111,13 @@ export function createApiServer(agentRunner) {
     const results = { id, folderCreated: false, gitInit: false, githubRepo: null, dbInserted: false };
 
     try {
-      // 1. 로컬 폴더 생성
       fs.mkdirSync(resolvedPath, { recursive: true });
       results.folderCreated = true;
 
-      // 2. git init
       execSync(`git init`, { cwd: resolvedPath, stdio: 'pipe' });
       execSync(`git checkout -b main`, { cwd: resolvedPath, stdio: 'pipe' });
       results.gitInit = true;
 
-      // 3. GitHub 레포 생성 (토큰이 있을 때만)
       if (githubRepo && GITHUB_TOKEN) {
         const repoName = (githubRepo === true || githubRepo === 'auto')
           ? slug
@@ -142,7 +133,7 @@ export function createApiServer(agentRunner) {
           body: JSON.stringify({
             name: repoName,
             description: description || '',
-            private: githubPrivate !== false, // 기본 private
+            private: githubPrivate !== false,
             auto_init: false,
           }),
         });
@@ -151,19 +142,16 @@ export function createApiServer(agentRunner) {
 
         if (ghRes.ok) {
           results.githubRepo = { name: repoName, url: ghData.html_url, sshUrl: ghData.ssh_url, cloneUrl: ghData.clone_url };
-          // remote 연결
           execSync(`git remote add origin ${ghData.ssh_url}`, { cwd: resolvedPath, stdio: 'pipe' });
         } else {
           results.githubError = ghData.message || 'GitHub 레포 생성 실패';
         }
       }
 
-      // 4. README 초기 커밋
       const readmeContent = `# ${name}\n\n${description || ''}\n`;
       fs.writeFileSync(path.join(resolvedPath, 'README.md'), readmeContent);
       execSync(`git add README.md && git commit -m "Initial commit"`, { cwd: resolvedPath, stdio: 'pipe', shell: true });
 
-      // 5. DB에 프로젝트 등록
       const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description });
       results.dbInserted = true;
 
@@ -174,7 +162,7 @@ export function createApiServer(agentRunner) {
     }
   });
 
-  // ── REST 엔드포인트 (모두 async/await) ────────────────────
+  // ── REST 엔드포인트 ────────────────────────────────────────
 
   app.get('/api/status', (req, res) => {
     res.json({ ok: true, harness: agentRunner.getStatus(), uptime: Math.floor(process.uptime()) });
@@ -216,7 +204,6 @@ export function createApiServer(agentRunner) {
     if (description !== undefined && !validateString(description, 500)) {
       return res.status(400).json({ error: 'description: 500자 이하 문자열' });
     }
-    // 이름 기반 slug 생성 (영문 소문자/숫자/하이픈, 최대 30자) + 충돌 방지 suffix
     const slug = name.toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
@@ -238,8 +225,9 @@ export function createApiServer(agentRunner) {
     if (!validateString(projectId, 50) || !/^[a-z0-9-]+$/.test(projectId)) {
       return res.status(400).json({ error: 'projectId: 영문 소문자/숫자/하이픈만 허용' });
     }
-    if (!validateString(prompt, 100000)) {
-      return res.status(400).json({ error: 'prompt: 1~100000자 문자열 필요' });
+    // 파일 첨부 내용 포함 프롬프트 허용 (500KB)
+    if (!validateString(prompt, 500000)) {
+      return res.status(400).json({ error: 'prompt: 1~500000자 문자열 필요' });
     }
     let parsedMaxRounds;
     if (maxRounds !== undefined) {
@@ -340,8 +328,6 @@ export function createApiServer(agentRunner) {
     }
   });
 
-  // ── 작업 영구 삭제 (failed / paused / building 상태만) ────────
-  // DELETE /api/tasks/:taskId
   app.delete('/api/tasks/:taskId', async (req, res) => {
     const { taskId } = req.params;
     if (!/^task_[0-9]+_[a-z0-9]+$/.test(taskId)) {
@@ -363,9 +349,6 @@ export function createApiServer(agentRunner) {
     }
   });
 
-  // ── 웹훅 배포 트리거 ──────────────────────────────────────
-  // POST /api/deploy — git push + harness 재시작을 분리 프로세스로 실행
-  // self-kill 방지: detached 자식 프로세스가 harness 재시작을 처리
   app.post('/api/deploy', (req, res) => {
     const harnessRoot = path.resolve(__dirname, '../..');
     const scriptPath = path.join(harnessRoot, 'scripts', 'deploy_detached.sh');
@@ -402,13 +385,12 @@ export function createApiServer(agentRunner) {
 
     res.json({
       ok: true,
-      message: '배포 프로세스 시작됨 (분리 프로세스)',
+      message: '배포 프로세스 시작됨',
       logPath,
       note: '약 10초 후 harness가 재시작됩니다',
     });
   });
 
-  // SPA fallback: 모든 API 라우트 등록 후 마지막에 위치해야 함
   if (fs.existsSync(DASHBOARD_DIST)) {
     app.get(/^(?!\/api|\/ws).*/, (req, res) => {
       res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
