@@ -143,6 +143,12 @@ export function useHarness() {
 
   // ── 인증 확인 ───────────────────────────────────────────
   const checkAuth = useCallback(async () => {
+    // BASE가 없으면 백엔드 URL 미설정 → 연결 불가 오류 표시
+    if (!BASE) {
+      setError('백엔드 URL이 설정되지 않았습니다. VITE_API_BASE 환경변수를 확인하세요.');
+      setLoading(false);
+      return false;
+    }
     try {
       const data = await fetch(`${BASE}/auth/status`, { credentials: 'include' }).then(r => r.json());
       setPasswordRequired(data.passwordRequired);
@@ -210,9 +216,27 @@ export function useHarness() {
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const host  = BASE ? new URL(BASE).host : location.host;
-    const ws    = new WebSocket(`${proto}://${host}/ws`);
+    // BASE가 없으면 WS 연결 불가 (Vercel 정적 서빙 환경에서 localhost:3000 접근 불가)
+    // 이 경우 HTTP polling으로만 동작 (WS 없이)
+    if (!BASE) {
+      console.warn('[WS] VITE_API_BASE 미설정 → WS 연결 건너뜀 (HTTP polling 전용)');
+      return;
+    }
+
+    // BASE URL에서 WS 프로토콜과 호스트 추출
+    // https://xxx.cfargotunnel.com → wss://xxx.cfargotunnel.com/ws
+    // http://localhost:3000        → ws://localhost:3000/ws
+    let wsUrl;
+    try {
+      const parsed = new URL(BASE);
+      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProto}//${parsed.host}/ws`;
+    } catch {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      wsUrl = `${proto}://${location.host}/ws`;
+    }
+
+    const ws    = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {

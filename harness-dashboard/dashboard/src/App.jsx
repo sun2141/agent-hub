@@ -546,7 +546,7 @@ export default function App() {
     loading, error,
     authenticated, passwordRequired,
     refresh, runTask, resumeTask, stopTask, deleteTask,
-    login, logout,
+    login, logout, checkAuth,
   } = useHarness();
 
   const [tab, setTab]       = useState('프로젝트');
@@ -561,6 +561,40 @@ export default function App() {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text2)' }}>
         로딩 중...
+      </div>
+    );
+  }
+
+  // 백엔드 URL 미설정 오류 (VITE_API_BASE 없음)
+  if (error && !authenticated && !passwordRequired) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--bg)', padding: '0 24px' }}>
+        <div style={{ maxWidth: 400, width: '100%' }}>
+          <div style={{ textAlign: 'center', marginBottom: 24 }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🔌</div>
+            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color: 'var(--text)' }}>백엔드 연결 실패</h2>
+            <p style={{ fontSize: 13, color: 'var(--text3)', lineHeight: 1.6 }}>{error}</p>
+          </div>
+          <div style={{
+            padding: '16px', background: 'var(--bg2)', border: '1px solid var(--border)',
+            borderRadius: 12, fontSize: 12, color: 'var(--text2)', lineHeight: 1.8,
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, color: 'var(--text)' }}>설정 방법:</div>
+            <div>1. Cloudflare Tunnel 시작: <code style={{ color: 'var(--accent2)' }}>npm run tunnel:cf</code></div>
+            <div>2. 출력된 URL을 <code style={{ color: 'var(--accent2)' }}>VITE_API_BASE</code>에 설정</div>
+            <div>3. Vercel 환경변수에도 동일하게 설정 후 재배포</div>
+          </div>
+          <button
+            onClick={checkAuth}
+            style={{
+              marginTop: 16, width: '100%', padding: '12px',
+              background: 'var(--accent)', border: 'none', borderRadius: 8,
+              color: '#fff', fontSize: 14, fontWeight: 600,
+            }}
+          >
+            다시 연결 시도
+          </button>
+        </div>
       </div>
     );
   }

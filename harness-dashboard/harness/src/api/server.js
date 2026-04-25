@@ -22,6 +22,10 @@ const GITHUB_USER  = process.env.GITHUB_USER || 'sun2141';
 
 const API_KEY          = process.env.API_KEY;
 const ALLOWED_ORIGIN   = process.env.ALLOWED_ORIGIN || '';
+// ALLOWED_ORIGINS: 쉼표 구분 복수 도메인 허용 (예: "https://a.vercel.app,https://b.cfargotunnel.com")
+const ALLOWED_ORIGINS  = ALLOWED_ORIGIN
+  ? ALLOWED_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
+  : [];
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
 
 // SESSION_SECRET: 환경변수 없으면 파일에 저장하여 서버 재시작 후에도 세션 유지
@@ -102,11 +106,16 @@ export function createApiServer(agentRunner) {
 
   // 세션 미들웨어
   // COOKIE_SECURE 환경변수로 secure 쿠키 여부를 명시적으로 제어.
-  // NODE_ENV=production이라도 HTTP 직접 서빙(nginx 없이) 환경에서는
-  // COOKIE_SECURE=false 로 설정해야 쿠키가 브라우저에 저장됨.
-  // HTTPS(nginx 프록시 포함) 환경: COOKIE_SECURE=true
-  // HTTP 직접 서빙 환경:           COOKIE_SECURE=false (또는 미설정)
+  // - HTTPS(Cloudflare Tunnel 포함): COOKIE_SECURE=true, COOKIE_SAME_SITE=none
+  // - HTTP 직접 서빙:                COOKIE_SECURE=false (또는 미설정)
+  //
+  // Cross-origin(Vercel HTTPS → 백엔드 HTTPS) 쿠키 전송 요구사항:
+  //   SameSite=None + Secure=true 필수 (크롬/파이어폭스 정책)
   const cookieSecure = process.env.COOKIE_SECURE === 'true';
+  // COOKIE_SAME_SITE: 명시적 설정 없으면 cross-origin 여부로 자동 결정
+  // cross-origin(Vercel→터널) 환경이면 'none', 동일 출처면 'lax'
+  const cookieSameSite = process.env.COOKIE_SAME_SITE
+    || (cookieSecure ? 'none' : 'lax');
   app.use(session({
     secret: SESSION_SECRET,
     resave: false,
@@ -114,24 +123,24 @@ export function createApiServer(agentRunner) {
     cookie: {
       httpOnly: true,
       secure: cookieSecure,
+      sameSite: cookieSameSite,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7일
     },
   }));
 
   // CORS
+  // credentials: 'include' 사용 시 Access-Control-Allow-Origin에 와일드카드(*) 불가.
+  // ALLOWED_ORIGINS 목록에 있거나, 목록이 비어있으면 요청 origin을 그대로 반영.
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) {
+    const isAllowed = ALLOWED_ORIGINS.length === 0
+      || (origin && ALLOWED_ORIGINS.includes(origin));
+    if (origin && isAllowed) {
       res.header('Access-Control-Allow-Origin', origin);
       res.header('Access-Control-Allow-Credentials', 'true');
-    } else if (!ALLOWED_ORIGIN) {
-      // credentials 사용 시 origin을 명시해야 함
-      if (origin) {
-        res.header('Access-Control-Allow-Origin', origin);
-        res.header('Access-Control-Allow-Credentials', 'true');
-      } else {
-        res.header('Access-Control-Allow-Origin', '*');
-      }
+    } else if (!origin) {
+      // curl 등 non-browser 요청
+      res.header('Access-Control-Allow-Origin', '*');
     }
     res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');

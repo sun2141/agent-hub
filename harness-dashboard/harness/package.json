@@ -8,7 +8,9 @@
     "start": "node src/index.js",
     "watchdog": "node src/watchdog.js",
     "dev": "node --watch src/index.js",
-    "tunnel": "ssh -N -R 9090:localhost:3000 agent@91.99.58.70"
+    "tunnel": "ssh -N -R 9090:localhost:3000 agent@91.99.58.70",
+    "tunnel:cf": "cloudflared tunnel --url http://localhost:3000",
+    "tunnel:named": "cloudflared tunnel run harness-api"
   },
   "dependencies": {
     "dotenv": "^16.4.0",
