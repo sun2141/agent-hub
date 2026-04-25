@@ -27,9 +27,103 @@ const LOCK_KEY = 'harness_locked';
 const LOCK_HASH_KEY = 'harness_pw_hash';
 
 async function sha256(text) {
-  const msgBuffer = new TextEncoder().encode(text);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  // crypto.subtle은 Secure Context(HTTPS/localhost)에서만 동작
+  // HTTP 환경(원격 서버)을 위해 fallback 구현 포함
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const msgBuffer = new TextEncoder().encode(text);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Fallback: 순수 JS SHA-256 구현 (HTTP 환경)
+  return sha256Fallback(text);
+}
+
+function sha256Fallback(str) {
+  function rightRotate(value, amount) {
+    return (value >>> amount) | (value << (32 - amount));
+  }
+  // 멀티바이트(한국어 등) 지원: TextEncoder로 UTF-8 바이트 배열 변환
+  const bytes = new TextEncoder().encode(str);
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  let result = '';
+  const words = [];
+  const bitLength = bytes.length * 8;
+
+  let hash = [];
+  const k = [];
+  let primeCounter = 0;
+
+  const isComposite = {};
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isComposite[candidate]) {
+      for (let i = candidate * candidate; i < 313; i += candidate) {
+        isComposite[i] = true;
+      }
+      hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+    }
+  }
+
+  // UTF-8 바이트 배열을 직접 words 배열로 변환 (0x80 패딩 + 길이 추가)
+  const paddedBytes = new Uint8Array(bytes.length + 1 + 64); // 충분한 공간 확보
+  paddedBytes.set(bytes);
+  paddedBytes[bytes.length] = 0x80;
+  let byteLen = bytes.length + 1;
+  // 56 mod 64 바이트가 될 때까지 0x00 패딩
+  while (byteLen % 64 !== 56) byteLen++;
+  // 실제 사용할 패딩된 배열
+  const msgBytes = new Uint8Array(byteLen + 8);
+  msgBytes.set(paddedBytes.subarray(0, byteLen));
+  // 64비트 big-endian 비트 길이 추가
+  const bigBitLen = bytes.length * 8;
+  // JavaScript 숫자는 53비트 정수까지 안전하므로 상위 32비트는 0
+  msgBytes[byteLen]     = 0;
+  msgBytes[byteLen + 1] = 0;
+  msgBytes[byteLen + 2] = 0;
+  msgBytes[byteLen + 3] = 0;
+  msgBytes[byteLen + 4] = (bigBitLen / 0x1000000) & 0xff;
+  msgBytes[byteLen + 5] = (bigBitLen / 0x10000)   & 0xff;
+  msgBytes[byteLen + 6] = (bigBitLen / 0x100)     & 0xff;
+  msgBytes[byteLen + 7] =  bigBitLen              & 0xff;
+
+  // 바이트 배열을 32비트 words 배열로 변환
+  for (let i = 0; i < msgBytes.length; i++) {
+    words[i >> 2] = (words[i >> 2] || 0) | (msgBytes[i] << ((3 - (i & 3)) * 8));
+  }
+
+  for (let j = 0; j < words.length;) {
+    const w = words.slice(j, j += 16);
+    const oldHash = hash.slice(0);
+    for (let i = 0; i < 64; i++) {
+      const w15 = w[i - 15], w2 = w[i - 2];
+      const a = hash[0], e = hash[4];
+      const temp1 = hash[7]
+        + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25))
+        + ((e & hash[5]) ^ (~e & hash[6]))
+        + k[i]
+        + (w[i] = (i < 16) ? w[i] : (
+          w[i - 16]
+          + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3))
+          + w[i - 7]
+          + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))
+        ) | 0);
+      const temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22))
+        + ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+      hash = [(temp1 + temp2) | 0, a, hash[1], hash[2], (hash[3] + temp1) | 0, e, hash[5], hash[6]];
+    }
+    for (let i = 0; i < 8; i++) {
+      hash[i] = (hash[i] + oldHash[i]) | 0;
+    }
+  }
+
+  for (let i = 0; i < 8; i++) {
+    for (let j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += ((b < 16) ? '0' : '') + b.toString(16);
+    }
+  }
+  return result;
 }
 
 // ── useHarness ────────────────────────────────────────────
@@ -92,38 +186,8 @@ export function useHarness() {
     }
   }, []);
 
-  // ── 로그인 ──────────────────────────────────────────────
-  const login = useCallback(async (password) => {
-    const res = await fetch(`${BASE}/auth/login`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || '로그인 실패');
-    // localStorage에 잠금 해제 상태 및 비밀번호 해시 저장
-    const hash = await sha256(password);
-    localStorage.setItem(LOCK_KEY, 'false');
-    localStorage.setItem(LOCK_HASH_KEY, hash);
-    setAuthenticated(true);
-    setLoading(true);
-    // 로그인 후 데이터 로드 및 WS 연결
-    await refresh();
-    connectWs();
-    return data;
-  }, [refresh, connectWs]);
-
-  // ── 로그아웃 ────────────────────────────────────────────
-  const logout = useCallback(async () => {
-    await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
-    // localStorage 잠금 상태 설정
-    localStorage.setItem(LOCK_KEY, 'true');
-    localStorage.removeItem(LOCK_HASH_KEY);
-    setAuthenticated(false);
-  }, []);
-
-  // ── 초기 데이터 로드 ────────────────────────────────────
+  // ── 초기 데이터 로드 ─────────────────────────────────────
+  // ※ login()이 refresh/connectWs를 deps로 참조하므로 반드시 먼저 선언
   const refresh = useCallback(async () => {
     try {
       const [proj, taskList, stat] = await Promise.all([
@@ -217,6 +281,35 @@ export function useHarness() {
         break;
     }
   }
+
+  // ── 로그인 ──────────────────────────────────────────────
+  // refresh, connectWs 선언 후에 정의되므로 deps 정상 참조
+  const login = useCallback(async (password) => {
+    const res = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '로그인 실패');
+    const hash = await sha256(password);
+    localStorage.setItem(LOCK_KEY, 'false');
+    localStorage.setItem(LOCK_HASH_KEY, hash);
+    setAuthenticated(true);
+    setLoading(true);
+    await refresh();
+    connectWs();
+    return data;
+  }, [refresh, connectWs]);
+
+  // ── 로그아웃 ────────────────────────────────────────────
+  const logout = useCallback(async () => {
+    await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    localStorage.setItem(LOCK_KEY, 'true');
+    localStorage.removeItem(LOCK_HASH_KEY);
+    setAuthenticated(false);
+  }, []);
 
   useEffect(() => {
     checkAuth().then(isAuth => {

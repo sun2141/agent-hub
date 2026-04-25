@@ -76,19 +76,20 @@ function validateString(value, maxLen = 500000) {
 }
 
 // ── 대시보드 세션 인증 미들웨어 ────────────────────────────
+// 정적 파일(HTML/CSS/JS)은 통과 — 클라이언트(React)가 로그인 화면 처리
+// API 엔드포인트만 서버에서 세션 인증 검사
 function dashboardAuthMiddleware(req, res, next) {
   // /auth/* 및 /health 경로는 인증 없이 허용
   if (req.path.startsWith('/auth/') || req.path === '/health') return next();
-  // DASHBOARD_PASSWORD 미설정 시 모든 접근 차단 (설정 오류 방지)
+
+  // API 경로가 아닌 요청(정적 파일, SPA 라우팅)은 클라이언트가 처리하므로 통과
+  if (!req.path.startsWith('/api/')) return next();
+
+  // ── 이하 /api/* 경로 인증 ──────────────────────────────
   if (!DASHBOARD_PASSWORD) {
-    if (req.path.startsWith('/api/')) {
-      return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured. Dashboard access denied.' });
-    }
-    return res.status(503).send('<h1>503 Service Unavailable</h1><p>DASHBOARD_PASSWORD environment variable is not set. Please configure it to access the dashboard.</p>');
+    return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured.' });
   }
   if (req.session?.dashboardAuthenticated) return next();
-  // 인증 안된 경우
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Dashboard authentication required' });
   return res.status(401).json({ error: 'Dashboard authentication required' });
 }
 
@@ -100,13 +101,19 @@ export function createApiServer(agentRunner) {
   app.use(rateLimit);
 
   // 세션 미들웨어
+  // COOKIE_SECURE 환경변수로 secure 쿠키 여부를 명시적으로 제어.
+  // NODE_ENV=production이라도 HTTP 직접 서빙(nginx 없이) 환경에서는
+  // COOKIE_SECURE=false 로 설정해야 쿠키가 브라우저에 저장됨.
+  // HTTPS(nginx 프록시 포함) 환경: COOKIE_SECURE=true
+  // HTTP 직접 서빙 환경:           COOKIE_SECURE=false (또는 미설정)
+  const cookieSecure = process.env.COOKIE_SECURE === 'true';
   app.use(session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: cookieSecure,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7일
     },
   }));
