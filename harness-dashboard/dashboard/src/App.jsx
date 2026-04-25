@@ -28,7 +28,7 @@ function timeAgo(dateStr) {
 const TABS = ['프로젝트', '작업', '로그'];
 
 // ── 컴포넌트: 상단 헤더 ───────────────────────────────────
-function Header({ connected, onRefresh }) {
+function Header({ connected, onRefresh, onLogout, showLogout }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -47,12 +47,22 @@ function Header({ connected, onRefresh }) {
           Agent Harness
         </span>
       </div>
-      <button
-        onClick={onRefresh}
-        style={{ color: 'var(--text2)', fontSize: 13, padding: '4px 8px' }}
-      >
-        새로고침
-      </button>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={onRefresh}
+          style={{ color: 'var(--text2)', fontSize: 13, padding: '4px 8px' }}
+        >
+          새로고침
+        </button>
+        {showLogout && (
+          <button
+            onClick={onLogout}
+            style={{ color: 'var(--text3)', fontSize: 13, padding: '4px 8px' }}
+          >
+            🔒 잠금
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -453,12 +463,90 @@ function StreamLog({ logs }) {
   );
 }
 
+// ── 컴포넌트: 로그인 화면 ─────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!password) { setError('비밀번호를 입력하세요'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      await onLogin(password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      height: '100vh', background: 'var(--bg)',
+    }}>
+      <div style={{
+        width: 320, padding: '32px 24px',
+        background: 'var(--bg2)', border: '1px solid var(--border)',
+        borderRadius: 16,
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>🔒</div>
+          <h1 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Agent Harness</h1>
+          <p style={{ fontSize: 13, color: 'var(--text3)' }}>비밀번호를 입력하세요</p>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password"
+            value={password}
+            onChange={e => { setPassword(e.target.value); setError(''); }}
+            placeholder="비밀번호"
+            autoFocus
+            style={{
+              width: '100%', padding: '10px 12px',
+              borderRadius: 8, marginBottom: 12,
+              background: 'var(--bg3)', border: '1px solid var(--border)',
+              color: 'var(--text)', fontSize: 14,
+              boxSizing: 'border-box',
+            }}
+          />
+
+          {error && (
+            <p style={{ color: 'var(--red)', fontSize: 12, marginBottom: 10 }}>
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              width: '100%', padding: '10px',
+              borderRadius: 8, fontWeight: 600, fontSize: 14,
+              background: loading ? 'var(--bg3)' : 'var(--accent)',
+              color: loading ? 'var(--text2)' : '#fff',
+            }}
+          >
+            {loading ? '확인 중...' : '접속'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 App ──────────────────────────────────────────────
 export default function App() {
   const {
     projects, tasks, status, connected, streamLog,
     loading, error,
+    authenticated, passwordRequired,
     refresh, runTask, resumeTask, stopTask, deleteTask,
+    login, logout,
   } = useHarness();
 
   const [tab, setTab]       = useState('프로젝트');
@@ -477,11 +565,16 @@ export default function App() {
     );
   }
 
+  // 비밀번호 설정됨 & 미인증 상태
+  if (passwordRequired && !authenticated) {
+    return <LoginScreen onLogin={login} />;
+  }
+
   const currentTask = status?.currentTask;
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      <Header connected={connected} onRefresh={refresh} />
+      <Header connected={connected} onRefresh={refresh} onLogout={logout} showLogout={passwordRequired} />
       <TabBar active={tab} onChange={setTab} />
 
       {error && (

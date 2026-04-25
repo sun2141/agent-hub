@@ -10,6 +10,7 @@ const BASE    = import.meta.env.VITE_API_BASE || '';
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key':    API_KEY,
@@ -30,9 +31,48 @@ export function useHarness() {
   const [streamLog,  setStreamLog]  = useState([]); // 실시간 agent 텍스트
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [passwordRequired, setPasswordRequired] = useState(false);
 
   const wsRef   = useRef(null);
   const retryRef = useRef(null);
+
+  // ── 인증 확인 ───────────────────────────────────────────
+  const checkAuth = useCallback(async () => {
+    try {
+      const data = await fetch(`${BASE}/auth/status`, { credentials: 'include' }).then(r => r.json());
+      setPasswordRequired(data.passwordRequired);
+      setAuthenticated(data.authenticated);
+      return data.authenticated;
+    } catch {
+      setAuthenticated(false);
+      return false;
+    }
+  }, []);
+
+  // ── 로그인 ──────────────────────────────────────────────
+  const login = useCallback(async (password) => {
+    const res = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '로그인 실패');
+    setAuthenticated(true);
+    setLoading(true);
+    // 로그인 후 데이터 로드 및 WS 연결
+    await refresh();
+    connectWs();
+    return data;
+  }, [refresh, connectWs]);
+
+  // ── 로그아웃 ────────────────────────────────────────────
+  const logout = useCallback(async () => {
+    await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    setAuthenticated(false);
+  }, []);
 
   // ── 초기 데이터 로드 ────────────────────────────────────
   const refresh = useCallback(async () => {
@@ -130,8 +170,14 @@ export function useHarness() {
   }
 
   useEffect(() => {
-    refresh();
-    connectWs();
+    checkAuth().then(isAuth => {
+      if (isAuth) {
+        refresh();
+        connectWs();
+      } else {
+        setLoading(false);
+      }
+    });
     return () => {
       clearTimeout(retryRef.current);
       wsRef.current?.close();
@@ -181,6 +227,8 @@ export function useHarness() {
   return {
     projects, tasks, status, connected, streamLog,
     loading, error,
+    authenticated, passwordRequired,
     refresh, runTask, resumeTask, stopTask, deleteTask, createProject,
+    login, logout, checkAuth,
   };
 }

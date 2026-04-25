@@ -2,6 +2,7 @@
 // Express REST API + WebSocket 서버
 
 import express from 'express';
+import session from 'express-session';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries } from '../db/db.js';
@@ -19,8 +20,10 @@ const DASHBOARD_DIST = path.join(__dirname, '../../../dashboard/dist');
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER  = process.env.GITHUB_USER || 'sun2141';
 
-const API_KEY       = process.env.API_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+const API_KEY          = process.env.API_KEY;
+const ALLOWED_ORIGIN   = process.env.ALLOWED_ORIGIN || '';
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+const SESSION_SECRET   = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 // ── Rate Limiter ──────────────────────────────────────────
 const rateLimitMap   = new Map();
@@ -48,11 +51,21 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-function validateString(value, maxLen = 2000) {
+function validateString(value, maxLen = 500000) {
   if (typeof value !== 'string') return false;
   if (value.trim().length === 0) return false;
   if (value.length > maxLen) return false;
   return true;
+}
+
+// ── 대시보드 세션 인증 미들웨어 ────────────────────────────
+function dashboardAuthMiddleware(req, res, next) {
+  if (!DASHBOARD_PASSWORD) return next(); // 비밀번호 미설정 시 무조건 통과
+  if (req.session?.dashboardAuthenticated) return next();
+  // API 요청이면 JSON 에러 반환
+  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Dashboard authentication required' });
+  // 정적 파일은 로그인 페이지로 대체 (index.html은 App에서 처리)
+  return res.status(401).json({ error: 'Dashboard authentication required' });
 }
 
 export function createApiServer(agentRunner) {
@@ -62,13 +75,32 @@ export function createApiServer(agentRunner) {
   app.use(express.json({ limit: '50mb' }));
   app.use(rateLimit);
 
+  // 세션 미들웨어
+  app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false, // HTTPS 환경에서는 true로 변경
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7일
+    },
+  }));
+
   // CORS
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) {
       res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Credentials', 'true');
     } else if (!ALLOWED_ORIGIN) {
-      res.header('Access-Control-Allow-Origin', '*');
+      // credentials 사용 시 origin을 명시해야 함
+      if (origin) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+      } else {
+        res.header('Access-Control-Allow-Origin', '*');
+      }
     }
     res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -80,6 +112,36 @@ export function createApiServer(agentRunner) {
   app.get('/health', (req, res) => {
     const status = agentRunner.getStatus();
     res.json({ ok: true, pid: process.pid, uptime: Math.floor(process.uptime()), harness: status, ts: Date.now() });
+  });
+
+  // ── 대시보드 비밀번호 인증 엔드포인트 ────────────────────
+  app.post('/auth/login', (req, res) => {
+    if (!DASHBOARD_PASSWORD) {
+      req.session.dashboardAuthenticated = true;
+      return res.json({ ok: true });
+    }
+    const { password } = req.body;
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ error: '비밀번호를 입력하세요' });
+    }
+    const inputHash   = crypto.createHash('sha256').update(password).digest('hex');
+    const storedHash  = crypto.createHash('sha256').update(DASHBOARD_PASSWORD).digest('hex');
+    if (inputHash !== storedHash) {
+      return res.status(401).json({ error: '비밀번호가 올바르지 않습니다' });
+    }
+    req.session.dashboardAuthenticated = true;
+    res.json({ ok: true });
+  });
+
+  app.post('/auth/logout', (req, res) => {
+    req.session.destroy(() => {
+      res.json({ ok: true });
+    });
+  });
+
+  app.get('/auth/status', (req, res) => {
+    const authenticated = !DASHBOARD_PASSWORD || !!req.session?.dashboardAuthenticated;
+    res.json({ authenticated, passwordRequired: !!DASHBOARD_PASSWORD });
   });
 
   app.use('/api', authMiddleware);
@@ -204,8 +266,9 @@ export function createApiServer(agentRunner) {
     if (!validateString(projectId, 50) || !/^[a-z0-9-]+$/.test(projectId)) {
       return res.status(400).json({ error: 'projectId: 영문 소문자/숫자/하이픈만 허용' });
     }
-    if (!validateString(prompt, 10000)) {
-      return res.status(400).json({ error: 'prompt: 1~10000자 문자열 필요' });
+    // 파일 첨부 내용 포함 프롬프트 허용 (500KB)
+    if (!validateString(prompt, 500000)) {
+      return res.status(400).json({ error: 'prompt: 1~500000자 문자열 필요' });
     }
     let parsedMaxRounds;
     if (maxRounds !== undefined) {
