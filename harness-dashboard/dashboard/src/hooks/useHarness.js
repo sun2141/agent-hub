@@ -22,6 +22,16 @@ async function apiFetch(path, options = {}) {
   return data;
 }
 
+// ── localStorage 잠금 상태 키 ─────────────────────────────
+const LOCK_KEY = 'harness_locked';
+const LOCK_HASH_KEY = 'harness_pw_hash';
+
+async function sha256(text) {
+  const msgBuffer = new TextEncoder().encode(text);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ── useHarness ────────────────────────────────────────────
 export function useHarness() {
   const [projects,   setProjects]   = useState([]);
@@ -42,8 +52,40 @@ export function useHarness() {
     try {
       const data = await fetch(`${BASE}/auth/status`, { credentials: 'include' }).then(r => r.json());
       setPasswordRequired(data.passwordRequired);
-      setAuthenticated(data.authenticated);
-      return data.authenticated;
+
+      if (data.authenticated) {
+        setAuthenticated(true);
+        return true;
+      }
+
+      // 서버 세션이 없더라도 localStorage에 잠금 해제 상태가 저장되어 있으면 재인증 시도
+      if (data.passwordRequired) {
+        const storedHash = localStorage.getItem(LOCK_HASH_KEY);
+        const isLocked = localStorage.getItem(LOCK_KEY);
+        if (storedHash && isLocked === 'false') {
+          // localStorage에 해제된 상태가 있으면 서버에 세션 복원 요청
+          try {
+            const reauth = await fetch(`${BASE}/auth/reauth`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ hash: storedHash }),
+            });
+            if (reauth.ok) {
+              setAuthenticated(true);
+              return true;
+            }
+          } catch { /* 재인증 실패 시 잠금 화면 표시 */ }
+          // 재인증 실패 시 localStorage 초기화
+          localStorage.removeItem(LOCK_HASH_KEY);
+          localStorage.setItem(LOCK_KEY, 'true');
+        }
+        setAuthenticated(false);
+        return false;
+      }
+
+      setAuthenticated(false);
+      return false;
     } catch {
       setAuthenticated(false);
       return false;
@@ -60,6 +102,10 @@ export function useHarness() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '로그인 실패');
+    // localStorage에 잠금 해제 상태 및 비밀번호 해시 저장
+    const hash = await sha256(password);
+    localStorage.setItem(LOCK_KEY, 'false');
+    localStorage.setItem(LOCK_HASH_KEY, hash);
     setAuthenticated(true);
     setLoading(true);
     // 로그인 후 데이터 로드 및 WS 연결
@@ -71,6 +117,9 @@ export function useHarness() {
   // ── 로그아웃 ────────────────────────────────────────────
   const logout = useCallback(async () => {
     await fetch(`${BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    // localStorage 잠금 상태 설정
+    localStorage.setItem(LOCK_KEY, 'true');
+    localStorage.removeItem(LOCK_HASH_KEY);
     setAuthenticated(false);
   }, []);
 

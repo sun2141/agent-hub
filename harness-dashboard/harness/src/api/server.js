@@ -23,7 +23,24 @@ const GITHUB_USER  = process.env.GITHUB_USER || 'sun2141';
 const API_KEY          = process.env.API_KEY;
 const ALLOWED_ORIGIN   = process.env.ALLOWED_ORIGIN || '';
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
-const SESSION_SECRET   = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+
+// SESSION_SECRET: 환경변수 없으면 파일에 저장하여 서버 재시작 후에도 세션 유지
+const SESSION_SECRET_FILE = path.join(__dirname, '../../../.session_secret');
+function getOrCreateSessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  try {
+    if (fs.existsSync(SESSION_SECRET_FILE)) {
+      const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+      if (secret.length >= 32) return secret;
+    }
+    const newSecret = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
+    return newSecret;
+  } catch {
+    return crypto.randomBytes(32).toString('hex');
+  }
+}
+const SESSION_SECRET = getOrCreateSessionSecret();
 
 // ── Rate Limiter ──────────────────────────────────────────
 const rateLimitMap   = new Map();
@@ -137,6 +154,24 @@ export function createApiServer(agentRunner) {
     req.session.destroy(() => {
       res.json({ ok: true });
     });
+  });
+
+  // 클라이언트 localStorage 해시로 세션 복원 (페이지 새로고침 시 자동 재인증)
+  app.post('/auth/reauth', (req, res) => {
+    if (!DASHBOARD_PASSWORD) {
+      req.session.dashboardAuthenticated = true;
+      return res.json({ ok: true });
+    }
+    const { hash } = req.body;
+    if (!hash || typeof hash !== 'string') {
+      return res.status(400).json({ error: '해시가 없습니다' });
+    }
+    const storedHash = crypto.createHash('sha256').update(DASHBOARD_PASSWORD).digest('hex');
+    if (hash !== storedHash) {
+      return res.status(401).json({ error: '인증 실패' });
+    }
+    req.session.dashboardAuthenticated = true;
+    res.json({ ok: true });
   });
 
   app.get('/auth/status', (req, res) => {

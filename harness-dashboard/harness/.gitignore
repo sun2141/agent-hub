@@ -7,3 +7,4 @@ logs/
 *.pid
 .DS_Store
 dist/
+.session_secret
