@@ -77,11 +77,18 @@ function validateString(value, maxLen = 500000) {
 
 // ── 대시보드 세션 인증 미들웨어 ────────────────────────────
 function dashboardAuthMiddleware(req, res, next) {
-  if (!DASHBOARD_PASSWORD) return next(); // 비밀번호 미설정 시 무조건 통과
+  // /auth/* 및 /health 경로는 인증 없이 허용
+  if (req.path.startsWith('/auth/') || req.path === '/health') return next();
+  // DASHBOARD_PASSWORD 미설정 시 모든 접근 차단 (설정 오류 방지)
+  if (!DASHBOARD_PASSWORD) {
+    if (req.path.startsWith('/api/')) {
+      return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured. Dashboard access denied.' });
+    }
+    return res.status(503).send('<h1>503 Service Unavailable</h1><p>DASHBOARD_PASSWORD environment variable is not set. Please configure it to access the dashboard.</p>');
+  }
   if (req.session?.dashboardAuthenticated) return next();
-  // API 요청이면 JSON 에러 반환
+  // 인증 안된 경우
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Dashboard authentication required' });
-  // 정적 파일은 로그인 페이지로 대체 (index.html은 App에서 처리)
   return res.status(401).json({ error: 'Dashboard authentication required' });
 }
 
@@ -99,7 +106,7 @@ export function createApiServer(agentRunner) {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: false, // HTTPS 환경에서는 true로 변경
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7일
     },
   }));
@@ -125,6 +132,9 @@ export function createApiServer(agentRunner) {
     next();
   });
 
+  // ── 대시보드 인증 미들웨어 전역 적용 ────────────────────────
+  app.use(dashboardAuthMiddleware);
+
   // ── 헬스체크 (인증 없이) ──────────────────────────────────
   app.get('/health', (req, res) => {
     const status = agentRunner.getStatus();
@@ -134,8 +144,7 @@ export function createApiServer(agentRunner) {
   // ── 대시보드 비밀번호 인증 엔드포인트 ────────────────────
   app.post('/auth/login', (req, res) => {
     if (!DASHBOARD_PASSWORD) {
-      req.session.dashboardAuthenticated = true;
-      return res.json({ ok: true });
+      return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured' });
     }
     const { password } = req.body;
     if (!password || typeof password !== 'string') {
@@ -159,8 +168,7 @@ export function createApiServer(agentRunner) {
   // 클라이언트 localStorage 해시로 세션 복원 (페이지 새로고침 시 자동 재인증)
   app.post('/auth/reauth', (req, res) => {
     if (!DASHBOARD_PASSWORD) {
-      req.session.dashboardAuthenticated = true;
-      return res.json({ ok: true });
+      return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured' });
     }
     const { hash } = req.body;
     if (!hash || typeof hash !== 'string') {
@@ -175,8 +183,11 @@ export function createApiServer(agentRunner) {
   });
 
   app.get('/auth/status', (req, res) => {
-    const authenticated = !DASHBOARD_PASSWORD || !!req.session?.dashboardAuthenticated;
-    res.json({ authenticated, passwordRequired: !!DASHBOARD_PASSWORD });
+    if (!DASHBOARD_PASSWORD) {
+      return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured', authenticated: false, passwordRequired: false });
+    }
+    const authenticated = !!req.session?.dashboardAuthenticated;
+    res.json({ authenticated, passwordRequired: true });
   });
 
   app.use('/api', authMiddleware);
