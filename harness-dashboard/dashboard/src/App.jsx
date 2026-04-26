@@ -620,12 +620,15 @@ function LoginScreen({ onLogin }) {
 // ── 메인 App ──────────────────────────────────────────────
 export default function App() {
   const {
-    projects, tasks, status, connected, streamLog,
+    projects, tasks, status, connected, streamLog, dbLogs,
     loading, error,
     authenticated, passwordRequired,
     refresh, runTask, resumeTask, stopTask, deleteTask,
     login, logout, checkAuth,
   } = useHarness();
+
+  // 스트림 로그가 있으면 스트림 우선, 없으면 DB 로그 표시
+  const displayLogs = streamLog.length > 0 ? streamLog : dbLogs;
 
   const [tab, setTab]       = useState('프로젝트');
   const [actionErr, setErr] = useState('');
@@ -751,7 +754,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === '로그' && <StreamLog logs={streamLog} />}
+        {tab === '로그' && <StreamLog logs={displayLogs} />}
       </div>
     </div>
   );

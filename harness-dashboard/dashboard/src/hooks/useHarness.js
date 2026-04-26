@@ -133,6 +133,7 @@ export function useHarness() {
   const [status,     setStatus]     = useState(null);
   const [connected,  setConnected]  = useState(false);
   const [streamLog,  setStreamLog]  = useState([]); // 실시간 agent 텍스트
+  const [dbLogs,     setDbLogs]     = useState([]); // DB에서 불러온 과거 로그
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [authenticated, setAuthenticated] = useState(false);
@@ -194,6 +195,26 @@ export function useHarness() {
     try { return JSON.parse(raw); } catch { return null; }
   }
 
+  // ── 최근 task DB 로그 로드 ───────────────────────────────
+  const loadDbLogs = useCallback(async (taskList) => {
+    const recentTask = taskList[0];
+    if (!recentTask) return;
+    try {
+      const taskDetail = await apiFetch(`/api/tasks/${recentTask.id}`);
+      const logs = (taskDetail.logs || []).map(l => ({
+        id:     `db_${l.id}`,
+        phase:  l.phase,
+        round:  l.round,
+        text:   l.content,
+        isTool: l.level === 'tool',
+        fromDb: true,
+        ts:     new Date(l.created_at).getTime(),
+      }));
+      // DB 로그는 최신순으로 저장되어 있으므로 그대로 사용 (최대 200개)
+      setDbLogs(logs.slice(0, 200));
+    } catch { /* 무시 */ }
+  }, []);
+
   // ── 초기 데이터 로드 ─────────────────────────────────────
   // ※ login()이 refresh/connectWs를 deps로 참조하므로 반드시 먼저 선언
   const refresh = useCallback(async () => {
@@ -204,15 +225,23 @@ export function useHarness() {
         apiFetch('/api/status'),
       ]);
       setProjects(proj);
-      setTasks(taskList.map(t => ({ ...t, eval_result: parseEvalResult(t.eval_result) })));
+      const parsedTasks = taskList.map(t => ({ ...t, eval_result: parseEvalResult(t.eval_result) }));
+      setTasks(parsedTasks);
       setStatus(stat.harness);
       setError(null);
+      // 스트림 로그가 없을 때만 DB 로그 로드 (초기 로드 시)
+      setStreamLog(prev => {
+        if (prev.length === 0) {
+          loadDbLogs(parsedTasks);
+        }
+        return prev;
+      });
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadDbLogs]);
 
   // ── WebSocket 연결 ───────────────────────────────────────
   const connectWs = useCallback(() => {
@@ -390,7 +419,7 @@ export function useHarness() {
   }, [refresh]);
 
   return {
-    projects, tasks, status, connected, streamLog,
+    projects, tasks, status, connected, streamLog, dbLogs,
     loading, error,
     authenticated, passwordRequired,
     refresh, runTask, resumeTask, stopTask, deleteTask, createProject,

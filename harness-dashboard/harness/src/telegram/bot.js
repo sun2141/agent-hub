@@ -37,10 +37,10 @@ export function createTelegramBot(agentRunner) {
   bot.onText(/\/status/, () => {
     const status = agentRunner.getStatus();
     const running = status.running.length > 0
-      ? `▶ 실행 중: <code>${status.running.join(', ')}</code>`
+      ? `▶ 실행 중: <code>${status.running.map(r => r.taskId).join(', ')}</code>`
       : '○ 대기 중';
-    const queue = status.queue.length > 0
-      ? `\n대기열: ${status.queue.length}개`
+    const queue = status.queued > 0
+      ? `\n대기열: ${status.queued}개`
       : '';
 
     let detail = '';
@@ -96,7 +96,7 @@ export function createTelegramBot(agentRunner) {
     const taskId = match[1]?.trim();
     const status = agentRunner.getStatus();
 
-    const targetId = taskId || status.running[0];
+    const targetId = taskId || status.running[0]?.taskId;
     if (!targetId) { notify('○ 중지할 실행 중인 작업이 없습니다.'); return; }
 
     try {
@@ -175,12 +175,14 @@ export function createTelegramBot(agentRunner) {
     notify(`✓ <b>${phase}</b> 완료 (Round ${round})\n<code>${taskId}</code>`);
   });
 
-  agentRunner.on('task:complete', ({ task, rounds }) => {
-    const taskId = task?.id || '';
+  agentRunner.on('task:complete', ({ taskId, task, round, evalResult, maxRoundsReached }) => {
+    const id = taskId || task?.id || '';
+    const score = evalResult?.score != null ? ` (점수: ${evalResult.score})` : '';
+    const suffix = maxRoundsReached ? ' — 최대 라운드 도달' : '';
     notify(
-      `✅ <b>완료</b>\n\n` +
-      `ID: <code>${taskId}</code>\n` +
-      `총 라운드: ${rounds}`
+      `✅ <b>완료</b>${suffix}\n\n` +
+      `ID: <code>${id}</code>\n` +
+      `총 라운드: ${round}${score}`
     );
   });
 

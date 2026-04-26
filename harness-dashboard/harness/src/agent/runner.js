@@ -544,6 +544,13 @@ export class AgentRunner extends EventEmitter {
       let assistantTexts = [];
       let buffer         = '';
       let rateLimit      = false;
+      let settled        = false;
+
+      const settle = (fn) => {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
 
       proc.stdout.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -566,7 +573,7 @@ export class AgentRunner extends EventEmitter {
         console.error(`[CLI stderr:${phase}] ${text.trim()}`);
         if (!rateLimit && (text.includes('rate limit') || text.includes('429') || text.includes('usage limit'))) {
           rateLimit = true;
-          reject(new Error('RATE_LIMIT'));
+          settle(() => reject(new Error('RATE_LIMIT')));
         }
         logQueries.append({ task_id: taskId, phase, round, level: 'error', content: text.slice(0, 500) });
       });
@@ -575,12 +582,12 @@ export class AgentRunner extends EventEmitter {
         const output = (finalResult?.trim()) ? finalResult : assistantTexts.join('\n').trim();
         console.log(`[CLI close:${phase}] code=${code} outputLen=${output.length}`);
         if (rateLimit) return;
-        if (this._deleted.has(taskId)) { resolve(output); return; }
-        if (code !== 0 && !output) reject(new Error(`Claude CLI 종료 code=${code}`));
-        else resolve(output);
+        if (this._deleted.has(taskId)) { settle(() => resolve(output)); return; }
+        if (code !== 0 && !output) settle(() => reject(new Error(`Claude CLI 종료 code=${code}`)));
+        else settle(() => resolve(output));
       });
 
-      proc.on('error', (err) => reject(new Error(`Claude CLI 실행 실패: ${err.message}`)));
+      proc.on('error', (err) => settle(() => reject(new Error(`Claude CLI 실행 실패: ${err.message}`))));
     });
   }
 
