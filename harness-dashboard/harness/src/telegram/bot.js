@@ -160,9 +160,17 @@ export function createTelegramBot(agentRunner) {
     );
   });
 
-  // 폴링 오류 처리
+  // 폴링 오류 처리 — EFATAL 포함 자동 재시작
   bot.on('polling_error', (err) => {
     console.error('[Telegram] 폴링 오류:', err.message);
+  });
+
+  bot.on('error', (err) => {
+    console.error('[Telegram] 봇 오류:', err.message);
+    // EFATAL(연결 끊김) 시 5초 후 폴링 재시작
+    setTimeout(() => {
+      try { bot.startPolling(); } catch { /* 무시 */ }
+    }, 5000);
   });
 
   // ── 이벤트 → 알림 매핑 ───────────────────────────────────
