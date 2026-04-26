@@ -143,12 +143,7 @@ export function useHarness() {
 
   // ── 인증 확인 ───────────────────────────────────────────
   const checkAuth = useCallback(async () => {
-    // BASE가 없으면 백엔드 URL 미설정 → 연결 불가 오류 표시
-    if (!BASE) {
-      setError('백엔드 URL이 설정되지 않았습니다. VITE_API_BASE 환경변수를 확인하세요.');
-      setLoading(false);
-      return false;
-    }
+    // BASE가 비어있으면 상대경로(/auth/status)로 요청 → 같은 origin 하네스에 접근
     try {
       const data = await fetch(`${BASE}/auth/status`, { credentials: 'include' }).then(r => r.json());
       setPasswordRequired(data.passwordRequired);
@@ -192,6 +187,13 @@ export function useHarness() {
     }
   }, []);
 
+  // ── eval_result JSON 파싱 헬퍼 ──────────────────────────
+  function parseEvalResult(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+
   // ── 초기 데이터 로드 ─────────────────────────────────────
   // ※ login()이 refresh/connectWs를 deps로 참조하므로 반드시 먼저 선언
   const refresh = useCallback(async () => {
@@ -202,7 +204,7 @@ export function useHarness() {
         apiFetch('/api/status'),
       ]);
       setProjects(proj);
-      setTasks(taskList);
+      setTasks(taskList.map(t => ({ ...t, eval_result: parseEvalResult(t.eval_result) })));
       setStatus(stat.harness);
       setError(null);
     } catch (err) {
@@ -216,22 +218,19 @@ export function useHarness() {
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    // BASE가 없으면 WS 연결 불가 (Vercel 정적 서빙 환경에서 localhost:3000 접근 불가)
-    // 이 경우 HTTP polling으로만 동작 (WS 없이)
-    if (!BASE) {
-      console.warn('[WS] VITE_API_BASE 미설정 → WS 연결 건너뜀 (HTTP polling 전용)');
-      return;
-    }
-
-    // BASE URL에서 WS 프로토콜과 호스트 추출
-    // https://xxx.cfargotunnel.com → wss://xxx.cfargotunnel.com/ws
-    // http://localhost:3000        → ws://localhost:3000/ws
+    // BASE가 있으면 해당 호스트로, 없으면 현재 origin으로 WS 연결
     let wsUrl;
-    try {
-      const parsed = new URL(BASE);
-      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${wsProto}//${parsed.host}/ws`;
-    } catch {
+    if (BASE) {
+      try {
+        const parsed = new URL(BASE);
+        const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProto}//${parsed.host}/ws`;
+      } catch {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        wsUrl = `${proto}://${location.host}/ws`;
+      }
+    } else {
+      // VITE_API_BASE 미설정 → 현재 페이지 origin 사용 (하네스가 직접 서빙하는 경우)
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       wsUrl = `${proto}://${location.host}/ws`;
     }

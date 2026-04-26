@@ -67,6 +67,8 @@ function rateLimit(req, res, next) {
 // ── 인증 미들웨어 ──────────────────────────────────────────
 function authMiddleware(req, res, next) {
   if (!API_KEY) return res.status(503).json({ error: 'API_KEY not configured' });
+  // 대시보드 세션으로 인증된 경우 API Key 불필요
+  if (req.session?.dashboardAuthenticated) return next();
   const key = req.headers['x-api-key'];
   if (!key || key !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
   next();

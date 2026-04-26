@@ -379,12 +379,82 @@ function ProjectCard({ project, onRun, currentTask }) {
   );
 }
 
+// ── 컴포넌트: Eval 배지 ───────────────────────────────────
+function EvalBadge({ evalResult, isEvaluating }) {
+  const [showIssues, setShowIssues] = useState(false);
+
+  if (isEvaluating) {
+    return (
+      <span style={{
+        fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
+        background: '#fb923c22', color: '#fb923c',
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+      }}>
+        ◉ 평가 중...
+      </span>
+    );
+  }
+
+  if (!evalResult) return null;
+
+  const score   = evalResult.score ?? evalResult.total_score ?? null;
+  const passed  = evalResult.passed ?? evalResult.pass ?? null;
+  const issues  = evalResult.issues ?? evalResult.failures ?? [];
+  const hasScore = score !== null && score !== undefined;
+
+  if (!hasScore && passed === null) return null;
+
+  const color = passed === true ? '#3dd68c' : passed === false ? '#f87171' : '#a78bfa';
+  const icon  = passed === true ? '✓' : passed === false ? '✗' : '?';
+
+  return (
+    <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+      <button
+        onClick={() => issues.length > 0 && setShowIssues(v => !v)}
+        style={{
+          fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
+          background: `${color}22`, color,
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          cursor: issues.length > 0 ? 'pointer' : 'default',
+          border: 'none',
+        }}
+      >
+        {icon} {hasScore ? `${score}/100` : (passed === true ? 'PASS' : 'FAIL')}
+        {issues.length > 0 && (
+          <span style={{
+            background: color, color: passed === true ? '#000' : '#fff',
+            borderRadius: 10, padding: '0 5px', fontSize: 10, fontWeight: 700,
+          }}>
+            {issues.length}
+          </span>
+        )}
+      </button>
+      {showIssues && issues.length > 0 && (
+        <div style={{
+          background: 'var(--bg3)', border: '1px solid var(--border)',
+          borderRadius: 8, padding: '8px 10px',
+          fontSize: 11, color: 'var(--text2)',
+          maxWidth: 260, textAlign: 'left',
+        }}>
+          {issues.map((issue, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6, marginBottom: i < issues.length - 1 ? 4 : 0 }}>
+              <span style={{ color: 'var(--red)', flexShrink: 0 }}>•</span>
+              <span>{typeof issue === 'string' ? issue : (issue.message || issue.description || JSON.stringify(issue))}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 컴포넌트: 작업 행 ─────────────────────────────────────
 function TaskRow({ task, onResume, onStop, onDelete }) {
   const p = PHASE[task.status] || PHASE.pending;
   const canResume = task.status === 'paused';
   const canStop   = ['planning', 'building', 'evaluating', 'pending'].includes(task.status);
   const canDelete = !['done'].includes(task.status);
+  const showEval  = ['done', 'failed', 'evaluating'].includes(task.status);
 
   return (
     <div style={{
@@ -402,10 +472,18 @@ function TaskRow({ task, onResume, onStop, onDelete }) {
       <p style={{ fontSize: 13, marginBottom: 4, color: 'var(--text)' }}>
         {(task.prompt || '').slice(0, 80)}{task.prompt?.length > 80 ? '...' : ''}
       </p>
-      <p style={{ fontSize: 11, color: 'var(--text3)' }}>
-        {task.project_name || task.project_id} · {timeAgo(task.updated_at)}
-        {task.round ? ` · R${task.round}` : ''}
-      </p>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <p style={{ fontSize: 11, color: 'var(--text3)', flex: 1 }}>
+          {task.project_name || task.project_id} · {timeAgo(task.updated_at)}
+          {task.round ? ` · R${task.round}` : ''}
+        </p>
+        {showEval && (
+          <EvalBadge
+            evalResult={task.eval_result}
+            isEvaluating={task.status === 'evaluating'}
+          />
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
         {canResume && (
           <button onClick={() => onResume(task.id)} style={{

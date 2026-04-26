@@ -123,7 +123,7 @@ async function main() {
     console.log('');
     console.log('  대시보드 외부 접근을 위해 SSH 터널을 시작하세요:');
     console.log('    npm run tunnel');
-    console.log('  접속 주소: http://91.99.58.70:9090');
+    console.log('  접속 주소: http://91.99.58.70:9091');
     console.log('');
   });
 
