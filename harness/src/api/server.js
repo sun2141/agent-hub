@@ -17,6 +17,40 @@ const DASHBOARD_DIST = path.join(__dirname, '../../dashboard/dist');
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER || 'sun2141';
 
+// CLAUDE.md 위치 (agent-hub 루트)
+const CLAUDE_MD_PATH = path.resolve(__dirname, '../../../CLAUDE.md');
+
+// ── CLAUDE.md 프로젝트 레지스트리 업데이트 ─────────────────
+function updateClaudeMdRegistry({ id, name, localPath, github, deploy }) {
+  try {
+    if (!fs.existsSync(CLAUDE_MD_PATH)) return { ok: false, reason: 'CLAUDE.md 없음' };
+
+    const content = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
+
+    // 테이블 헤더 다음 줄 패턴으로 행 삽입 위치 탐색
+    const tableHeaderRe = /\| ID \| 프로젝트 \| 로컬 경로 \| GitHub \| 배포 \|\n\|[-| ]+\|\n/;
+    const match = tableHeaderRe.exec(content);
+    if (!match) return { ok: false, reason: '레지스트리 테이블을 찾을 수 없음' };
+
+    // 이미 등록된 ID인지 확인
+    const idPattern = new RegExp(`\\| ${id} \\|`);
+    if (idPattern.test(content)) return { ok: true, reason: '이미 등록됨 (스킵)' };
+
+    const githubStr = github ? github : '-';
+    const deployStr = deploy ? deploy : '개발중';
+    const newRow = `| ${id} | ${name} | \`${localPath}\` | ${githubStr} | ${deployStr} |\n`;
+
+    // 테이블 헤더+구분선 바로 다음에 새 행 삽입
+    const insertAt = match.index + match[0].length;
+    const updated = content.slice(0, insertAt) + newRow + content.slice(insertAt);
+
+    fs.writeFileSync(CLAUDE_MD_PATH, updated, 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
 const API_KEY = process.env.API_KEY;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
 
@@ -191,7 +225,7 @@ export function createApiServer(agentRunner) {
   });
 
   app.post('/api/projects', async (req, res) => {
-    const { name, path: projectPath, stack, description } = req.body;
+    const { name, path: projectPath, stack, description, github, deploy, id: customId } = req.body;
     if (!validateString(name, 100)) {
       return res.status(400).json({ error: 'name: 1~100자 문자열 필수' });
     }
@@ -204,17 +238,34 @@ export function createApiServer(agentRunner) {
     if (description !== undefined && !validateString(description, 500)) {
       return res.status(400).json({ error: 'description: 500자 이하 문자열' });
     }
-    const slug = name.toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 24) || 'project';
-    const suffix = crypto.randomBytes(3).toString('hex');
-    const id = `${slug}-${suffix}`;
+
+    let id;
+    if (customId && /^[a-z0-9-]{1,50}$/.test(customId)) {
+      id = customId;
+    } else {
+      const slug = name.toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 24) || 'project';
+      const suffix = crypto.randomBytes(3).toString('hex');
+      id = `${slug}-${suffix}`;
+    }
+
     try {
       const existing = await projectQueries.get(id);
       if (existing) return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
       const project = await projectQueries.insert({ id, name, path: projectPath, stack, description });
-      res.status(201).json(project);
+
+      // CLAUDE.md 레지스트리 자동 업데이트
+      const claudeResult = updateClaudeMdRegistry({
+        id,
+        name,
+        localPath: projectPath,
+        github: github || null,
+        deploy: deploy || null,
+      });
+
+      res.status(201).json({ ...project, claudeMd: claudeResult });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

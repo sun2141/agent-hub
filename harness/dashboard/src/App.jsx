@@ -1358,14 +1358,16 @@ function TaskHistory({ tasks, projects }) {
   )
 }
 
-// ── 프로젝트 생성 폼 (GitHub 연동 포함) ────────────────────
-function AddProjectForm({ onAdd, onCreate, onCancel }) {
-  const [mode, setMode] = useState('create')
+// ── 프로젝트 등록 모달 ────────────────────────────────────
+function RegisterProjectModal({ onAdd, onCreate, onClose }) {
+  const [mode, setMode] = useState('register') // 'register' | 'create'
   const [form, setForm] = useState({
-    name: '', path: '', stack: '', description: '',
+    id: '', name: '', path: '', stack: '', description: '',
+    github: '', deploy: '',
     githubRepo: true,
     githubPrivate: 'private',
   })
+  const [idEdited, setIdEdited] = useState(false) // 사용자가 ID를 직접 수정했는지
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState(null)
@@ -1375,29 +1377,43 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
     setForm(f => ({ ...f, [key]: val }))
   }
 
+  const handleIdChange = (e) => {
+    setIdEdited(true)
+    setForm(f => ({ ...f, id: e.target.value }))
+  }
+
   const handleNameChange = (e) => {
     const name = e.target.value
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     setForm(f => ({
       ...f,
       name,
-      path: slug ? `/Users/sun/${slug}` : '',
+      // ID를 직접 수정하지 않은 경우에만 자동 채움
+      id: idEdited ? f.id : slug,
+      path: f.path && f.path !== `/Users/sun/${f.id}` ? f.path : (slug ? `/Users/sun/${slug}` : ''),
     }))
   }
 
   const handleSubmit = async () => {
     if (!form.name.trim()) { setError('프로젝트 이름은 필수입니다'); return }
-    if (!form.path.trim()) { setError('경로는 필수입니다'); return }
+    if (!form.path.trim()) { setError('로컬 경로는 필수입니다'); return }
+    if (form.id && !/^[a-z0-9-]{1,50}$/.test(form.id.trim())) {
+      setError('프로젝트 ID: 영문 소문자/숫자/하이픈만 허용 (최대 50자)')
+      return
+    }
     setError('')
     setSaving(true)
     setResult(null)
 
     try {
       const payload = {
+        id: form.id.trim() || undefined,
         name: form.name.trim(),
         path: form.path.trim(),
         stack: form.stack.trim() || undefined,
         description: form.description.trim() || undefined,
+        github: form.github.trim() || undefined,
+        deploy: form.deploy.trim() || undefined,
       }
 
       let res
@@ -1416,7 +1432,7 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
       } else if (mode === 'create') {
         setResult(res)
       } else {
-        onCancel()
+        onClose()
       }
     } finally {
       setSaving(false)
@@ -1430,121 +1446,188 @@ function AddProjectForm({ onAdd, onCreate, onCancel }) {
   }
   const labelStyle = { fontSize: 11, color: 'var(--text3)', fontWeight: 600, marginBottom: 4, display: 'block' }
 
-  if (result) {
-    return (
-      <div style={{
-        margin: '8px 0 16px', padding: '16px', background: 'var(--bg2)',
-        border: '1px solid rgba(61,214,140,0.3)', borderRadius: 12,
-      }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', marginBottom: 10 }}>✅ 프로젝트 생성 완료</div>
-        <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
-          <div>폴더: <span style={{ color: 'var(--green)' }}>{result.folderCreated ? '✓' : '×'}</span> {result.project?.path}</div>
-          <div>git init: <span style={{ color: result.gitInit ? 'var(--green)' : 'var(--red)' }}>{result.gitInit ? '✓' : '×'}</span></div>
-          {result.githubRepo && (
-            <div>GitHub: <span style={{ color: 'var(--green)' }}>✓</span>{' '}
-              <a href={result.githubRepo.url} target="_blank" rel="noreferrer"
-                style={{ color: 'var(--accent2)', fontSize: 11 }}>{result.githubRepo.url}</a>
-            </div>
-          )}
-          {result.githubError && (
-            <div style={{ color: 'var(--orange)' }}>GitHub 오류: {result.githubError}</div>
-          )}
-          <div>DB 등록: <span style={{ color: result.dbInserted ? 'var(--green)' : 'var(--red)' }}>{result.dbInserted ? '✓' : '×'}</span></div>
-        </div>
-        <button onClick={() => { vibrate(10); onCancel() }} style={{
-          marginTop: 12, width: '100%', background: 'var(--accent)', border: 'none',
-          borderRadius: 8, padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
-          minHeight: 52, WebkitTapHighlightColor: 'transparent',
-        }}>닫기</button>
-      </div>
-    )
+  // 배경 오버레이 클릭 시 닫기
+  const handleOverlayClick = (e) => {
+    if (e.target === e.currentTarget) onClose()
   }
 
   return (
-    <div style={{
-      margin: '8px 0 16px', padding: '14px', background: 'var(--bg2)',
-      border: '1px solid var(--border)', borderRadius: 12,
-      display: 'flex', flexDirection: 'column', gap: 10,
-    }}>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 2 }}>
-        {[['create', '새 프로젝트 생성'], ['add', '기존 등록']].map(([m, label]) => (
-          <button key={m} onClick={() => { vibrate(8); setMode(m) }} style={{
-            flex: 1, background: mode === m ? 'rgba(107,94,248,0.2)' : 'none',
-            border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
-            borderRadius: 8, padding: '10px 6px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
-            fontSize: 13, fontWeight: mode === m ? 600 : 400,
-            minHeight: 44, WebkitTapHighlightColor: 'transparent',
-          }}>{label}</button>
-        ))}
-      </div>
-
-      <div>
-        <label style={labelStyle}>이름 *</label>
-        <input value={form.name} onChange={handleNameChange} placeholder="My Project" style={fieldStyle} />
-      </div>
-      <div>
-        <label style={labelStyle}>로컬 경로 *</label>
-        <input value={form.path} onChange={set('path')} placeholder="/Users/sun/my-project" style={fieldStyle} />
-      </div>
-      <div>
-        <label style={labelStyle}>스택</label>
-        <input value={form.stack} onChange={set('stack')} placeholder="Node.js, React, …" style={fieldStyle} />
-      </div>
-      <div>
-        <label style={labelStyle}>설명</label>
-        <input value={form.description} onChange={set('description')} placeholder="한 줄 설명" style={fieldStyle} />
-      </div>
-
-      {mode === 'create' && (
+    <div
+      onClick={handleOverlayClick}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }}
+    >
+      <div style={{
+        width: '100%', maxWidth: 480, maxHeight: '90dvh',
+        background: 'var(--bg2)', borderRadius: '16px 16px 0 0',
+        display: 'flex', flexDirection: 'column',
+        boxShadow: '0 -8px 40px rgba(0,0,0,0.5)',
+      }}>
+        {/* 헤더 */}
         <div style={{
-          padding: '10px 12px', background: 'var(--bg3)',
-          border: '1px solid var(--border)', borderRadius: 10,
-          display: 'flex', flexDirection: 'column', gap: 8,
+          display: 'flex', alignItems: 'center', padding: '16px 16px 12px',
+          borderBottom: '1px solid var(--border)', flexShrink: 0,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="checkbox"
-              id="githubRepo"
-              checked={form.githubRepo}
-              onChange={set('githubRepo')}
-              style={{ accentColor: 'var(--accent)' }}
-            />
-            <label htmlFor="githubRepo" style={{ fontSize: 13, color: 'var(--text2)', cursor: 'pointer' }}>
-              GitHub 레포 자동 생성
-            </label>
-          </div>
-          {form.githubRepo && (
-            <div style={{ display: 'flex', gap: 6, paddingLeft: 22 }}>
-              {[['private', '프라이빗'], ['public', '퍼블릭']].map(([val, label]) => (
-                <button key={val} onClick={() => { vibrate(8); setForm(f => ({ ...f, githubPrivate: val })) }} style={{
-                  flex: 1, background: form.githubPrivate === val ? 'rgba(107,94,248,0.2)' : 'none',
-                  border: '1px solid ' + (form.githubPrivate === val ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
-                  borderRadius: 7, padding: '9px 5px', color: form.githubPrivate === val ? 'var(--accent2)' : 'var(--text3)',
-                  fontSize: 13, minHeight: 44, WebkitTapHighlightColor: 'transparent',
-                }}>{label}</button>
-              ))}
-            </div>
-          )}
+          <span style={{ fontSize: 15, fontWeight: 700, flex: 1 }}>새 프로젝트 등록</span>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', color: 'var(--text3)',
+            fontSize: 22, minWidth: 40, minHeight: 40, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', borderRadius: 8,
+            WebkitTapHighlightColor: 'transparent',
+          }}>×</button>
         </div>
-      )}
 
-      {error && <div style={{ fontSize: 12, color: 'var(--red)' }}>{error}</div>}
-
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={() => { vibrate(15); handleSubmit() }} disabled={saving} style={{
-          flex: 1, background: 'var(--accent)', border: 'none', borderRadius: 8,
-          padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
-          opacity: saving ? 0.5 : 1, minHeight: 52, WebkitTapHighlightColor: 'transparent',
-        }}>{saving ? (
-          mode === 'create' ? '생성 중…' : '등록 중…'
+        {/* 완료 화면 */}
+        {result ? (
+          <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', marginBottom: 10 }}>✅ 프로젝트 생성 완료</div>
+            <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
+              <div>폴더: <span style={{ color: 'var(--green)' }}>{result.folderCreated ? '✓' : '×'}</span> {result.project?.path}</div>
+              <div>git init: <span style={{ color: result.gitInit ? 'var(--green)' : 'var(--red)' }}>{result.gitInit ? '✓' : '×'}</span></div>
+              {result.githubRepo && (
+                <div>GitHub: <span style={{ color: 'var(--green)' }}>✓</span>{' '}
+                  <a href={result.githubRepo.url} target="_blank" rel="noreferrer"
+                    style={{ color: 'var(--accent2)', fontSize: 11 }}>{result.githubRepo.url}</a>
+                </div>
+              )}
+              {result.githubError && (
+                <div style={{ color: 'var(--orange)' }}>GitHub 오류: {result.githubError}</div>
+              )}
+              <div>DB 등록: <span style={{ color: result.dbInserted ? 'var(--green)' : 'var(--red)' }}>{result.dbInserted ? '✓' : '×'}</span></div>
+              {result.claudeMd && (
+                <div>CLAUDE.md: <span style={{ color: result.claudeMd.ok ? 'var(--green)' : 'var(--orange)' }}>
+                  {result.claudeMd.ok ? '✓ 레지스트리 업데이트됨' : `△ ${result.claudeMd.reason || '스킵'}`}
+                </span></div>
+              )}
+            </div>
+            <button onClick={() => { vibrate(10); onClose() }} style={{
+              marginTop: 16, width: '100%', background: 'var(--accent)', border: 'none',
+              borderRadius: 8, padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+              minHeight: 52, WebkitTapHighlightColor: 'transparent',
+            }}>닫기</button>
+          </div>
         ) : (
-          mode === 'create' ? '프로젝트 생성' : '등록'
-        )}</button>
-        <button onClick={() => { vibrate(8); onCancel() }} style={{
-          background: 'none', border: '1px solid var(--border)', borderRadius: 8,
-          padding: '13px 18px', color: 'var(--text3)', fontSize: 14,
-          minHeight: 52, WebkitTapHighlightColor: 'transparent',
-        }}>취소</button>
+          <>
+            {/* 스크롤 가능한 폼 영역 */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* 모드 탭 */}
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[['register', '기존 프로젝트 등록'], ['create', '새 폴더 생성']].map(([m, label]) => (
+                  <button key={m} onClick={() => { vibrate(8); setMode(m) }} style={{
+                    flex: 1, background: mode === m ? 'rgba(107,94,248,0.2)' : 'none',
+                    border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
+                    borderRadius: 8, padding: '10px 6px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
+                    fontSize: 13, fontWeight: mode === m ? 600 : 400,
+                    minHeight: 44, WebkitTapHighlightColor: 'transparent',
+                  }}>{label}</button>
+                ))}
+              </div>
+
+              {/* 프로젝트 ID */}
+              <div>
+                <label style={labelStyle}>프로젝트 ID <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(미입력 시 자동 생성)</span></label>
+                <input
+                  value={form.id}
+                  onChange={handleIdChange}
+                  placeholder="my-project (소문자, 숫자, 하이픈)"
+                  style={fieldStyle}
+                />
+              </div>
+
+              {/* 이름 */}
+              <div>
+                <label style={labelStyle}>프로젝트 이름 *</label>
+                <input value={form.name} onChange={handleNameChange} placeholder="My Project" style={fieldStyle} />
+              </div>
+
+              {/* 로컬 경로 */}
+              <div>
+                <label style={labelStyle}>로컬 경로 *</label>
+                <input value={form.path} onChange={set('path')} placeholder="/Users/sun/my-project" style={fieldStyle} />
+              </div>
+
+              {/* 스택 */}
+              <div>
+                <label style={labelStyle}>스택</label>
+                <input value={form.stack} onChange={set('stack')} placeholder="Next.js, Supabase, …" style={fieldStyle} />
+              </div>
+
+              {/* 설명 */}
+              <div>
+                <label style={labelStyle}>설명</label>
+                <input value={form.description} onChange={set('description')} placeholder="한 줄 설명" style={fieldStyle} />
+              </div>
+
+              {/* GitHub URL */}
+              <div>
+                <label style={labelStyle}>GitHub <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(선택)</span></label>
+                <input value={form.github} onChange={set('github')} placeholder="sun2141/my-project" style={fieldStyle} />
+              </div>
+
+              {/* 배포 URL */}
+              <div>
+                <label style={labelStyle}>배포 URL <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(선택)</span></label>
+                <input value={form.deploy} onChange={set('deploy')} placeholder="my-project.vercel.app" style={fieldStyle} />
+              </div>
+
+              {/* 새 폴더 생성 모드: GitHub 연동 옵션 */}
+              {mode === 'create' && (
+                <div style={{
+                  padding: '10px 12px', background: 'var(--bg3)',
+                  border: '1px solid var(--border)', borderRadius: 10,
+                  display: 'flex', flexDirection: 'column', gap: 8,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      id="githubRepo"
+                      checked={form.githubRepo}
+                      onChange={set('githubRepo')}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    <label htmlFor="githubRepo" style={{ fontSize: 13, color: 'var(--text2)', cursor: 'pointer' }}>
+                      GitHub 레포 자동 생성
+                    </label>
+                  </div>
+                  {form.githubRepo && (
+                    <div style={{ display: 'flex', gap: 6, paddingLeft: 22 }}>
+                      {[['private', '프라이빗'], ['public', '퍼블릭']].map(([val, label]) => (
+                        <button key={val} onClick={() => { vibrate(8); setForm(f => ({ ...f, githubPrivate: val })) }} style={{
+                          flex: 1, background: form.githubPrivate === val ? 'rgba(107,94,248,0.2)' : 'none',
+                          border: '1px solid ' + (form.githubPrivate === val ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
+                          borderRadius: 7, padding: '9px 5px', color: form.githubPrivate === val ? 'var(--accent2)' : 'var(--text3)',
+                          fontSize: 13, minHeight: 44, WebkitTapHighlightColor: 'transparent',
+                        }}>{label}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {error && <div style={{ fontSize: 12, color: 'var(--red)' }}>{error}</div>}
+            </div>
+
+            {/* 하단 버튼 */}
+            <div style={{
+              padding: '12px 16px', borderTop: '1px solid var(--border)',
+              display: 'flex', gap: 8, flexShrink: 0,
+            }}>
+              <button onClick={() => { vibrate(15); handleSubmit() }} disabled={saving} style={{
+                flex: 1, background: 'var(--accent)', border: 'none', borderRadius: 8,
+                padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+                opacity: saving ? 0.5 : 1, minHeight: 52, WebkitTapHighlightColor: 'transparent',
+              }}>{saving ? '저장 중…' : (mode === 'create' ? '프로젝트 생성' : '등록')}</button>
+              <button onClick={() => { vibrate(8); onClose() }} style={{
+                background: 'none', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '13px 18px', color: 'var(--text3)', fontSize: 14,
+                minHeight: 52, WebkitTapHighlightColor: 'transparent',
+              }}>취소</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
@@ -1638,7 +1721,7 @@ export default function App() {
   const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, addProject, createProject, refresh } = useHarness()
   const [view, setView]         = useState('list')
   const [selected, setSelected] = useState(null)
-  const [showAddForm, setShowAddForm] = useState(false)
+  const [showRegisterModal, setShowRegisterModal] = useState(false)
 
   const productProjects = projects.filter(p => !INFRA_IDS.includes(p.id))
   const infraProjects   = projects.filter(p => INFRA_IDS.includes(p.id))
@@ -1650,9 +1733,23 @@ export default function App() {
     return result
   }
 
+  const handleRegisterClose = () => {
+    setShowRegisterModal(false)
+    refresh()
+  }
+
   return (
     <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', maxWidth: 480, margin: '0 auto', background: 'var(--bg)' }}>
       <StatusBar status={status} connected={connected} onRefresh={refresh} />
+
+      {/* 프로젝트 등록 모달 */}
+      {showRegisterModal && (
+        <RegisterProjectModal
+          onAdd={addProject}
+          onCreate={createProject}
+          onClose={handleRegisterClose}
+        />
+      )}
 
       {view === 'detail' && selected ? (
         <ProjectDetail
@@ -1693,27 +1790,23 @@ export default function App() {
 
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', flex: 1 }}>프로젝트</div>
-            <button onClick={() => { vibrate(8); setShowAddForm(f => !f) }} style={{
-              background: showAddForm ? 'rgba(107,94,248,0.2)' : 'none',
-              border: '1px solid ' + (showAddForm ? 'rgba(107,94,248,0.4)' : 'var(--border)'),
-              borderRadius: 8, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: showAddForm ? 'var(--accent2)' : 'var(--text3)', fontSize: 20, lineHeight: 1,
-              WebkitTapHighlightColor: 'transparent',
-            }}>{showAddForm ? '×' : '+'}</button>
+            <button onClick={() => { vibrate(8); setShowRegisterModal(true) }} style={{
+              background: 'rgba(107,94,248,0.1)',
+              border: '1px solid rgba(107,94,248,0.3)',
+              borderRadius: 8, padding: '0 12px', height: 36, display: 'flex', alignItems: 'center', gap: 5,
+              color: 'var(--accent2)', fontSize: 12, fontWeight: 600, lineHeight: 1,
+              WebkitTapHighlightColor: 'transparent', whiteSpace: 'nowrap',
+            }}>
+              <span style={{ fontSize: 16, marginTop: -1 }}>+</span>
+              <span>새 프로젝트 등록</span>
+            </button>
           </div>
-          {showAddForm && (
-            <AddProjectForm
-              onAdd={addProject}
-              onCreate={createProject}
-              onCancel={() => setShowAddForm(false)}
-            />
-          )}
           <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
             {productProjects.map(p => (
               <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
                 onClick={() => { setSelected(p); setView('detail') }} />
             ))}
-            {productProjects.length === 0 && !showAddForm && (
+            {productProjects.length === 0 && !showRegisterModal && (
               <div style={{ color: 'var(--text3)', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>연결 중...</div>
             )}
           </div>
