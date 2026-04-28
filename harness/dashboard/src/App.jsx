@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useHarness } from './hooks/useHarness'
 
 // ── 진동 피드백 (iOS Safari 미지원 → try-catch) ──────────
@@ -44,6 +44,611 @@ function readFileAsText(file) {
     reader.onerror = reject
     reader.readAsText(file)
   })
+}
+
+// ── API 헬퍼 (훅 외부에서 사용) ───────────────────────────
+const API_KEY_RAW = typeof import.meta !== 'undefined' ? (import.meta.env?.VITE_API_KEY || '') : ''
+function apiFetchRaw(path, options = {}) {
+  return fetch(`/api${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': API_KEY_RAW,
+      ...options.headers,
+    },
+  }).then(r => r.json())
+}
+
+// ── 파일 트리 노드 렌더러 ─────────────────────────────────
+function FileTreeNode({ name, node, depth = 0, selected, onToggle, path = '' }) {
+  const [open, setOpen] = useState(depth < 2)
+  const isDir = node._type === 'dir'
+  const fullPath = path ? `${path}/${name}` : name
+
+  if (isDir) {
+    const children = node._children || {}
+    const childKeys = Object.keys(children).sort((a, b) => {
+      const aDir = children[a]._type === 'dir'
+      const bDir = children[b]._type === 'dir'
+      if (aDir && !bDir) return -1
+      if (!aDir && bDir) return 1
+      return a.localeCompare(b)
+    })
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5, width: '100%',
+            background: 'none', border: 'none', padding: `3px 0 3px ${depth * 14}px`,
+            color: 'var(--text2)', fontSize: 12, cursor: 'pointer', textAlign: 'left',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          <span style={{ fontSize: 10 }}>{open ? '▼' : '▶'}</span>
+          <span style={{ fontSize: 13 }}>📁</span>
+          <span style={{ fontWeight: 500 }}>{name}</span>
+        </button>
+        {open && childKeys.map(k => (
+          <FileTreeNode
+            key={k} name={k} node={children[k]} depth={depth + 1}
+            selected={selected} onToggle={onToggle} path={fullPath}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  const filePath = node._path || fullPath
+  const isSelected = selected.has(filePath)
+  return (
+    <div
+      onClick={() => onToggle(filePath)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: `3px 4px 3px ${depth * 14 + 4}px`,
+        borderRadius: 6, cursor: 'pointer',
+        background: isSelected ? 'rgba(107,94,248,0.12)' : 'transparent',
+        WebkitTapHighlightColor: 'transparent',
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={isSelected}
+        onChange={() => onToggle(filePath)}
+        onClick={e => e.stopPropagation()}
+        style={{ accentColor: 'var(--accent)', flexShrink: 0, cursor: 'pointer' }}
+      />
+      <span style={{ fontSize: 12 }}>📄</span>
+      <span style={{ fontSize: 12, color: 'var(--text2)', flex: 1, wordBreak: 'break-all' }}>{name}</span>
+      {node._size > 0 && (
+        <span style={{ fontSize: 10, color: 'var(--text3)', flexShrink: 0 }}>
+          {node._size < 1024 ? `${node._size}B` : node._size < 1048576 ? `${(node._size/1024).toFixed(1)}K` : `${(node._size/1048576).toFixed(1)}M`}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── 폴더 업로드 패널 ──────────────────────────────────────
+function FolderUploadPanel({ onFilesReady, onClose }) {
+  const [mode, setMode] = useState('local') // 'local' | 'gdrive' | 'dropbox'
+  const [cloudUrl, setCloudUrl] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [progress, setProgress] = useState(null) // { done, total }
+
+  // 파일 트리 상태
+  const [tree, setTree] = useState(null)
+  const [flatFiles, setFlatFiles] = useState([]) // { path, name, size, text?, downloadUrl?, id?, dropboxPath? }
+  const [selected, setSelected] = useState(new Set())
+  const [source, setSource] = useState(null) // 'local' | 'gdrive' | 'dropbox'
+  const [dropboxSharedLinkUrl, setDropboxSharedLinkUrl] = useState('') // 폴백 다운로드용
+
+  // 드래그앤드롭
+  const [dragging, setDragging] = useState(false)
+  const dropRef = useRef(null)
+  const folderInputRef = useRef(null)
+
+  const TEXT_EXT = /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|env|toml|xml|sql|java|c|cpp|h|go|rs|rb|php|swift|kt|vue|svelte|prisma|graphql|csv|log|conf|ini)$/i
+
+  // 파일 목록에서 트리 구성
+  function buildTreeFromFiles(files) {
+    const tree = {}
+    for (const f of files) {
+      const parts = (f.path || f.name).split('/').filter(Boolean)
+      let node = tree
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!node[parts[i]]) node[parts[i]] = { _type: 'dir', _children: {} }
+        node = node[parts[i]]._children
+      }
+      const fname = parts[parts.length - 1] || f.name
+      node[fname] = { _type: 'file', _path: f.path || f.name, _size: f.size || 0 }
+    }
+    return tree
+  }
+
+  // 로컬 폴더 파일 처리 (병렬 읽기)
+  async function processLocalFiles(fileList) {
+    const files = Array.from(fileList)
+    const textFiles = files.filter(f => {
+      if (f.size > 5 * 1024 * 1024) return false
+      return f.type.startsWith('text/') || TEXT_EXT.test(f.name)
+    })
+
+    if (textFiles.length === 0) {
+      setError('텍스트/코드 파일이 없습니다')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    setProgress({ done: 0, total: textFiles.length })
+
+    const CONCURRENCY = 16
+    const processed = []
+    let done = 0
+
+    for (let i = 0; i < textFiles.length; i += CONCURRENCY) {
+      const chunk = textFiles.slice(i, i + CONCURRENCY)
+      const results = await Promise.all(chunk.map(async file => {
+        try {
+          const text = await readFileAsText(file)
+          const relPath = file.webkitRelativePath || file.name
+          return { path: relPath, name: file.name, size: file.size, text }
+        } catch {
+          return null
+        }
+      }))
+      for (const r of results) {
+        if (r) processed.push(r)
+        done++
+      }
+      setProgress({ done, total: textFiles.length })
+    }
+
+    setLoading(false)
+    setProgress(null)
+    const tree = buildTreeFromFiles(processed)
+    setTree(tree)
+    setFlatFiles(processed)
+    setSelected(new Set(processed.map(f => f.path)))
+    setSource('local')
+  }
+
+  // 드래그앤드롭 이벤트
+  function handleDragOver(e) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setDragging(true)
+  }
+  function handleDragLeave(e) {
+    if (!dropRef.current?.contains(e.relatedTarget)) setDragging(false)
+  }
+  async function handleDrop(e) {
+    e.preventDefault()
+    setDragging(false)
+    const items = e.dataTransfer.items
+    if (!items) return
+
+    const allFiles = []
+    async function traverseEntry(entry, basePath = '') {
+      if (entry.isFile) {
+        return new Promise(resolve => {
+          entry.file(file => {
+            file._customPath = basePath ? `${basePath}/${file.name}` : file.name
+            allFiles.push(file)
+            resolve()
+          }, resolve)
+        })
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader()
+        return new Promise(resolve => {
+          const readAll = () => {
+            reader.readEntries(async entries => {
+              if (!entries.length) { resolve(); return }
+              await Promise.all(entries.map(e => traverseEntry(e, basePath ? `${basePath}/${entry.name}` : entry.name)))
+              readAll()
+            }, resolve)
+          }
+          readAll()
+        })
+      }
+    }
+
+    const promises = []
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry?.()
+      if (entry) promises.push(traverseEntry(entry))
+    }
+    await Promise.all(promises)
+
+    // _customPath 적용
+    const patchedFiles = allFiles.map(f => {
+      if (f._customPath) Object.defineProperty(f, 'webkitRelativePath', { value: f._customPath, writable: true })
+      return f
+    })
+    await processLocalFiles(patchedFiles)
+  }
+
+  // 폴더 input 변경
+  async function handleFolderInput(e) {
+    const files = e.target.files
+    if (files && files.length) await processLocalFiles(files)
+    e.target.value = ''
+  }
+
+  // Google Drive 폴더 조회
+  async function fetchGDrive() {
+    if (!cloudUrl.trim()) { setError('Google Drive 공유 링크를 입력하세요'); return }
+    setLoading(true)
+    setError('')
+    try {
+      const data = await apiFetchRaw('/gdrive-folder', {
+        method: 'POST',
+        body: JSON.stringify({ url: cloudUrl.trim() }),
+      })
+      if (data.error) { setError(data.error); return }
+      setFlatFiles(data.files || [])
+      setTree(buildTreeFromFiles(data.files || []))
+      setSelected(new Set((data.files || []).map(f => f.path || f.name)))
+      setSource('gdrive')
+    } catch (err) {
+      setError(err.message || '오류 발생')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Dropbox 폴더 조회
+  async function fetchDropbox() {
+    if (!cloudUrl.trim()) { setError('Dropbox 공유 링크를 입력하세요'); return }
+    setLoading(true)
+    setError('')
+    try {
+      const data = await apiFetchRaw('/dropbox-folder', {
+        method: 'POST',
+        body: JSON.stringify({ url: cloudUrl.trim() }),
+      })
+      if (data.error) { setError(data.error); return }
+      setFlatFiles(data.files || [])
+      setTree(buildTreeFromFiles(data.files || []))
+      setSelected(new Set((data.files || []).map(f => f.path || f.name)))
+      setDropboxSharedLinkUrl(data.sharedLinkUrl || cloudUrl.trim())
+      setSource('dropbox')
+    } catch (err) {
+      setError(err.message || '오류 발생')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggleFile(filePath) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(filePath)) next.delete(filePath)
+      else next.add(filePath)
+      return next
+    })
+  }
+
+  function selectAll() { setSelected(new Set(flatFiles.map(f => f.path || f.name))) }
+  function selectNone() { setSelected(new Set()) }
+
+  // 선택된 파일을 에이전트 컨텍스트로 전달
+  async function handleConfirm() {
+    const selectedFiles = flatFiles.filter(f => selected.has(f.path || f.name))
+    if (selectedFiles.length === 0) { setError('분석할 파일을 선택하세요'); return }
+
+    setLoading(true)
+    setError('')
+    setProgress({ done: 0, total: selectedFiles.length })
+
+    // 로컬 파일은 이미 text가 있으므로 즉시 처리
+    // 클라우드 파일은 병렬(최대 8개 동시) 다운로드
+    const CONCURRENCY = 8
+    const result = []
+    let done = 0
+
+    // 청크 단위 병렬 처리
+    async function processFile(f) {
+      try {
+        if (source === 'local' && f.text !== undefined) {
+          return { name: f.name, path: f.path, text: f.text }
+        } else if (source === 'gdrive' && f.id) {
+          const data = await apiFetchRaw('/gdrive-download', {
+            method: 'POST',
+            body: JSON.stringify({ fileId: f.id, fileName: f.name }),
+          })
+          if (!data.error) return { name: f.name, path: f.path, text: data.text }
+        } else if (source === 'dropbox') {
+          if (f.downloadUrl) {
+            // 방법 1: 임시 다운로드 URL 직접 사용
+            const data = await apiFetchRaw('/dropbox-download', {
+              method: 'POST',
+              body: JSON.stringify({ url: f.downloadUrl, fileName: f.name }),
+            })
+            if (!data.error) return { name: f.name, path: f.path, text: data.text }
+          }
+          // 방법 2: 폴백 - 공유링크 + dropboxPath 조합
+          if (dropboxSharedLinkUrl && (f.dropboxPath || f.path)) {
+            const data = await apiFetchRaw('/dropbox-download-by-path', {
+              method: 'POST',
+              body: JSON.stringify({
+                sharedLinkUrl: dropboxSharedLinkUrl,
+                filePath: f.dropboxPath || f.path,
+                fileName: f.name,
+              }),
+            })
+            if (!data.error) return { name: f.name, path: f.path, text: data.text }
+          }
+        }
+      } catch { /* 실패 스킵 */ }
+      return null
+    }
+
+    for (let i = 0; i < selectedFiles.length; i += CONCURRENCY) {
+      const chunk = selectedFiles.slice(i, i + CONCURRENCY)
+      const chunkResults = await Promise.all(chunk.map(f => processFile(f)))
+      for (const r of chunkResults) {
+        if (r) result.push(r)
+        done++
+        setProgress({ done, total: selectedFiles.length })
+      }
+    }
+
+    setLoading(false)
+    setProgress(null)
+    if (result.length === 0) { setError('읽을 수 있는 파일이 없습니다'); return }
+    onFilesReady(result)
+  }
+
+  const hasTree = tree && flatFiles.length > 0
+  const selectedCount = selected.size
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 200,
+      background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end',
+    }}>
+      <div style={{
+        width: '100%', maxHeight: '90vh',
+        background: 'var(--bg)', borderRadius: '20px 20px 0 0',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        {/* 헤더 */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '16px 16px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0,
+        }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>폴더 / 클라우드 파일 첨부</span>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', color: 'var(--text3)', fontSize: 24,
+            minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 10, WebkitTapHighlightColor: 'transparent',
+          }}>×</button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+          {/* 모드 탭 */}
+          {!hasTree && (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+              {[['local', '📁 로컬 폴더'], ['gdrive', '🌐 Google Drive'], ['dropbox', '📦 Dropbox']].map(([m, label]) => (
+                <button key={m} onClick={() => { setMode(m); setError(''); setCloudUrl('') }} style={{
+                  flex: 1, background: mode === m ? 'rgba(107,94,248,0.18)' : 'var(--bg2)',
+                  border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
+                  borderRadius: 10, padding: '9px 4px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
+                  fontSize: 12, fontWeight: mode === m ? 600 : 400,
+                  minHeight: 44, WebkitTapHighlightColor: 'transparent', cursor: 'pointer',
+                }}>{label}</button>
+              ))}
+            </div>
+          )}
+
+          {/* 로컬 폴더 업로드 */}
+          {!hasTree && mode === 'local' && (
+            <>
+              <div
+                ref={dropRef}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                style={{
+                  border: `2px dashed ${dragging ? 'var(--accent)' : 'var(--border)'}`,
+                  borderRadius: 14, padding: '28px 16px', textAlign: 'center',
+                  background: dragging ? 'rgba(107,94,248,0.08)' : 'var(--bg2)',
+                  transition: 'all 0.15s', marginBottom: 12, cursor: 'default',
+                }}
+              >
+                <div style={{ fontSize: 36, marginBottom: 10 }}>📁</div>
+                <div style={{ fontSize: 14, color: 'var(--text2)', marginBottom: 6, fontWeight: 500 }}>
+                  폴더를 여기에 드래그하세요
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 14 }}>
+                  또는 아래 버튼으로 선택
+                </div>
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  // webkitdirectory 폴더 전체 선택
+                  {...{ webkitdirectory: '', directory: '' }}
+                  multiple
+                  onChange={handleFolderInput}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  onClick={() => folderInputRef.current?.click()}
+                  disabled={loading}
+                  style={{
+                    background: 'var(--accent)', border: 'none', borderRadius: 10,
+                    padding: '11px 22px', color: 'white', fontSize: 13, fontWeight: 600,
+                    opacity: loading ? 0.5 : 1, cursor: loading ? 'default' : 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >폴더 선택</button>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center' }}>
+                텍스트·코드 파일만 지원 · 파일당 최대 5MB
+              </div>
+            </>
+          )}
+
+          {/* 클라우드 링크 입력 */}
+          {!hasTree && (mode === 'gdrive' || mode === 'dropbox') && (
+            <>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>
+                  {mode === 'gdrive'
+                    ? 'Google Drive 폴더 공유 링크를 붙여넣으세요'
+                    : 'Dropbox 폴더 공유 링크를 붙여넣으세요'}
+                </div>
+                <input
+                  value={cloudUrl}
+                  onChange={e => setCloudUrl(e.target.value)}
+                  placeholder={mode === 'gdrive'
+                    ? 'https://drive.google.com/drive/folders/...'
+                    : 'https://www.dropbox.com/sh/...'}
+                  style={{
+                    width: '100%', boxSizing: 'border-box',
+                    background: 'var(--bg3)', border: '1px solid var(--border)',
+                    borderRadius: 10, padding: '12px 14px', color: 'var(--text)',
+                    fontSize: 14, outline: 'none',
+                  }}
+                />
+              </div>
+              <button
+                onClick={mode === 'gdrive' ? fetchGDrive : fetchDropbox}
+                disabled={loading || !cloudUrl.trim()}
+                style={{
+                  width: '100%', background: 'var(--accent)', border: 'none', borderRadius: 10,
+                  padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+                  opacity: (loading || !cloudUrl.trim()) ? 0.4 : 1,
+                  cursor: (loading || !cloudUrl.trim()) ? 'default' : 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >{loading ? '조회 중…' : '파일 목록 조회'}</button>
+              {mode === 'gdrive' && (
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8, lineHeight: 1.5 }}>
+                  ※ 공개 공유 폴더만 지원. 서버에 GOOGLE_API_KEY 설정 시 비공개 폴더도 지원.
+                </div>
+              )}
+              {mode === 'dropbox' && (
+                <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8, lineHeight: 1.5 }}>
+                  ※ 공유 링크로 공개된 폴더만 지원. 서버에 DROPBOX_ACCESS_TOKEN 설정 시 확장 가능.
+                </div>
+              )}
+            </>
+          )}
+
+          {/* 진행률 표시 */}
+          {loading && progress && (
+            <div style={{ marginTop: 14, padding: '12px 14px', background: 'var(--bg2)', borderRadius: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: 'var(--text2)' }}>파일 처리 중…</span>
+                <span style={{ fontSize: 12, color: 'var(--accent2)' }}>{progress.done} / {progress.total}</span>
+              </div>
+              <div style={{ height: 5, background: 'var(--bg3)', borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', background: 'var(--accent)', borderRadius: 10,
+                  width: `${(progress.done / progress.total * 100).toFixed(0)}%`,
+                  transition: 'width 0.2s',
+                }} />
+              </div>
+            </div>
+          )}
+
+          {/* 에러 */}
+          {error && (
+            <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 8, padding: '8px 10px', background: 'rgba(248,113,113,0.08)', borderRadius: 8 }}>
+              {error}
+            </div>
+          )}
+
+          {/* 파일 트리 */}
+          {hasTree && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ fontSize: 13, color: 'var(--text2)', fontWeight: 500 }}>
+                  파일 {flatFiles.length}개
+                  {selectedCount > 0 && (
+                    <span style={{ color: 'var(--accent2)', marginLeft: 6 }}>{selectedCount}개 선택됨</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={selectAll} style={{
+                    background: 'none', border: '1px solid var(--border)', borderRadius: 7,
+                    padding: '5px 10px', color: 'var(--text3)', fontSize: 11, cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}>전체 선택</button>
+                  <button onClick={selectNone} style={{
+                    background: 'none', border: '1px solid var(--border)', borderRadius: 7,
+                    padding: '5px 10px', color: 'var(--text3)', fontSize: 11, cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}>해제</button>
+                  <button onClick={() => { setTree(null); setFlatFiles([]); setSelected(new Set()); setSource(null); setError('') }} style={{
+                    background: 'none', border: '1px solid var(--border)', borderRadius: 7,
+                    padding: '5px 10px', color: 'var(--text3)', fontSize: 11, cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}>다시 선택</button>
+                </div>
+              </div>
+              <div style={{
+                background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12,
+                padding: '10px 10px', maxHeight: 320, overflowY: 'auto',
+                marginBottom: 12,
+              }}>
+                {Object.keys(tree).sort((a, b) => {
+                  const aDir = tree[a]._type === 'dir'
+                  const bDir = tree[b]._type === 'dir'
+                  if (aDir && !bDir) return -1
+                  if (!aDir && bDir) return 1
+                  return a.localeCompare(b)
+                }).map(k => (
+                  <FileTreeNode
+                    key={k} name={k} node={tree[k]} depth={0}
+                    selected={selected} onToggle={toggleFile} path=""
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 하단 확인 버튼 */}
+        {hasTree && (
+          <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+            {loading && progress && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text2)' }}>파일 다운로드 중…</span>
+                  <span style={{ fontSize: 12, color: 'var(--accent2)' }}>{progress.done} / {progress.total}</span>
+                </div>
+                <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 10, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', background: 'var(--accent)', borderRadius: 10,
+                    width: `${(progress.done / progress.total * 100).toFixed(0)}%`,
+                    transition: 'width 0.2s',
+                  }} />
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleConfirm}
+              disabled={loading || selectedCount === 0}
+              style={{
+                width: '100%', background: (loading || selectedCount === 0) ? 'rgba(107,94,248,0.1)' : 'var(--accent)',
+                border: '1px solid ' + ((loading || selectedCount === 0) ? 'var(--border)' : 'transparent'),
+                borderRadius: 12, padding: '14px', color: 'white', fontSize: 15, fontWeight: 600,
+                opacity: (loading || selectedCount === 0) ? 0.4 : 1,
+                cursor: (loading || selectedCount === 0) ? 'default' : 'pointer',
+                WebkitTapHighlightColor: 'transparent',
+              }}
+            >{loading ? '처리 중…' : `${selectedCount}개 파일 컨텍스트에 추가`}</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ── 상태바 ────────────────────────────────────────────────
@@ -145,6 +750,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const [dbLogs, setDbLogs] = useState([])
   const [attachedFiles, setAttachedFiles] = useState([]) // { name, text }
   const [attachErr, setAttachErr] = useState('')
+  const [showFolderPanel, setShowFolderPanel] = useState(false)
   const logRef = useRef(null)
   const autoScrollRef = useRef(true)
   const fileInputRef = useRef(null)
@@ -270,8 +876,34 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
     await onDelete(taskId)
   }
 
+  // 폴더 패널에서 파일이 준비됐을 때 호출
+  function handleFolderFilesReady(files) {
+    setShowFolderPanel(false)
+    // { name, path, text } 배열 → attachedFiles 형식으로 변환
+    const newFiles = files.map(f => ({ name: f.path || f.name, text: f.text }))
+    setAttachedFiles(prev => {
+      const merged = [...prev, ...newFiles]
+      const MAX = 200
+      if (merged.length > MAX) {
+        const omitted = merged.length - MAX
+        setAttachErr(`파일이 많아 ${MAX}개까지만 추가되었습니다 (${omitted}개 생략)`)
+        return merged.slice(0, MAX)
+      }
+      if (files.length > 50) {
+        setAttachErr(`총 ${merged.length}개 파일이 추가되었습니다. 컨텍스트 토큰 한도에 주의하세요.`)
+      }
+      return merged
+    })
+  }
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+      {showFolderPanel && (
+        <FolderUploadPanel
+          onFilesReady={handleFolderFilesReady}
+          onClose={() => setShowFolderPanel(false)}
+        />
+      )}
       {deleteConfirm && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 100,
@@ -460,14 +1092,34 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
 
         {/* 첨부된 파일명 표시 */}
         {attachedFiles.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-            {attachedFiles.map((f, i) => (
-              <span key={i} style={{
-                fontSize: 11, padding: '2px 9px', borderRadius: 12,
-                background: 'rgba(107,94,248,0.15)', color: 'var(--accent2)',
-                border: '1px solid rgba(107,94,248,0.3)',
-              }}>📄 {f.name}</span>
-            ))}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+              <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+                📎 {attachedFiles.length}개 파일 첨부됨
+              </span>
+              <button
+                onClick={() => { setAttachedFiles([]); setAttachErr('') }}
+                style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 13, cursor: 'pointer', padding: '2px 6px', borderRadius: 6 }}
+              >전체 삭제</button>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {attachedFiles.slice(0, 20).map((f, i) => (
+                <span key={i} style={{
+                  fontSize: 11, padding: '2px 8px', borderRadius: 12,
+                  background: 'rgba(107,94,248,0.15)', color: 'var(--accent2)',
+                  border: '1px solid rgba(107,94,248,0.3)',
+                  display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+                }} onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))}>
+                  📄 <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.name}>
+                    {f.name.length > 20 ? f.name.slice(0, 10) + '…' + f.name.slice(-8) : f.name}
+                  </span>
+                  <span style={{ opacity: 0.6, fontSize: 12 }}>×</span>
+                </span>
+              ))}
+              {attachedFiles.length > 20 && (
+                <span style={{ fontSize: 11, color: 'var(--text3)', padding: '2px 6px' }}>+{attachedFiles.length - 20}개 더</span>
+              )}
+            </div>
           </div>
         )}
 
@@ -486,23 +1138,43 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
           style={{ display: 'none' }}
         />
 
-        {/* 입력 행: 📎 | textarea | ↑ */}
+        {/* 입력 행: 📎 📁 | textarea | ↑ */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-          {/* 파일 첨부 버튼 */}
-          <button
-            onClick={() => { vibrate(8); fileInputRef.current?.click() }}
-            disabled={isRunning}
-            title="파일 첨부 (텍스트·코드 파일)"
-            style={{
-              background: attachedFiles.length > 0 ? 'rgba(107,94,248,0.2)' : 'var(--bg3)',
-              border: '1px solid ' + (attachedFiles.length > 0 ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
-              borderRadius: 10, minWidth: 44, minHeight: 52,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 20, flexShrink: 0,
-              opacity: isRunning ? 0.3 : 1,
-              WebkitTapHighlightColor: 'transparent',
-            }}
-          >📎</button>
+          {/* 파일·폴더 첨부 버튼 묶음 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+            {/* 파일 첨부 버튼 */}
+            <button
+              onClick={() => { vibrate(8); fileInputRef.current?.click() }}
+              disabled={isRunning}
+              title="파일 첨부 (텍스트·코드 파일)"
+              style={{
+                background: attachedFiles.length > 0 ? 'rgba(107,94,248,0.2)' : 'var(--bg3)',
+                border: '1px solid ' + (attachedFiles.length > 0 ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
+                borderRadius: 10, minWidth: 44, minHeight: 44,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 18, flexShrink: 0,
+                opacity: isRunning ? 0.3 : 1,
+                WebkitTapHighlightColor: 'transparent',
+                cursor: isRunning ? 'default' : 'pointer',
+              }}
+            >📎</button>
+            {/* 폴더/클라우드 첨부 버튼 */}
+            <button
+              onClick={() => { vibrate(8); setShowFolderPanel(true) }}
+              disabled={isRunning}
+              title="폴더·Google Drive·Dropbox 첨부"
+              style={{
+                background: 'var(--bg3)',
+                border: '1px solid var(--border)',
+                borderRadius: 10, minWidth: 44, minHeight: 44,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 16, flexShrink: 0,
+                opacity: isRunning ? 0.3 : 1,
+                WebkitTapHighlightColor: 'transparent',
+                cursor: isRunning ? 'default' : 'pointer',
+              }}
+            >📁</button>
+          </div>
 
           <div style={{ flex: 1, position: 'relative' }}>
             <textarea

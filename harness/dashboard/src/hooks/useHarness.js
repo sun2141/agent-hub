@@ -206,9 +206,38 @@ export function useHarness() {
     }
   }, [])
 
+  const fetchGDriveFolder = useCallback(async (url) => {
+    return apiFetch('/gdrive-folder', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    })
+  }, [])
+
+  const fetchDropboxFolder = useCallback(async (url) => {
+    return apiFetch('/dropbox-folder', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    })
+  }, [])
+
+  const downloadGDriveFile = useCallback(async (fileId, fileName) => {
+    return apiFetch('/gdrive-download', {
+      method: 'POST',
+      body: JSON.stringify({ fileId, fileName }),
+    })
+  }, [])
+
+  const downloadDropboxFile = useCallback(async (url, fileName) => {
+    return apiFetch('/dropbox-download', {
+      method: 'POST',
+      body: JSON.stringify({ url, fileName }),
+    })
+  }, [])
+
   return {
     projects, tasks, status, connected, wsEvents,
     runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, addProject, createProject,
+    fetchGDriveFolder, fetchDropboxFolder, downloadGDriveFile, downloadDropboxFile,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }
 }

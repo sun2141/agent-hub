@@ -241,8 +241,8 @@ export function createApiServer(agentRunner) {
       if (!Array.isArray(attachments)) {
         return res.status(400).json({ error: 'attachments: 배열 형식 필요' });
       }
-      if (attachments.length > 10) {
-        return res.status(400).json({ error: 'attachments: 최대 10개까지 첨부 가능' });
+      if (attachments.length > 200) {
+        return res.status(400).json({ error: 'attachments: 최대 200개까지 첨부 가능' });
       }
       const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
       for (const att of attachments) {
@@ -346,6 +346,427 @@ export function createApiServer(agentRunner) {
       res.json({ taskId, projectId: result.projectId, status: 'deleted' });
     } catch (err) {
       res.status(400).json({ error: err.message });
+    }
+  });
+
+  // ── 폴더 파일 분석 ───────────────────────────────────────
+  // 클라이언트에서 여러 파일(폴더 내용)을 JSON 배열로 전송 받아 파일 트리 구조를 반환
+  app.post('/api/folder-parse', async (req, res) => {
+    const { files } = req.body;
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'files: 배열 형식 필요' });
+    }
+    if (files.length > 500) {
+      return res.status(400).json({ error: 'files: 최대 500개까지 처리 가능' });
+    }
+
+    const tree = {};
+    const processed = [];
+
+    for (const f of files) {
+      if (!f || typeof f !== 'object') continue;
+      if (typeof f.path !== 'string' || typeof f.name !== 'string') continue;
+      if (f.size !== undefined && f.size > 5 * 1024 * 1024) continue; // 5MB 초과 스킵
+
+      // 경로 기반 트리 구성
+      const parts = f.path.split('/').filter(Boolean);
+      let node = tree;
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (!node[parts[i]]) node[parts[i]] = { _type: 'dir', _children: {} };
+        node = node[parts[i]]._children;
+      }
+      const fileName = parts[parts.length - 1] || f.name;
+      node[fileName] = { _type: 'file', _path: f.path, _size: f.size || 0 };
+      processed.push({ path: f.path, name: f.name, size: f.size || 0 });
+    }
+
+    res.json({ ok: true, tree, files: processed, total: processed.length });
+  });
+
+  // ── Google Drive 폴더 파일 목록 조회 ─────────────────────
+  app.post('/api/gdrive-folder', async (req, res) => {
+    const { url } = req.body;
+    if (!validateString(url, 500)) {
+      return res.status(400).json({ error: 'url: Google Drive 공유 링크 필요' });
+    }
+
+    // Google Drive 폴더 ID 추출 패턴들
+    const patterns = [
+      /\/folders\/([a-zA-Z0-9_-]+)/,
+      /id=([a-zA-Z0-9_-]+)/,
+      /\/d\/([a-zA-Z0-9_-]+)/,
+    ];
+
+    let folderId = null;
+    for (const pat of patterns) {
+      const m = url.match(pat);
+      if (m) { folderId = m[1]; break; }
+    }
+
+    if (!folderId) {
+      return res.status(400).json({ error: 'Google Drive 폴더 ID를 추출할 수 없습니다. 폴더 공유 링크를 확인하세요.' });
+    }
+
+    const GDRIVE_API_KEY = process.env.GOOGLE_API_KEY;
+
+    // 단일 폴더에서 파일/서브폴더 목록 조회 (페이지네이션 포함)
+    async function listFolderContents(parentId) {
+      const items = [];
+      let pageToken = null;
+      do {
+        let apiUrl;
+        if (GDRIVE_API_KEY) {
+          apiUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${parentId}' in parents and trashed=false`)}&fields=nextPageToken,files(id,name,mimeType,size,parents)&pageSize=100&key=${GDRIVE_API_KEY}`;
+        } else {
+          apiUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${parentId}' in parents and trashed=false`)}&fields=nextPageToken,files(id,name,mimeType,size,parents)&pageSize=100`;
+        }
+        if (pageToken) apiUrl += `&pageToken=${pageToken}`;
+
+        const resp = await fetch(apiUrl, {
+          headers: GDRIVE_API_KEY ? {} : { 'Authorization': 'Bearer ' + (process.env.GDRIVE_ACCESS_TOKEN || '') },
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+          const msg = data.error.message || 'Google Drive API 오류';
+          throw Object.assign(new Error(msg), { status: msg.includes('required') ? 401 : 400 });
+        }
+
+        if (Array.isArray(data.files)) items.push(...data.files);
+        pageToken = data.nextPageToken || null;
+      } while (pageToken && items.length < 1000);
+      return items;
+    }
+
+    // 재귀적으로 폴더 탐색 (BFS 방식, 최대 500개 파일 / 5단계 깊이)
+    async function traverseFolder(rootId) {
+      const allFiles = [];
+      const folderQueue = [{ id: rootId, path: '' }];
+      const visited = new Set();
+      const MAX_FILES = 500;
+      const MAX_DEPTH = 5;
+
+      while (folderQueue.length > 0 && allFiles.length < MAX_FILES) {
+        const { id: currentId, path: currentPath, depth = 0 } = folderQueue.shift();
+        if (visited.has(currentId) || depth > MAX_DEPTH) continue;
+        visited.add(currentId);
+
+        const items = await listFolderContents(currentId);
+
+        for (const item of items) {
+          const itemPath = currentPath ? `${currentPath}/${item.name}` : item.name;
+          if (item.mimeType === 'application/vnd.google-apps.folder') {
+            folderQueue.push({ id: item.id, path: itemPath, depth: depth + 1 });
+          } else {
+            allFiles.push({ ...item, _path: itemPath });
+          }
+          if (allFiles.length >= MAX_FILES) break;
+        }
+      }
+      return allFiles;
+    }
+
+    try {
+      let allFiles;
+      try {
+        allFiles = await traverseFolder(folderId);
+      } catch (apiErr) {
+        if (apiErr.status === 401) {
+          return res.status(401).json({ error: 'Google Drive 공개 폴더 접근에는 API 키가 필요합니다. 환경 변수 GOOGLE_API_KEY를 설정하거나 파일을 공개로 설정하세요.' });
+        }
+        return res.status(400).json({ error: apiErr.message });
+      }
+
+      // 파일 트리 구조 구성
+      const fileList = allFiles.map(f => ({
+        id: f.id,
+        name: f.name,
+        path: f._path || f.name,
+        size: parseInt(f.size || '0', 10),
+        mimeType: f.mimeType,
+        downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+        webViewUrl: `https://drive.google.com/file/d/${f.id}/view`,
+      }));
+
+      res.json({ ok: true, folderId, files: fileList, folders: [], total: fileList.length });
+    } catch (err) {
+      console.error('[gdrive-folder]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Google Drive 파일 내용 다운로드 ──────────────────────
+  app.post('/api/gdrive-download', async (req, res) => {
+    const { fileId, fileName } = req.body;
+    if (!validateString(fileId, 200)) {
+      return res.status(400).json({ error: 'fileId 필요' });
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(fileId)) {
+      return res.status(400).json({ error: '잘못된 fileId 형식' });
+    }
+
+    const GDRIVE_API_KEY = process.env.GOOGLE_API_KEY;
+    try {
+      const downloadUrl = GDRIVE_API_KEY
+        ? `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${GDRIVE_API_KEY}`
+        : `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+      const resp = await fetch(downloadUrl, {
+        headers: GDRIVE_API_KEY ? {} : { 'Authorization': 'Bearer ' + (process.env.GDRIVE_ACCESS_TOKEN || '') },
+        redirect: 'follow',
+      });
+
+      if (!resp.ok) {
+        return res.status(400).json({ error: `파일 다운로드 실패: ${resp.status} ${resp.statusText}` });
+      }
+
+      const contentType = resp.headers.get('content-type') || '';
+      const isText = contentType.startsWith('text/') ||
+        contentType.includes('json') || contentType.includes('javascript') ||
+        /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|sql|java|go|rs|rb|php|swift|kt|vue|svelte|csv|log|conf|ini|toml|xml|prisma|graphql)$/i.test(fileName || '');
+
+      if (!isText) {
+        return res.status(400).json({ error: '텍스트/코드 파일만 지원합니다' });
+      }
+
+      const text = await resp.text();
+      if (text.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: '파일 크기 5MB 초과' });
+      }
+
+      res.json({ ok: true, name: fileName || fileId, text });
+    } catch (err) {
+      console.error('[gdrive-download]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Dropbox 공유 폴더 파일 목록 조회 ─────────────────────
+  app.post('/api/dropbox-folder', async (req, res) => {
+    const { url } = req.body;
+    if (!validateString(url, 500)) {
+      return res.status(400).json({ error: 'url: Dropbox 공유 링크 필요' });
+    }
+
+    // Dropbox 공유 링크인지 확인
+    if (!url.includes('dropbox.com')) {
+      return res.status(400).json({ error: 'Dropbox 공유 링크가 아닙니다' });
+    }
+
+    const DROPBOX_TOKEN = process.env.DROPBOX_ACCESS_TOKEN;
+
+    try {
+      // Dropbox shared link metadata API
+      const metaResp = await fetch('https://api.dropboxapi.com/2/sharing/get_shared_link_metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(DROPBOX_TOKEN ? { 'Authorization': `Bearer ${DROPBOX_TOKEN}` } : {}),
+        },
+        body: JSON.stringify({ url }),
+      });
+      const meta = await metaResp.json();
+
+      if (meta.error || meta['error_summary']) {
+        // 토큰 없이 공유 링크 파일 목록 조회 시도 (공개 공유 링크)
+        const listResp = await fetch('https://api.dropboxapi.com/2/files/list_folder', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(DROPBOX_TOKEN ? { 'Authorization': `Bearer ${DROPBOX_TOKEN}` } : {}),
+          },
+          body: JSON.stringify({
+            path: '',
+            shared_link: { url },
+            recursive: false,
+          }),
+        });
+        const listData = await listResp.json();
+
+        if (listData.error || listData['error_summary']) {
+          const errMsg = listData['error_summary'] || 'Dropbox API 오류';
+          if (errMsg.includes('not_a_folder') || errMsg.includes('not_found')) {
+            return res.status(400).json({ error: 'Dropbox 폴더 공유 링크가 아니거나 접근할 수 없습니다' });
+          }
+          if (errMsg.includes('invalid_access_token') || errMsg.includes('expired_access_token')) {
+            return res.status(401).json({ error: 'Dropbox 액세스 토큰이 필요합니다. 환경 변수 DROPBOX_ACCESS_TOKEN을 설정하세요.' });
+          }
+          return res.status(400).json({ error: errMsg });
+        }
+
+        // 폴더 공유 링크 기반 개별 파일 다운로드 URL 구성
+        // Dropbox shared link + ?dl=1 for direct download (per-file path via path param)
+        const folderShareBase = url.split('?')[0];
+        const files = (listData.entries || []).filter(e => e['.tag'] === 'file').map(f => {
+          // 파일 path_display를 이용해 개별 파일 공유 링크 구성 (sharing/get_shared_link_file 방식)
+          // 또는 토큰 있을 경우 get_temporary_link URL 사용 예정 (아래 enrichment 단계)
+          const filePath = f.path_display || ('/' + f.name);
+          // Dropbox API: files/get_temporary_link (Bearer 토큰 필요)
+          return {
+            name: f.name,
+            path: f.path_display || f.name,
+            size: f.size || 0,
+            id: f.id,
+            _dropboxPath: filePath, // 임시 URL 생성용
+          };
+        });
+
+        // 토큰이 있으면 각 파일의 임시 다운로드 URL 획득 (최대 20개, 성능 고려)
+        if (DROPBOX_TOKEN && files.length > 0) {
+          const BATCH_SIZE = 20;
+          const batch = files.slice(0, BATCH_SIZE);
+          await Promise.all(batch.map(async (f) => {
+            try {
+              const tmpResp = await fetch('https://api.dropboxapi.com/2/files/get_temporary_link', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${DROPBOX_TOKEN}`,
+                },
+                body: JSON.stringify({ path: f._dropboxPath }),
+              });
+              const tmpData = await tmpResp.json();
+              if (tmpData.link) f.downloadUrl = tmpData.link;
+            } catch { /* 실패 시 downloadUrl 없이 진행 */ }
+          }));
+        }
+
+        // _dropboxPath를 dropboxPath로 노출 (폴백 다운로드용), sharedLinkUrl도 포함
+        const cleanFiles = files.map(({ _dropboxPath, ...rest }) => ({
+          ...rest,
+          dropboxPath: _dropboxPath || null,
+        }));
+        return res.json({ ok: true, files: cleanFiles, total: cleanFiles.length, sharedLinkUrl: url });
+      }
+
+      res.json({ ok: true, type: meta['.tag'], name: meta.name, files: [], sharedLinkUrl: url });
+    } catch (err) {
+      console.error('[dropbox-folder]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Dropbox 파일 직접 다운로드 ───────────────────────────
+  app.post('/api/dropbox-download', async (req, res) => {
+    const { url, fileName } = req.body;
+    if (!validateString(url, 500)) {
+      return res.status(400).json({ error: 'url 필요' });
+    }
+    if (!url.includes('dropbox.com')) {
+      return res.status(400).json({ error: 'Dropbox URL이 아닙니다' });
+    }
+
+    try {
+      // ?dl=1 파라미터로 직접 다운로드
+      const dlUrl = url.replace(/[?&]dl=0/, '').replace(/\?.*$/, '') + '?dl=1';
+      const resp = await fetch(dlUrl, { redirect: 'follow' });
+
+      if (!resp.ok) {
+        return res.status(400).json({ error: `파일 다운로드 실패: ${resp.status}` });
+      }
+
+      const contentType = resp.headers.get('content-type') || '';
+      const isText = contentType.startsWith('text/') ||
+        contentType.includes('json') || contentType.includes('javascript') ||
+        /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|sql|java|go|rs|rb|php|swift|kt|vue|svelte|csv|log|conf|ini|toml|xml|prisma|graphql)$/i.test(fileName || '');
+
+      if (!isText) {
+        return res.status(400).json({ error: '텍스트/코드 파일만 지원합니다' });
+      }
+
+      const text = await resp.text();
+      if (text.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: '파일 크기 5MB 초과' });
+      }
+
+      res.json({ ok: true, name: fileName || 'file', text });
+    } catch (err) {
+      console.error('[dropbox-download]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Dropbox 공유링크+경로 기반 파일 다운로드 (미인증 환경 폴백) ─────
+  // Dropbox content API: https://content.dropboxapi.com/2/sharing/get_shared_link_file
+  // 공개 공유 링크와 파일 상대 경로로 인증 없이 다운로드 가능
+  app.post('/api/dropbox-download-by-path', async (req, res) => {
+    const { sharedLinkUrl, filePath, fileName } = req.body;
+    if (!validateString(sharedLinkUrl, 500)) {
+      return res.status(400).json({ error: 'sharedLinkUrl 필요' });
+    }
+    if (!sharedLinkUrl.includes('dropbox.com')) {
+      return res.status(400).json({ error: 'Dropbox 공유 링크가 아닙니다' });
+    }
+    if (!validateString(filePath, 1000)) {
+      return res.status(400).json({ error: 'filePath 필요' });
+    }
+
+    const DROPBOX_TOKEN = process.env.DROPBOX_ACCESS_TOKEN;
+    try {
+      // 방법 1: 토큰 있으면 files/get_temporary_link 사용 (가장 안정적)
+      if (DROPBOX_TOKEN && filePath) {
+        try {
+          const tmpResp = await fetch('https://api.dropboxapi.com/2/files/get_temporary_link', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${DROPBOX_TOKEN}`,
+            },
+            body: JSON.stringify({ path: filePath }),
+          });
+          const tmpData = await tmpResp.json();
+          if (tmpData.link) {
+            const fileResp = await fetch(tmpData.link, { redirect: 'follow' });
+            if (fileResp.ok) {
+              const text = await fileResp.text();
+              if (text.length > 5 * 1024 * 1024) {
+                return res.status(400).json({ error: '파일 크기 5MB 초과' });
+              }
+              return res.json({ ok: true, name: fileName || filePath.split('/').pop(), text });
+            }
+          }
+        } catch { /* 실패 시 다음 방법으로 */ }
+      }
+
+      // 방법 2: sharing/get_shared_link_file API (공개 공유 링크 + 경로)
+      // Dropbox-API-Arg 헤더로 shared_link와 path를 전달
+      const dropboxArg = JSON.stringify({
+        url: sharedLinkUrl,
+        path: filePath.startsWith('/') ? filePath : '/' + filePath,
+      });
+
+      const contentResp = await fetch('https://content.dropboxapi.com/2/sharing/get_shared_link_file', {
+        method: 'POST',
+        headers: {
+          'Dropbox-API-Arg': dropboxArg,
+          ...(DROPBOX_TOKEN ? { 'Authorization': `Bearer ${DROPBOX_TOKEN}` } : {}),
+        },
+      });
+
+      if (!contentResp.ok) {
+        const errText = await contentResp.text();
+        return res.status(400).json({ error: `Dropbox 파일 다운로드 실패: ${contentResp.status} - ${errText.slice(0, 200)}` });
+      }
+
+      const contentType = contentResp.headers.get('content-type') || '';
+      const effectiveName = fileName || filePath.split('/').pop() || 'file';
+      const isText = contentType.startsWith('text/') ||
+        contentType.includes('json') || contentType.includes('javascript') ||
+        /\.(md|txt|json|js|ts|jsx|tsx|py|yaml|yml|html|css|sh|sql|java|go|rs|rb|php|swift|kt|vue|svelte|csv|log|conf|ini|toml|xml|prisma|graphql)$/i.test(effectiveName);
+
+      if (!isText) {
+        return res.status(400).json({ error: '텍스트/코드 파일만 지원합니다' });
+      }
+
+      const text = await contentResp.text();
+      if (text.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: '파일 크기 5MB 초과' });
+      }
+
+      res.json({ ok: true, name: effectiveName, text });
+    } catch (err) {
+      console.error('[dropbox-download-by-path]', err);
+      res.status(500).json({ error: err.message });
     }
   });
 
