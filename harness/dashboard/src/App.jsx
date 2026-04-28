@@ -131,9 +131,12 @@ function FileTreeNode({ name, node, depth = 0, selected, onToggle, path = '' }) 
 }
 
 // ── 폴더 업로드 패널 ──────────────────────────────────────
-function FolderUploadPanel({ onFilesReady, onClose }) {
-  const [mode, setMode] = useState('local') // 'local' | 'gdrive' | 'dropbox'
+function FolderUploadPanel({ onFilesReady, onLinkReady, onClose }) {
+  const [mode, setMode] = useState('local') // 'local' | 'gdrive' | 'dropbox' | 'link'
   const [cloudUrl, setCloudUrl] = useState('')
+  const [linkUrl, setLinkUrl] = useState('')
+  const [linkTitle, setLinkTitle] = useState('')
+  const [linkError, setLinkError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [progress, setProgress] = useState(null) // { done, total }
@@ -432,9 +435,9 @@ function FolderUploadPanel({ onFilesReady, onClose }) {
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
           {/* 모드 탭 */}
           {!hasTree && (
-            <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-              {[['local', '📁 로컬 폴더'], ['gdrive', '🌐 Google Drive'], ['dropbox', '📦 Dropbox']].map(([m, label]) => (
-                <button key={m} onClick={() => { setMode(m); setError(''); setCloudUrl('') }} style={{
+            <div style={{ display: 'flex', gap: 4, marginBottom: 14, flexWrap: 'wrap' }}>
+              {[['local', '📁 로컬 폴더'], ['gdrive', '🌐 Drive'], ['dropbox', '📦 Dropbox'], ['link', '🔗 링크']].map(([m, label]) => (
+                <button key={m} onClick={() => { setMode(m); setError(''); setCloudUrl(''); setLinkUrl(''); setLinkTitle(''); setLinkError('') }} style={{
                   flex: 1, background: mode === m ? 'rgba(107,94,248,0.18)' : 'var(--bg2)',
                   border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.5)' : 'var(--border)'),
                   borderRadius: 10, padding: '9px 4px', color: mode === m ? 'var(--accent2)' : 'var(--text3)',
@@ -537,6 +540,65 @@ function FolderUploadPanel({ onFilesReady, onClose }) {
                   ※ 공유 링크로 공개된 폴더만 지원. 서버에 DROPBOX_ACCESS_TOKEN 설정 시 확장 가능.
                 </div>
               )}
+            </>
+          )}
+
+          {/* 클라우드 링크 직접 첨부 */}
+          {!hasTree && mode === 'link' && (
+            <>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>
+                  클라우드 링크 또는 URL을 직접 첨부합니다
+                </div>
+                <input
+                  value={linkUrl}
+                  onChange={e => { setLinkUrl(e.target.value); setLinkError('') }}
+                  placeholder="https://..."
+                  style={{
+                    width: '100%', boxSizing: 'border-box',
+                    background: 'var(--bg3)', border: '1px solid ' + (linkError ? 'var(--red)' : 'var(--border)'),
+                    borderRadius: 10, padding: '12px 14px', color: 'var(--text)',
+                    fontSize: 14, outline: 'none', marginBottom: 8,
+                  }}
+                />
+                <input
+                  value={linkTitle}
+                  onChange={e => setLinkTitle(e.target.value)}
+                  placeholder="링크 제목 (선택)"
+                  style={{
+                    width: '100%', boxSizing: 'border-box',
+                    background: 'var(--bg3)', border: '1px solid var(--border)',
+                    borderRadius: 10, padding: '10px 14px', color: 'var(--text)',
+                    fontSize: 13, outline: 'none',
+                  }}
+                />
+              </div>
+              {linkError && (
+                <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8, padding: '6px 10px', background: 'rgba(248,113,113,0.08)', borderRadius: 8 }}>
+                  {linkError}
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  const url = linkUrl.trim()
+                  if (!url) { setLinkError('URL을 입력하세요'); return }
+                  try { new URL(url) } catch { setLinkError('유효한 URL이 아닙니다'); return }
+                  const hostname = (() => { try { return new URL(url).hostname } catch { return url } })()
+                  const title = linkTitle.trim() || hostname
+                  onLinkReady({ url, title, hostname })
+                }}
+                disabled={!linkUrl.trim()}
+                style={{
+                  width: '100%', background: linkUrl.trim() ? 'var(--accent)' : 'rgba(107,94,248,0.1)',
+                  border: '1px solid ' + (linkUrl.trim() ? 'transparent' : 'var(--border)'),
+                  borderRadius: 10, padding: '13px', color: 'white', fontSize: 14, fontWeight: 600,
+                  opacity: linkUrl.trim() ? 1 : 0.4, cursor: linkUrl.trim() ? 'pointer' : 'default',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >링크 첨부</button>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8, lineHeight: 1.5 }}>
+                Google Drive, Dropbox, GitHub, Notion 등 모든 URL 지원
+              </div>
             </>
           )}
 
@@ -748,7 +810,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const [tab, setTab] = useState('tasks')
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [dbLogs, setDbLogs] = useState([])
-  const [attachedFiles, setAttachedFiles] = useState([]) // { name, text }
+  const [attachedFiles, setAttachedFiles] = useState([]) // { name, text, _sourceType: 'file'|'folder'|'link', _url?, _hostname? }
   const [attachErr, setAttachErr] = useState('')
   const [showFolderPanel, setShowFolderPanel] = useState(false)
   const logRef = useRef(null)
@@ -841,7 +903,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
       }
       try {
         const text = await readFileAsText(file)
-        newFiles.push({ name: file.name, text })
+        newFiles.push({ name: file.name, text, _sourceType: 'file' })
       } catch {
         errors.push(`${file.name}: 읽기 실패`)
       }
@@ -880,7 +942,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   function handleFolderFilesReady(files) {
     setShowFolderPanel(false)
     // { name, path, text } 배열 → attachedFiles 형식으로 변환
-    const newFiles = files.map(f => ({ name: f.path || f.name, text: f.text }))
+    const newFiles = files.map(f => ({ name: f.path || f.name, text: f.text, _sourceType: 'folder' }))
     setAttachedFiles(prev => {
       const merged = [...prev, ...newFiles]
       const MAX = 200
@@ -896,11 +958,19 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
     })
   }
 
+  // 링크 첨부 핸들러
+  function handleLinkReady({ url, title, hostname }) {
+    setShowFolderPanel(false)
+    const linkText = `[링크] ${title}\nURL: ${url}`
+    setAttachedFiles(prev => [...prev, { name: title, text: linkText, _sourceType: 'link', _url: url, _hostname: hostname }])
+  }
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
       {showFolderPanel && (
         <FolderUploadPanel
           onFilesReady={handleFolderFilesReady}
+          onLinkReady={handleLinkReady}
           onClose={() => setShowFolderPanel(false)}
         />
       )}
@@ -1095,7 +1165,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
           <div style={{ marginBottom: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
               <span style={{ fontSize: 11, color: 'var(--text3)' }}>
-                📎 {attachedFiles.length}개 파일 첨부됨
+                📎 {attachedFiles.length}개 항목 첨부됨
               </span>
               <button
                 onClick={() => { setAttachedFiles([]); setAttachErr('') }}
@@ -1103,19 +1173,38 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
               >전체 삭제</button>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {attachedFiles.slice(0, 20).map((f, i) => (
-                <span key={i} style={{
-                  fontSize: 11, padding: '2px 8px', borderRadius: 12,
-                  background: 'rgba(107,94,248,0.15)', color: 'var(--accent2)',
-                  border: '1px solid rgba(107,94,248,0.3)',
-                  display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
-                }} onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))}>
-                  📄 <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.name}>
-                    {f.name.length > 20 ? f.name.slice(0, 10) + '…' + f.name.slice(-8) : f.name}
+              {attachedFiles.slice(0, 20).map((f, i) => {
+                const srcIcon = f._sourceType === 'folder' ? '📁' : f._sourceType === 'link' ? '🔗' : '📄'
+                const badgeBg = f._sourceType === 'link'
+                  ? 'rgba(34,197,94,0.12)'
+                  : f._sourceType === 'folder'
+                    ? 'rgba(251,146,60,0.12)'
+                    : 'rgba(107,94,248,0.15)'
+                const badgeBorder = f._sourceType === 'link'
+                  ? 'rgba(34,197,94,0.35)'
+                  : f._sourceType === 'folder'
+                    ? 'rgba(251,146,60,0.35)'
+                    : 'rgba(107,94,248,0.3)'
+                const badgeColor = f._sourceType === 'link'
+                  ? 'var(--green, #22c55e)'
+                  : f._sourceType === 'folder'
+                    ? 'var(--orange, #fb923c)'
+                    : 'var(--accent2)'
+                return (
+                  <span key={i} style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 12,
+                    background: badgeBg, color: badgeColor,
+                    border: `1px solid ${badgeBorder}`,
+                    display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer',
+                  }} onClick={() => setAttachedFiles(prev => prev.filter((_, idx) => idx !== i))}
+                     title={f._url || f.name}>
+                    {srcIcon} <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {f.name.length > 20 ? f.name.slice(0, 10) + '…' + f.name.slice(-8) : f.name}
+                    </span>
+                    <span style={{ opacity: 0.6, fontSize: 12 }}>×</span>
                   </span>
-                  <span style={{ opacity: 0.6, fontSize: 12 }}>×</span>
-                </span>
-              ))}
+                )
+              })}
               {attachedFiles.length > 20 && (
                 <span style={{ fontSize: 11, color: 'var(--text3)', padding: '2px 6px' }}>+{attachedFiles.length - 20}개 더</span>
               )}
