@@ -1395,19 +1395,20 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
   }
 
   const handleSubmit = async () => {
-    if (!form.name.trim()) { setError('프로젝트 이름은 필수입니다'); return }
-    if (!form.path.trim()) { setError('로컬 경로는 필수입니다'); return }
-    if (form.id && !/^[a-z0-9-]{1,50}$/.test(form.id.trim())) {
+    if (!form.id.trim()) { setError('프로젝트 ID는 필수입니다'); return }
+    if (!/^[a-z0-9-]{1,50}$/.test(form.id.trim())) {
       setError('프로젝트 ID: 영문 소문자/숫자/하이픈만 허용 (최대 50자)')
       return
     }
+    if (!form.name.trim()) { setError('프로젝트 이름은 필수입니다'); return }
+    if (!form.path.trim()) { setError('로컬 경로는 필수입니다'); return }
     setError('')
     setSaving(true)
     setResult(null)
 
     try {
       const payload = {
-        id: form.id.trim() || undefined,
+        id: form.id.trim(),
         name: form.name.trim(),
         path: form.path.trim(),
         stack: form.stack.trim() || undefined,
@@ -1429,10 +1430,8 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
 
       if (res?.error) {
         setError(res.error)
-      } else if (mode === 'create') {
-        setResult(res)
       } else {
-        onClose()
+        setResult(res)
       }
     } finally {
       setSaving(false)
@@ -1483,23 +1482,46 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
         {/* 완료 화면 */}
         {result ? (
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', marginBottom: 10 }}>✅ 프로젝트 생성 완료</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', marginBottom: 10 }}>
+              {mode === 'create' ? '✅ 프로젝트 생성 완료' : '✅ 프로젝트 등록 완료'}
+            </div>
             <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
-              <div>폴더: <span style={{ color: 'var(--green)' }}>{result.folderCreated ? '✓' : '×'}</span> {result.project?.path}</div>
-              <div>git init: <span style={{ color: result.gitInit ? 'var(--green)' : 'var(--red)' }}>{result.gitInit ? '✓' : '×'}</span></div>
-              {result.githubRepo && (
-                <div>GitHub: <span style={{ color: 'var(--green)' }}>✓</span>{' '}
-                  <a href={result.githubRepo.url} target="_blank" rel="noreferrer"
-                    style={{ color: 'var(--accent2)', fontSize: 11 }}>{result.githubRepo.url}</a>
-                </div>
+              {mode === 'create' ? (
+                <>
+                  <div>폴더: <span style={{ color: 'var(--green)' }}>{result.folderCreated ? '✓' : '×'}</span> {result.project?.path}</div>
+                  <div>git init: <span style={{ color: result.gitInit ? 'var(--green)' : 'var(--red)' }}>{result.gitInit ? '✓' : '×'}</span></div>
+                  {result.githubRepo && (
+                    <div>GitHub: <span style={{ color: 'var(--green)' }}>✓</span>{' '}
+                      <a href={result.githubRepo.url} target="_blank" rel="noreferrer"
+                        style={{ color: 'var(--accent2)', fontSize: 11 }}>{result.githubRepo.url}</a>
+                    </div>
+                  )}
+                  {result.githubError && (
+                    <div style={{ color: 'var(--orange)' }}>GitHub 오류: {result.githubError}</div>
+                  )}
+                  <div>DB 등록: <span style={{ color: result.dbInserted ? 'var(--green)' : 'var(--red)' }}>{result.dbInserted ? '✓' : '×'}</span></div>
+                </>
+              ) : (
+                <>
+                  <div>프로젝트 ID: <span style={{ color: 'var(--accent2)' }}>{result.id}</span></div>
+                  <div>이름: <span style={{ color: 'var(--text)' }}>{result.name}</span></div>
+                  <div>경로: <span style={{ color: 'var(--text2)', fontSize: 11 }}>{result.path}</span></div>
+                  <div>DB 등록: <span style={{ color: 'var(--green)' }}>✓</span></div>
+                </>
               )}
-              {result.githubError && (
-                <div style={{ color: 'var(--orange)' }}>GitHub 오류: {result.githubError}</div>
-              )}
-              <div>DB 등록: <span style={{ color: result.dbInserted ? 'var(--green)' : 'var(--red)' }}>{result.dbInserted ? '✓' : '×'}</span></div>
               {result.claudeMd && (
                 <div>CLAUDE.md: <span style={{ color: result.claudeMd.ok ? 'var(--green)' : 'var(--orange)' }}>
                   {result.claudeMd.ok ? '✓ 레지스트리 업데이트됨' : `△ ${result.claudeMd.reason || '스킵'}`}
+                </span></div>
+              )}
+              {result.directive && (
+                <div>Directive: <span style={{ color: result.directive.ok ? 'var(--green)' : 'var(--orange)' }}>
+                  {result.directive.ok ? '✓ directives/projects 파일 생성됨' : `△ ${result.directive.reason || '스킵'}`}
+                </span></div>
+              )}
+              {result.projectClaudeMd && (
+                <div>프로젝트 CLAUDE.md: <span style={{ color: result.projectClaudeMd.ok ? 'var(--green)' : 'var(--orange)' }}>
+                  {result.projectClaudeMd.ok ? '✓ 프로젝트 폴더에 생성됨' : `△ ${result.projectClaudeMd.reason || '스킵'}`}
                 </span></div>
               )}
             </div>
@@ -1528,7 +1550,7 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
 
               {/* 프로젝트 ID */}
               <div>
-                <label style={labelStyle}>프로젝트 ID <span style={{ color: 'var(--text3)', fontWeight: 400 }}>(미입력 시 자동 생성)</span></label>
+                <label style={labelStyle}>프로젝트 ID <span style={{ color: 'var(--red)' }}>*</span></label>
                 <input
                   value={form.id}
                   onChange={handleIdChange}

@@ -20,6 +20,130 @@ const GITHUB_USER = process.env.GITHUB_USER || 'sun2141';
 // CLAUDE.md 위치 (agent-hub 루트)
 const CLAUDE_MD_PATH = path.resolve(__dirname, '../../../CLAUDE.md');
 
+// ── directives/projects/{id}.md 자동 생성 ─────────────────
+function createDirectiveFile({ id, name, localPath, github, deploy, stack, description }) {
+  try {
+    const directivesDir = path.resolve(__dirname, '../../../directives/projects');
+    fs.mkdirSync(directivesDir, { recursive: true });
+
+    const filePath = path.join(directivesDir, `${id}.md`);
+    if (fs.existsSync(filePath)) return { ok: true, reason: '이미 존재함 (스킵)' };
+
+    const githubStr = github || '-';
+    const deployStr = deploy || '개발중';
+    const stackStr = stack || '-';
+    const descStr = description || '';
+
+    const content = `# ${name} Project Directive
+
+## Project Info
+
+- **ID**: ${id}
+- **Name**: ${name}
+- **Path**: \`${localPath}\`
+- **GitHub**: ${githubStr}
+- **Deploy**: ${deployStr}
+
+## Tech Stack
+
+${stackStr}
+
+## Description
+
+${descStr}
+
+## Monitoring Rules
+
+### Health Check
+- URL: (배포 URL 설정 필요)
+- Interval: 5분
+- Alert: 3회 연속 실패 시 텔레그램 알림
+
+## Auto-Fix Rules
+
+1. **빌드 실패**: 에러 로그 분석 후 자동 수정 시도
+2. **배포 실패**: 환경 변수 및 설정 확인
+3. **런타임 에러**: 로그 분석 후 롤백 판단
+
+## Related Directives
+
+- \`directives/deploy.md\` - 배포 워크플로우
+- \`directives/run_tests.md\` - 테스트 실행
+`;
+
+    fs.writeFileSync(filePath, content, 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+// ── 프로젝트 폴더에 CLAUDE.md 생성 ───────────────────────
+function createProjectClaudeMd({ id, name, localPath, github, deploy, stack, description }) {
+  try {
+    if (!localPath || !fs.existsSync(localPath)) {
+      return { ok: false, reason: '로컬 경로 없음 (스킵)' };
+    }
+
+    const claudeMdPath = path.join(localPath, 'CLAUDE.md');
+    if (fs.existsSync(claudeMdPath)) return { ok: true, reason: '이미 존재함 (스킵)' };
+
+    const templatePath = path.resolve(__dirname, '../../../directives/templates/project_claude_md.md');
+    let content;
+
+    if (fs.existsSync(templatePath)) {
+      content = fs.readFileSync(templatePath, 'utf8')
+        .replace(/\{PROJECT_NAME\}/g, name)
+        .replace(/\{PROJECT_ID\}/g, id)
+        .replace(/\{PROJECT_DESCRIPTION\}/g, description || '프로젝트 설명을 추가하세요')
+        .replace(/\{TECH_STACK\}/g, stack || '스택 정보를 추가하세요')
+        .replace(/\{DEPLOYMENT_INFO\}/g, deploy || '배포 정보를 추가하세요')
+        .replace(/\{GITHUB_REPO\}/g, github || '-')
+        .replace(/\{BRANCH_STRATEGY\}/g, 'main 브랜치 사용')
+        .replace(/\{PROJECT_FOCUS\}/g, description || '프로젝트 목적에 집중')
+        .replace(/\{DEPLOYMENT_CONSIDERATIONS\}/g, deploy ? `${deploy} 배포 환경 고려` : '배포 환경 고려');
+    } else {
+      content = `# ${name} - Agent Instructions
+
+> 이 파일은 ${name} 프로젝트 전용 Agent 지침입니다.
+
+## Project Overview
+
+**${name}** - ${description || ''}
+
+- **Tech Stack**: ${stack || '-'}
+- **Deployment**: ${deploy || '개발중'}
+- **GitHub**: ${github || '-'}
+
+## Agent Guidelines
+
+1. 프로젝트 목적에 집중
+2. 배포 환경 고려
+3. 새 기능 추가 시 테스트 포함
+
+### 금지 사항
+
+- 이 프로젝트에서 자동화/인프라 작업 하지 말 것
+- agent-hub 전용 작업은 \`/Users/sun/agent-hub/\`에서 수행
+
+---
+
+## Central Hub Connection
+
+이 프로젝트는 **agent-hub** (\`/Users/sun/agent-hub/\`)와 연결됩니다.
+
+- 프로젝트별 directive: \`/Users/sun/agent-hub/directives/projects/${id}.md\`
+- 전체 인프라: \`/Users/sun/agent-hub/CLAUDE.md\`
+`;
+    }
+
+    fs.writeFileSync(claudeMdPath, content, 'utf8');
+    return { ok: true, path: claudeMdPath };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
 // ── CLAUDE.md 프로젝트 레지스트리 업데이트 ─────────────────
 function updateClaudeMdRegistry({ id, name, localPath, github, deploy }) {
   try {
@@ -189,6 +313,37 @@ export function createApiServer(agentRunner) {
       const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description });
       results.dbInserted = true;
 
+      // CLAUDE.md 레지스트리 자동 업데이트
+      results.claudeMd = updateClaudeMdRegistry({
+        id,
+        name,
+        localPath: resolvedPath,
+        github: results.githubRepo ? `${GITHUB_USER}/${results.githubRepo.name}` : null,
+        deploy: null,
+      });
+
+      // directives/projects/{id}.md 자동 생성
+      results.directive = createDirectiveFile({
+        id,
+        name,
+        localPath: resolvedPath,
+        github: results.githubRepo ? `${GITHUB_USER}/${results.githubRepo.name}` : null,
+        deploy: null,
+        stack,
+        description,
+      });
+
+      // 프로젝트 폴더에 CLAUDE.md 생성
+      results.projectClaudeMd = createProjectClaudeMd({
+        id,
+        name,
+        localPath: resolvedPath,
+        github: results.githubRepo ? `${GITHUB_USER}/${results.githubRepo.name}` : null,
+        deploy: null,
+        stack,
+        description,
+      });
+
       res.status(201).json({ ...results, project });
     } catch (err) {
       console.error('[create-project]', err);
@@ -265,7 +420,29 @@ export function createApiServer(agentRunner) {
         deploy: deploy || null,
       });
 
-      res.status(201).json({ ...project, claudeMd: claudeResult });
+      // directives/projects/{id}.md 자동 생성
+      const directiveResult = createDirectiveFile({
+        id,
+        name,
+        localPath: projectPath,
+        github: github || null,
+        deploy: deploy || null,
+        stack,
+        description,
+      });
+
+      // 프로젝트 폴더에 CLAUDE.md 생성
+      const projectClaudeMdResult = createProjectClaudeMd({
+        id,
+        name,
+        localPath: projectPath,
+        github: github || null,
+        deploy: deploy || null,
+        stack,
+        description,
+      });
+
+      res.status(201).json({ ...project, claudeMd: claudeResult, directive: directiveResult, projectClaudeMd: projectClaudeMdResult });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
