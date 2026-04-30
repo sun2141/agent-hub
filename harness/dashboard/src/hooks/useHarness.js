@@ -2,7 +2,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 const API_KEY = import.meta.env.VITE_API_KEY || ''
-const API_BASE = '/api'
+const _API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
+const API_BASE = _API_BASE_URL ? `${_API_BASE_URL}/api` : '/api'
 
 function apiFetch(path, options = {}) {
   return fetch(`${API_BASE}${path}`, {
@@ -44,13 +45,27 @@ export function useHarness() {
     } catch (e) { console.error('status:', e) }
   }, [])
 
-  // WebSocket — Vite 프록시를 통해 연결
+  // WebSocket — Vite 프록시(로컬) 또는 VPS 직접 연결(배포)
   useEffect(() => {
-    // ws:// 프로토콜로 현재 호스트에 연결 → vite가 백엔드로 프록시
-    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${wsProtocol}//${location.host}/ws`
+    // VITE_API_BASE_URL이 설정된 경우 VPS로 직접 연결 (http → ws, https → wss)
+    let wsUrl
+    if (_API_BASE_URL) {
+      wsUrl = _API_BASE_URL
+        .replace(/^https:/, 'wss:')
+        .replace(/^http:/, 'ws:') + '/ws'
+    } else {
+      const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      wsUrl = `${wsProtocol}//${location.host}/ws`
+    }
+
+    // HTTPS 페이지에서 ws:// 연결은 Mixed Content로 차단됨 → polling fallback
+    if (location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
+      console.log('[WS] HTTPS 환경에서 ws:// 불가 → polling 모드 사용')
+      return
+    }
 
     let reconnectTimer = null
+    let reconnectCount = 0
     let ws = null
 
     function connect() {
@@ -59,6 +74,7 @@ export function useHarness() {
 
       ws.onopen = () => {
         setConnected(true)
+        reconnectCount = 0
         console.log('[WS] 연결됨')
         // API_KEY로 인증
         ws.send(JSON.stringify({ type: 'auth', key: API_KEY }))
@@ -86,8 +102,15 @@ export function useHarness() {
 
       ws.onclose = () => {
         setConnected(false)
-        console.log('[WS] 연결 끊김, 3초 후 재연결')
-        reconnectTimer = setTimeout(connect, 3000)
+        reconnectCount++
+        // 최대 10회 재시도 후 포기 (무한 루프 방지)
+        if (reconnectCount <= 10) {
+          const delay = Math.min(3000 * reconnectCount, 30000)
+          console.log(`[WS] 연결 끊김, ${delay / 1000}초 후 재연결 (${reconnectCount}/10)`)
+          reconnectTimer = setTimeout(connect, delay)
+        } else {
+          console.log('[WS] 재연결 한도 초과 → polling 모드 전환')
+        }
       }
 
       ws.onerror = (e) => {
@@ -108,10 +131,12 @@ export function useHarness() {
     loadProjects()
     loadTasks()
     loadStatus()
+    // HTTPS 배포 환경에서는 WS 연결이 불가하므로 polling 간격을 10초로 단축
+    const isPollingOnly = location.protocol === 'https:'
     const timer = setInterval(() => {
       loadStatus()
       loadTasks()
-    }, 30000)
+    }, isPollingOnly ? 10000 : 30000)
     return () => clearInterval(timer)
   }, [])
 

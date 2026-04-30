@@ -176,7 +176,9 @@ function updateClaudeMdRegistry({ id, name, localPath, github, deploy }) {
 }
 
 const API_KEY = process.env.API_KEY;
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+// 쉼표로 구분된 여러 origin 지원 (예: "https://a.vercel.app,https://b.vercel.app")
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
 // ── Rate Limiter ──────────────────────────────────────────
 const rateLimitMap = new Map();
@@ -221,9 +223,9 @@ export function createApiServer(agentRunner) {
   // CORS (정적 파일 서빙보다 먼저 등록)
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) {
+    if (ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) {
       res.header('Access-Control-Allow-Origin', origin);
-    } else if (!ALLOWED_ORIGIN) {
+    } else if (ALLOWED_ORIGINS.length === 0) {
       res.header('Access-Control-Allow-Origin', '*');
     }
     res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key');

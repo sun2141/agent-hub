@@ -47,9 +47,11 @@ function readFileAsText(file) {
 }
 
 // ── API 헬퍼 (훅 외부에서 사용) ───────────────────────────
-const API_KEY_RAW = typeof import.meta !== 'undefined' ? (import.meta.env?.VITE_API_KEY || '') : ''
+const API_KEY_RAW = import.meta.env.VITE_API_KEY || ''
+const _API_BASE_URL_RAW = import.meta.env.VITE_API_BASE_URL || ''
+const API_BASE_RAW = _API_BASE_URL_RAW ? `${_API_BASE_URL_RAW}/api` : '/api'
 function apiFetchRaw(path, options = {}) {
-  return fetch(`/api${path}`, {
+  return fetch(`${API_BASE_RAW}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
