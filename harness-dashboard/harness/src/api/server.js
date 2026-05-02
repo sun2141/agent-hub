@@ -17,6 +17,135 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 대시보드 빌드: harness-dashboard/dashboard/dist/
 const DASHBOARD_DIST = path.join(__dirname, '../../../dashboard/dist');
 
+// CLAUDE.md 위치 (agent-hub 루트)
+const CLAUDE_MD_PATH = path.resolve(__dirname, '../../../../CLAUDE.md');
+
+// ── directives/projects/{id}.md 자동 생성 ─────────────────
+function createDirectiveFile({ id, name, localPath, github, deploy, stack, description }) {
+  try {
+    const directivesDir = path.resolve(__dirname, '../../../../directives/projects');
+    fs.mkdirSync(directivesDir, { recursive: true });
+
+    const filePath = path.join(directivesDir, `${id}.md`);
+    if (fs.existsSync(filePath)) return { ok: true, reason: '이미 존재함 (스킵)' };
+
+    const content = `# ${name} Project Directive
+
+## Project Info
+
+- **ID**: ${id}
+- **Name**: ${name}
+- **Path**: \`${localPath}\`
+- **GitHub**: ${github || '-'}
+- **Deploy**: ${deploy || '개발중'}
+
+## Tech Stack
+
+${stack || '-'}
+
+## Description
+
+${description || ''}
+
+## Monitoring Rules
+
+### Health Check
+- URL: (배포 URL 설정 필요)
+- Interval: 5분
+- Alert: 3회 연속 실패 시 텔레그램 알림
+
+## Auto-Fix Rules
+
+1. **빌드 실패**: 에러 로그 분석 후 자동 수정 시도
+2. **배포 실패**: 환경 변수 및 설정 확인
+3. **런타임 에러**: 로그 분석 후 롤백 판단
+
+## Related Directives
+
+- \`directives/deploy.md\` - 배포 워크플로우
+- \`directives/run_tests.md\` - 테스트 실행
+`;
+
+    fs.writeFileSync(filePath, content, 'utf8');
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+// ── CLAUDE.md 레지스트리 테이블 업데이트 ────────────────
+function updateClaudeMdRegistry({ id, name, localPath, github, deploy }) {
+  try {
+    if (!fs.existsSync(CLAUDE_MD_PATH)) return { ok: false, reason: 'CLAUDE.md 없음' };
+
+    let content = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
+    const tableHeader = '| ID | 프로젝트 |';
+    const idx = content.indexOf(tableHeader);
+    if (idx === -1) return { ok: false, reason: 'CLAUDE.md 레지스트리 테이블 없음' };
+
+    // 이미 등록된 경우 스킵
+    if (content.includes(`| ${id} |`)) return { ok: true, reason: '이미 등록됨 (스킵)' };
+
+    // 테이블의 구분선 다음 줄 찾기 (| --- | --- | ... |)
+    const afterHeader = content.indexOf('\n', idx);
+    const afterSep = content.indexOf('\n', afterHeader + 1);
+
+    const newRow = `| ${id} | ${name} | \`${localPath}\` | ${github || '-'} | ${deploy || '개발중'} |`;
+    content = content.slice(0, afterSep + 1) + newRow + '\n' + content.slice(afterSep + 1);
+
+    fs.writeFileSync(CLAUDE_MD_PATH, content, 'utf8');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+// ── 프로젝트 폴더에 CLAUDE.md 생성 ───────────────────────
+function createProjectClaudeMd({ id, name, localPath, github, deploy, stack, description }) {
+  try {
+    if (!localPath || !fs.existsSync(localPath)) {
+      return { ok: false, reason: '로컬 경로 없음 (스킵)' };
+    }
+
+    const claudeMdPath = path.join(localPath, 'CLAUDE.md');
+    if (fs.existsSync(claudeMdPath)) return { ok: true, reason: '이미 존재함 (스킵)' };
+
+    const templatePath = path.resolve(__dirname, '../../../../directives/templates/project_claude_md.md');
+    let content;
+
+    if (fs.existsSync(templatePath)) {
+      content = fs.readFileSync(templatePath, 'utf8')
+        .replace(/\{PROJECT_NAME\}/g, name)
+        .replace(/\{PROJECT_ID\}/g, id)
+        .replace(/\{PROJECT_DESCRIPTION\}/g, description || '프로젝트 설명을 추가하세요')
+        .replace(/\{TECH_STACK\}/g, stack || '스택 정보를 추가하세요')
+        .replace(/\{DEPLOYMENT_INFO\}/g, deploy || '배포 정보를 추가하세요');
+    } else {
+      content = `# ${name}
+
+## 프로젝트 개요
+
+- **ID**: ${id}
+- **스택**: ${stack || '-'}
+- **설명**: ${description || ''}
+- **배포**: ${deploy || '개발중'}
+
+## Agent 지침
+
+이 프로젝트에서 작업할 때:
+1. 변경 전 코드를 먼저 읽고 이해하세요
+2. 기존 패턴과 컨벤션을 따르세요
+3. 작업 완료 후 빌드/테스트 확인
+`;
+    }
+
+    fs.writeFileSync(claudeMdPath, content, 'utf8');
+    return { ok: true, path: claudeMdPath };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER  = process.env.GITHUB_USER || 'sun2141';
 
@@ -308,20 +437,36 @@ export function createApiServer(agentRunner) {
   });
 
   app.post('/api/projects', async (req, res) => {
-    const { name, path: projectPath, stack, description } = req.body;
+    const { name, path: projectPath, stack, description, github, deploy, id: customId } = req.body;
     if (!validateString(name, 100))        return res.status(400).json({ error: 'name: 1~100자 문자열 필수' });
     if (!validateString(projectPath, 500)) return res.status(400).json({ error: 'path: 1~500자 문자열 필수' });
     if (stack !== undefined && !validateString(stack, 100))           return res.status(400).json({ error: 'stack: 100자 이하 문자열' });
     if (description !== undefined && !validateString(description, 500)) return res.status(400).json({ error: 'description: 500자 이하 문자열' });
 
-    const slug   = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
-    const suffix = crypto.randomBytes(3).toString('hex');
-    const id     = `${slug}-${suffix}`;
+    let id;
+    if (customId && /^[a-z0-9-]{1,50}$/.test(customId)) {
+      id = customId;
+    } else {
+      const slug   = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
+      const suffix = crypto.randomBytes(3).toString('hex');
+      id = `${slug}-${suffix}`;
+    }
+
     try {
       const existing = await projectQueries.get(id);
       if (existing) return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
       const project = await projectQueries.insert({ id, name, path: projectPath, stack, description });
-      res.status(201).json(project);
+
+      // CLAUDE.md 레지스트리 자동 업데이트
+      const claudeResult = updateClaudeMdRegistry({ id, name, localPath: projectPath, github: github || null, deploy: deploy || null });
+
+      // directives/projects/{id}.md 자동 생성
+      const directiveResult = createDirectiveFile({ id, name, localPath: projectPath, github: github || null, deploy: deploy || null, stack, description });
+
+      // 프로젝트 폴더에 CLAUDE.md 생성
+      const projectClaudeMdResult = createProjectClaudeMd({ id, name, localPath: projectPath, github: github || null, deploy: deploy || null, stack, description });
+
+      res.status(201).json({ ...project, claudeMd: claudeResult, directive: directiveResult, projectClaudeMd: projectClaudeMdResult });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
