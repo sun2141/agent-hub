@@ -2,7 +2,19 @@
 Google Drive OAuth2 인증 모듈
 - credentials.json에서 OAuth2 클라이언트 로드
 - token.json으로 토큰 캐싱 및 자동 갱신
-- drive.file 스코프 사용 (앱이 만든 파일만 접근)
+- drive 스코프 사용 (사용자의 모든 Drive 파일 접근 가능)
+
+스코프 설명:
+  drive                 — 전체 Drive 읽기/쓰기 (앱 외부 생성 파일 포함)
+  drive.file            — 앱이 만들거나 연 파일만 접근 (더 제한적)
+  drive.metadata.readonly — 파일 메타데이터만 읽기
+
+현재 설정: drive 스코프 사용
+  이유: 동기화 에이전트는 사용자가 직접 Drive에 추가한 파일도 감지해야 함.
+  앱 외부에서 생성한 기존 파일은 drive.file 스코프로는 접근 불가.
+
+기존 token.json이 drive.file 스코프로 발급된 경우 재인증 필요:
+  rm token.json && python execution/drive_auth.py
 """
 
 import os
@@ -18,11 +30,10 @@ from googleapiclient.errors import HttpError
 
 logger = logging.getLogger(__name__)
 
-# Drive API 스코프: 앱이 만든/연 파일에만 접근
-# 전체 Drive 접근이 필요하면 drive 스코프로 변경
+# Drive API 스코프: 전체 Drive 접근 (앱 외부 생성 파일 포함)
+# drive.file 대신 drive 스코프를 사용해야 기존 폴더 폴링이 가능함
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive",
 ]
 
 BASE_DIR = Path(__file__).parent.parent
@@ -121,13 +132,24 @@ def _save_credentials(creds: Credentials):
 def check_token_scopes() -> dict:
     """
     현재 token.json의 스코프 확인.
-    drive.file 스코프 포함 여부를 반환.
+    전체 Drive 접근(drive) 스코프 포함 여부를 반환.
 
     Returns:
-        dict: {"has_drive_scope": bool, "scopes": list}
+        dict: {
+            "has_drive_scope": bool,   # drive 스코프 포함 여부
+            "has_full_drive": bool,    # drive (전체) 스코프 여부 (drive.file이 아닌)
+            "scopes": list,
+            "needs_reauth": bool,      # 재인증 필요 여부 (drive.file만 있는 경우)
+        }
     """
     if not TOKEN_PATH.exists():
-        return {"has_drive_scope": False, "scopes": [], "error": "token.json 없음"}
+        return {
+            "has_drive_scope": False,
+            "has_full_drive": False,
+            "scopes": [],
+            "needs_reauth": True,
+            "error": "token.json 없음",
+        }
 
     try:
         with open(TOKEN_PATH) as f:
@@ -138,18 +160,41 @@ def check_token_scopes() -> dict:
             scopes = scopes.split()
 
         has_drive = any("drive" in s for s in scopes)
+        # drive.file만 있고 drive 전체 스코프가 없으면 재인증 필요
+        full_drive_scope = "https://www.googleapis.com/auth/drive"
+        has_full_drive = full_drive_scope in scopes
+        drive_file_only = any("drive.file" in s for s in scopes) and not has_full_drive
+
         return {
             "has_drive_scope": has_drive,
+            "has_full_drive": has_full_drive,
             "scopes": scopes,
+            "needs_reauth": drive_file_only,
             "token_path": str(TOKEN_PATH),
         }
     except Exception as e:
-        return {"has_drive_scope": False, "scopes": [], "error": str(e)}
+        return {
+            "has_drive_scope": False,
+            "has_full_drive": False,
+            "scopes": [],
+            "needs_reauth": True,
+            "error": str(e),
+        }
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print("Drive 스코프 확인:", check_token_scopes())
+    scope_info = check_token_scopes()
+    print("Drive 스코프 확인:", scope_info)
+
+    if scope_info.get("needs_reauth"):
+        print(
+            "\n⚠️  재인증 필요: token.json이 drive.file 스코프로만 발급되어 있습니다.\n"
+            "기존 Drive 파일(앱 외부 생성) 접근을 위해 drive 스코프가 필요합니다.\n"
+            "  rm token.json && python execution/drive_auth.py\n"
+            "를 실행하면 브라우저에서 재인증이 시작됩니다."
+        )
+
     try:
         service = get_drive_service()
         # 연결 테스트: 내 Drive 루트 조회

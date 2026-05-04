@@ -138,6 +138,66 @@ def notify_auth_error(error: str):
     send_message(msg)
 
 
+def notify_drive_sync_success(
+    repo: str,
+    folder_id: str,
+    files_synced: list[str],
+    files_skipped: int = 0,
+):
+    """Drive→GitHub 동기화 성공 알림."""
+    count = len(files_synced)
+    files_preview = "\n".join(f"  • {f}" for f in files_synced[:5])
+    if count > 5:
+        files_preview += f"\n  ... 외 {count - 5}개"
+
+    msg = (
+        f"✅ <b>Drive→GitHub 동기화 완료</b>\n"
+        f"📦 저장소: <code>{repo}</code>\n"
+        f"📂 Drive 폴더: <code>{folder_id[:20]}...</code>\n"
+        f"📁 동기화: {count}개 | 스킵: {files_skipped}개\n"
+        f"\n{files_preview}"
+    )
+    send_message(msg)
+
+
+def notify_drive_sync_failure(
+    repo: str,
+    folder_id: str,
+    failed_files: list[dict],
+):
+    """Drive→GitHub 동기화 실패 알림."""
+    errors_preview = "\n".join(
+        f"  ❌ {f['file']}: {f['error'][:80]}" for f in failed_files[:3]
+    )
+    if len(failed_files) > 3:
+        errors_preview += f"\n  ... 외 {len(failed_files) - 3}개"
+
+    msg = (
+        f"🚨 <b>Drive→GitHub 동기화 실패</b>\n"
+        f"📦 저장소: <code>{repo}</code>\n"
+        f"📂 Drive 폴더: <code>{folder_id[:20]}...</code>\n"
+        f"❌ 실패 파일: {len(failed_files)}개\n"
+        f"\n{errors_preview}"
+    )
+    send_message(msg)
+
+
+def notify_conflict(
+    repo: str,
+    file_path: str,
+    conflict_info: str = "",
+):
+    """충돌 감지 알림 (Drive와 GitHub 모두 변경된 경우)."""
+    msg = (
+        f"⚠️ <b>동기화 충돌 감지</b>\n"
+        f"📦 저장소: <code>{repo}</code>\n"
+        f"📄 파일: <code>{_escape_html(file_path)}</code>\n"
+        f"ℹ️ {_escape_html(conflict_info)}\n"
+        f"\n<b>처리 전략:</b> Drive 버전 우선 적용"
+    )
+    send_message(msg)
+
+
 def notify_rate_limit(service: str, retry_after: int = 60):
     """API 레이트 리밋 알림."""
     msg = (

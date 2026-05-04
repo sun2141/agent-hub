@@ -100,6 +100,50 @@ class SyncLogger:
             return True
         return state["sha"] != new_sha
 
+    # ─── Drive→GitHub 상태 관리 ─────────────────────────────────
+
+    def get_drive_file_state(self, repo: str, file_path: str) -> dict | None:
+        """
+        Drive→GitHub 동기화 상태 반환.
+
+        Returns:
+            dict: {"drive_file_id": str, "drive_modified_time": str, "github_sync_sha": str}
+            or None
+        """
+        drive_key = f"__drive__{repo}"
+        return self._state.get(drive_key, {}).get(file_path)
+
+    def update_drive_file_state(
+        self,
+        repo: str,
+        file_path: str,
+        drive_file_id: str,
+        drive_modified_time: str,
+        github_sync_sha: str,
+    ):
+        """Drive→GitHub 동기화 성공 시 상태 업데이트."""
+        with self._lock:
+            drive_key = f"__drive__{repo}"
+            if drive_key not in self._state:
+                self._state[drive_key] = {}
+            self._state[drive_key][file_path] = {
+                "drive_file_id": drive_file_id,
+                "drive_modified_time": drive_modified_time,
+                "github_sync_sha": github_sync_sha,
+                "synced_at": _now_iso(),
+            }
+            self._save_state()
+
+    def get_drive_repo_summary(self, repo: str) -> dict:
+        """Drive→GitHub 동기화 현황 요약."""
+        drive_key = f"__drive__{repo}"
+        repo_state = self._state.get(drive_key, {})
+        return {
+            "repo": repo,
+            "total_drive_files": len(repo_state),
+            "files": list(repo_state.keys()),
+        }
+
     def get_repo_summary(self, repo: str) -> dict:
         """저장소 동기화 현황 요약."""
         repo_state = self._state.get(repo, {})
