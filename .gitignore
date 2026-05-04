@@ -14,6 +14,10 @@ __pycache__/
 *.swo
 *~
 
+# Google OAuth 인증 파일 (민감 정보 — 절대 커밋 금지)
+credentials.json
+token.json
+
 # 하네스 데이터 (DB, 민감 정보)
 harness/data/
 harness/.env

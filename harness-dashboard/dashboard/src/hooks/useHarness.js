@@ -418,11 +418,20 @@ export function useHarness() {
     return result;
   }, [refresh]);
 
+  const addProject = useCallback(async (data) => {
+    const result = await apiFetch('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    await refresh();
+    return result;
+  }, [refresh]);
+
   return {
     projects, tasks, status, connected, streamLog, dbLogs,
     loading, error,
     authenticated, passwordRequired,
-    refresh, runTask, resumeTask, stopTask, deleteTask, createProject,
+    refresh, runTask, resumeTask, stopTask, deleteTask, createProject, addProject,
     login, logout, checkAuth,
   };
 }

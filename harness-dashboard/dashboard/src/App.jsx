@@ -617,21 +617,271 @@ function LoginScreen({ onLogin }) {
   );
 }
 
+// ── 컴포넌트: 프로젝트 등록 모달 ──────────────────────────
+function RegisterProjectModal({ onAdd, onCreate, onClose }) {
+  const [mode, setMode] = useState('register'); // 'register' | 'create'
+  const [form, setForm] = useState({
+    id: '', name: '', path: '', stack: '', description: '',
+    github: '', deploy: '',
+    githubRepo: true,
+    githubPrivate: 'private',
+  });
+  const [idEdited, setIdEdited] = useState(false);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const set = (key) => (e) => {
+    const val = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    setForm(f => ({ ...f, [key]: val }));
+  };
+
+  const handleIdChange = (e) => {
+    setIdEdited(true);
+    setForm(f => ({ ...f, id: e.target.value }));
+  };
+
+  const handleNameChange = (e) => {
+    const name = e.target.value;
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    setForm(f => ({
+      ...f,
+      name,
+      id: idEdited ? f.id : slug,
+      path: f.path && f.path !== `/Users/sun/${f.id}` ? f.path : (slug ? `/Users/sun/${slug}` : ''),
+    }));
+  };
+
+  const handleSubmit = async () => {
+    if (!form.id.trim()) { setError('프로젝트 ID는 필수입니다'); return; }
+    if (!/^[a-z0-9-]{1,50}$/.test(form.id.trim())) {
+      setError('프로젝트 ID: 영문 소문자/숫자/하이픈만 허용 (최대 50자)');
+      return;
+    }
+    if (!form.name.trim()) { setError('프로젝트 이름은 필수입니다'); return; }
+    if (!form.path.trim()) { setError('로컬 경로는 필수입니다'); return; }
+    setError('');
+    setSaving(true);
+    setResult(null);
+
+    try {
+      const payload = {
+        id: form.id.trim(),
+        name: form.name.trim(),
+        path: form.path.trim(),
+        stack: form.stack.trim() || undefined,
+        description: form.description.trim() || undefined,
+        github: form.github.trim() || undefined,
+        deploy: form.deploy.trim() || undefined,
+      };
+
+      let res;
+      if (mode === 'create') {
+        res = await onCreate({
+          ...payload,
+          githubRepo: form.githubRepo ? 'auto' : false,
+          githubPrivate: form.githubPrivate !== 'public',
+        });
+      } else {
+        res = await onAdd(payload);
+      }
+
+      if (res?.error) {
+        setError(res.error);
+      } else {
+        setResult(res);
+      }
+    } catch (e) {
+      setError(e.message || '오류가 발생했습니다');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fieldStyle = {
+    width: '100%', background: 'var(--bg3)', border: '1px solid var(--border)',
+    borderRadius: 8, padding: '9px 11px', color: 'var(--text)',
+    fontSize: 13, outline: 'none', boxSizing: 'border-box',
+  };
+  const labelStyle = { fontSize: 11, color: 'var(--text3)', fontWeight: 600, marginBottom: 4, display: 'block' };
+
+  const handleOverlayClick = (e) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  return (
+    <div
+      onClick={handleOverlayClick}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      }}
+    >
+      <div style={{
+        width: '100%', maxWidth: 480,
+        background: 'var(--bg2)', borderRadius: '16px 16px 0 0',
+        border: '1px solid var(--border)', borderBottom: 'none',
+        padding: '20px 16px 32px',
+        maxHeight: '90vh', overflowY: 'auto',
+      }}>
+        {/* 헤더 */}
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
+          <span style={{ flex: 1, fontSize: 15, fontWeight: 700, color: 'var(--text)' }}>프로젝트 등록</span>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', color: 'var(--text3)',
+            fontSize: 22, minWidth: 44, minHeight: 44,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>✕</button>
+        </div>
+
+        {/* 모드 탭 */}
+        <div style={{ display: 'flex', gap: 6, marginBottom: 20 }}>
+          {[['register', '기존 프로젝트 등록'], ['create', '새 폴더 생성']].map(([m, label]) => (
+            <button key={m} onClick={() => setMode(m)} style={{
+              flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 12, fontWeight: 600,
+              background: mode === m ? 'rgba(107,94,248,0.15)' : 'var(--bg3)',
+              border: '1px solid ' + (mode === m ? 'rgba(107,94,248,0.4)' : 'var(--border)'),
+              color: mode === m ? 'var(--accent2)' : 'var(--text2)',
+            }}>{label}</button>
+          ))}
+        </div>
+
+        {result ? (
+          <div>
+            <div style={{
+              padding: '16px', background: 'rgba(61,214,140,0.1)',
+              border: '1px solid rgba(61,214,140,0.3)', borderRadius: 10, marginBottom: 16,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--green)', marginBottom: 6 }}>
+                등록 완료!
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text2)' }}>
+                <div>ID: <span style={{ color: 'var(--text)', fontFamily: 'monospace' }}>{result.id}</span></div>
+                <div>이름: {result.name}</div>
+              </div>
+            </div>
+            <button onClick={onClose} style={{
+              width: '100%', padding: '12px', borderRadius: 8, fontWeight: 600, fontSize: 13,
+              background: 'var(--accent)', border: 'none', color: '#fff',
+            }}>닫기</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* 프로젝트 이름 */}
+            <div>
+              <label style={labelStyle}>프로젝트 이름 *</label>
+              <input value={form.name} onChange={handleNameChange} placeholder="My Project" style={fieldStyle} />
+            </div>
+
+            {/* 프로젝트 ID */}
+            <div>
+              <label style={labelStyle}>프로젝트 ID *</label>
+              <input value={form.id} onChange={handleIdChange}
+                placeholder="my-project" style={fieldStyle} />
+              <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 3 }}>영문 소문자, 숫자, 하이픈만 허용</div>
+            </div>
+
+            {/* 로컬 경로 */}
+            <div>
+              <label style={labelStyle}>로컬 경로 *</label>
+              <input value={form.path} onChange={set('path')}
+                placeholder="/Users/sun/my-project" style={fieldStyle} />
+            </div>
+
+            {/* 스택 */}
+            <div>
+              <label style={labelStyle}>스택 (선택)</label>
+              <input value={form.stack} onChange={set('stack')}
+                placeholder="Next.js, Supabase" style={fieldStyle} />
+            </div>
+
+            {/* 설명 */}
+            <div>
+              <label style={labelStyle}>설명 (선택)</label>
+              <input value={form.description} onChange={set('description')}
+                placeholder="프로젝트 설명" style={fieldStyle} />
+            </div>
+
+            {/* GitHub URL */}
+            <div>
+              <label style={labelStyle}>GitHub URL (선택)</label>
+              <input value={form.github} onChange={set('github')}
+                placeholder="https://github.com/user/repo" style={fieldStyle} />
+            </div>
+
+            {/* 배포 URL */}
+            <div>
+              <label style={labelStyle}>배포 URL (선택)</label>
+              <input value={form.deploy} onChange={set('deploy')}
+                placeholder="https://my-project.vercel.app" style={fieldStyle} />
+            </div>
+
+            {/* GitHub 자동 생성 (create 모드만) */}
+            {mode === 'create' && (
+              <div style={{
+                padding: '12px', background: 'var(--bg3)',
+                border: '1px solid var(--border)', borderRadius: 8,
+              }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={form.githubRepo} onChange={set('githubRepo')} />
+                  <span style={{ fontSize: 12, color: 'var(--text2)' }}>GitHub 레포 자동 생성</span>
+                </label>
+                {form.githubRepo && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                    {['private', 'public'].map(v => (
+                      <button key={v} onClick={() => setForm(f => ({ ...f, githubPrivate: v }))} style={{
+                        flex: 1, padding: '6px 0', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                        background: form.githubPrivate === v ? 'rgba(107,94,248,0.15)' : 'var(--bg2)',
+                        border: '1px solid ' + (form.githubPrivate === v ? 'rgba(107,94,248,0.4)' : 'var(--border)'),
+                        color: form.githubPrivate === v ? 'var(--accent2)' : 'var(--text3)',
+                      }}>{v === 'private' ? '비공개' : '공개'}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {error && (
+              <div style={{ fontSize: 12, color: 'var(--red)', padding: '8px 10px', background: 'rgba(248,113,113,0.1)', borderRadius: 6 }}>
+                {error}
+              </div>
+            )}
+
+            <button
+              onClick={handleSubmit}
+              disabled={saving}
+              style={{
+                width: '100%', padding: '12px', borderRadius: 8, fontWeight: 600, fontSize: 13,
+                background: saving ? 'var(--bg3)' : 'var(--accent)', border: 'none',
+                color: saving ? 'var(--text2)' : '#fff', marginTop: 4,
+              }}
+            >
+              {saving ? '처리 중...' : (mode === 'create' ? '생성' : '등록')}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── 메인 App ──────────────────────────────────────────────
 export default function App() {
   const {
     projects, tasks, status, connected, streamLog, dbLogs,
     loading, error,
     authenticated, passwordRequired,
-    refresh, runTask, resumeTask, stopTask, deleteTask,
+    refresh, runTask, resumeTask, stopTask, deleteTask, addProject, createProject,
     login, logout, checkAuth,
   } = useHarness();
 
   // 스트림 로그가 있으면 스트림 우선, 없으면 DB 로그 표시
   const displayLogs = streamLog.length > 0 ? streamLog : dbLogs;
 
-  const [tab, setTab]       = useState('프로젝트');
-  const [actionErr, setErr] = useState('');
+  const [tab, setTab]                     = useState('프로젝트');
+  const [actionErr, setErr]               = useState('');
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
 
   async function withErr(fn) {
     try { setErr(''); await fn(); }
@@ -718,9 +968,31 @@ export default function App() {
         </div>
       )}
 
+      {/* 프로젝트 등록 모달 */}
+      {showRegisterModal && (
+        <RegisterProjectModal
+          onAdd={addProject}
+          onCreate={createProject}
+          onClose={() => { setShowRegisterModal(false); refresh(); }}
+        />
+      )}
+
       <div style={{ flex: 1, overflowY: 'auto', padding: tab === '로그' ? 0 : '12px 16px' }}>
         {tab === '프로젝트' && (
           <div>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
+              <span style={{ flex: 1, fontSize: 11, fontWeight: 600, color: 'var(--text3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>프로젝트</span>
+              <button onClick={() => setShowRegisterModal(true)} style={{
+                background: 'rgba(107,94,248,0.1)',
+                border: '1px solid rgba(107,94,248,0.3)',
+                borderRadius: 8, padding: '0 12px', height: 32,
+                display: 'flex', alignItems: 'center', gap: 5,
+                color: 'var(--accent2)', fontSize: 12, fontWeight: 600,
+              }}>
+                <span style={{ fontSize: 16, marginTop: -1 }}>+</span>
+                <span>새 프로젝트 등록</span>
+              </button>
+            </div>
             {projects.length === 0 ? (
               <p style={{ color: 'var(--text3)', fontSize: 13, textAlign: 'center', paddingTop: 40 }}>
                 등록된 프로젝트가 없습니다
