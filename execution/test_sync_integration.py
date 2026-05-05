@@ -18,13 +18,14 @@ GitHub-Drive 양방향 동기화 통합 테스트
 import sys
 import os
 import json
+import uuid
 import logging
 import unittest
 import tempfile
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # 경로 설정
 EXEC_DIR = Path(__file__).parent
@@ -706,6 +707,366 @@ class TestSyncEnd2End(unittest.TestCase):
         self.assertTrue(newer_time > last_sync_time)  # 변경 있음
 
 
+class TestDriveWatchTTLRenewal(unittest.TestCase):
+    """
+    Drive Watch 채널 TTL 갱신 로직 단위 테스트.
+
+    DriveWatchManager.renew_expiring_channels() 메서드의 동작 검증:
+    - 만료 임박 채널 자동 갱신 (stop → re-register)
+    - TTL 충분한 채널은 갱신 건너뜀
+    - palmoni / grace-ai 양쪽 저장소 채널 처리
+    - 갱신 후 채널 상태 파일 저장 확인
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.watch_state_file = Path(self.tmp_dir) / "watch_channels.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _make_watch_manager(self):
+        """Mock DriveWatchManager 생성 (실제 API 없이)."""
+        with patch("drive_github_sync.get_drive_service"), \
+             patch("drive_github_sync.get_sync_logger"), \
+             patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            from drive_github_sync import DriveWatchManager, DriveGitHubSync
+            mock_syncer = MagicMock(spec=DriveGitHubSync)
+            mock_syncer.drive = MagicMock()
+            mock_syncer.get_all_mapped_folders.return_value = []
+            manager = DriveWatchManager(mock_syncer)
+        return manager
+
+    def _make_channel(self, channel_id, repo, folder_id, remaining_ms):
+        """테스트용 WatchChannel 생성."""
+        from drive_github_sync import WatchChannel
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        return WatchChannel(
+            channel_id=channel_id,
+            resource_id=f"resource-{channel_id}",
+            folder_id=folder_id,
+            repo=repo,
+            expiration_ms=now_ms + remaining_ms,
+            page_token=f"token-{channel_id}",
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def test_expiring_channel_is_renewed(self):
+        """만료 임박(30분) 채널은 1시간 임계값 설정 시 갱신됨."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        ch = self._make_channel(
+            "ch-grace-001", "sun2141/grace-ai", "folder-grace", 30 * 60 * 1000
+        )
+        manager._channels[ch.channel_id] = ch
+
+        renewed = []
+        stopped = []
+
+        def mock_stop(cid):
+            stopped.append(cid)
+            manager._channels.pop(cid, None)
+            return True
+
+        def mock_register(folder_id, repo):
+            from drive_github_sync import WatchChannel
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            new_ch = WatchChannel(
+                channel_id=f"ch-renewed-{uuid.uuid4()}",
+                resource_id="new-resource",
+                folder_id=folder_id,
+                repo=repo,
+                expiration_ms=now_ms + 23 * 3600 * 1000,
+                page_token="new-token",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            renewed.append((folder_id, repo))
+            manager._channels[new_ch.channel_id] = new_ch
+            return new_ch
+
+        manager.stop_watch = mock_stop
+        manager.register_watch = mock_register
+
+        manager.renew_expiring_channels(threshold_seconds=3600)  # 1시간 임계값
+
+        self.assertIn("ch-grace-001", stopped, "만료 임박 채널이 해제되어야 함")
+        self.assertEqual(len(renewed), 1, "새 채널이 등록되어야 함")
+        self.assertEqual(renewed[0], ("folder-grace", "sun2141/grace-ai"))
+
+    def test_healthy_channel_is_not_renewed(self):
+        """TTL 충분(20시간) 채널은 갱신하지 않음."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        ch = self._make_channel(
+            "ch-healthy", "sun2141/palmoni", "folder-palmoni", 20 * 3600 * 1000
+        )
+        manager._channels[ch.channel_id] = ch
+
+        renewed = []
+        stopped = []
+        manager.stop_watch = lambda cid: stopped.append(cid) or True
+        manager.register_watch = lambda fid, repo: renewed.append((fid, repo))
+
+        manager.renew_expiring_channels(threshold_seconds=3600)
+
+        self.assertEqual(len(stopped), 0, "TTL 충분한 채널은 해제하지 않아야 함")
+        self.assertEqual(len(renewed), 0, "TTL 충분한 채널은 갱신하지 않아야 함")
+
+    def test_multiple_repos_renewal(self):
+        """grace-ai + palmoni 두 저장소 채널 동시 갱신."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        # grace-ai: 만료 임박 (45분)
+        ch_grace = self._make_channel(
+            "ch-grace", "sun2141/grace-ai", "folder-grace", 45 * 60 * 1000
+        )
+        # palmoni: 만료 임박 (20분)
+        ch_palmoni = self._make_channel(
+            "ch-palmoni", "sun2141/palmoni", "folder-palmoni", 20 * 60 * 1000
+        )
+        manager._channels["ch-grace"] = ch_grace
+        manager._channels["ch-palmoni"] = ch_palmoni
+
+        renewed_repos = set()
+        stopped = []
+
+        def mock_stop(cid):
+            stopped.append(cid)
+            manager._channels.pop(cid, None)
+            return True
+
+        def mock_register(folder_id, repo):
+            from drive_github_sync import WatchChannel
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            new_ch = WatchChannel(
+                channel_id=f"ch-new-{repo}",
+                resource_id="new-resource",
+                folder_id=folder_id,
+                repo=repo,
+                expiration_ms=now_ms + 23 * 3600 * 1000,
+                page_token="new-token",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            renewed_repos.add(repo)
+            manager._channels[new_ch.channel_id] = new_ch
+            return new_ch
+
+        manager.stop_watch = mock_stop
+        manager.register_watch = mock_register
+
+        manager.renew_expiring_channels(threshold_seconds=3600)
+
+        self.assertIn("ch-grace", stopped)
+        self.assertIn("ch-palmoni", stopped)
+        self.assertIn("sun2141/grace-ai", renewed_repos)
+        self.assertIn("sun2141/palmoni", renewed_repos)
+
+    def test_mixed_channels_partial_renewal(self):
+        """만료 임박 채널만 갱신, 건강한 채널은 유지."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        # 만료 임박
+        ch_expiring = self._make_channel(
+            "ch-exp", "sun2141/grace-ai", "folder-grace", 10 * 60 * 1000
+        )
+        # 건강한 채널
+        ch_healthy = self._make_channel(
+            "ch-ok", "sun2141/palmoni", "folder-palmoni", 22 * 3600 * 1000
+        )
+        manager._channels["ch-exp"] = ch_expiring
+        manager._channels["ch-ok"] = ch_healthy
+
+        stopped = []
+        renewed = []
+
+        def mock_stop(cid):
+            stopped.append(cid)
+            manager._channels.pop(cid, None)
+            return True
+
+        def mock_register(folder_id, repo):
+            from drive_github_sync import WatchChannel
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            new_ch = WatchChannel(
+                channel_id=f"ch-renewed",
+                resource_id="new",
+                folder_id=folder_id,
+                repo=repo,
+                expiration_ms=now_ms + 23 * 3600 * 1000,
+                page_token="tk",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            renewed.append(repo)
+            manager._channels[new_ch.channel_id] = new_ch
+            return new_ch
+
+        manager.stop_watch = mock_stop
+        manager.register_watch = mock_register
+
+        manager.renew_expiring_channels(threshold_seconds=3600)
+
+        self.assertIn("ch-exp", stopped, "만료 임박 채널은 갱신되어야 함")
+        self.assertNotIn("ch-ok", stopped, "건강한 채널은 유지되어야 함")
+        self.assertEqual(renewed, ["sun2141/grace-ai"])
+
+    def test_get_watch_status_shows_remaining_time(self):
+        """get_watch_status()가 남은 TTL(초)를 정확히 반환."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        remaining_hours = 12
+        ch = self._make_channel(
+            "ch-status-test", "sun2141/grace-ai", "folder-grace",
+            remaining_hours * 3600 * 1000
+        )
+        manager._channels[ch.channel_id] = ch
+
+        status = manager.get_watch_status()
+        self.assertEqual(status["active_channels"], 1)
+        self.assertEqual(len(status["channels"]), 1)
+
+        ch_info = status["channels"][0]
+        self.assertEqual(ch_info["repo"], "sun2141/grace-ai")
+        # 남은 시간이 대략 맞는지 확인 (5초 오차 허용)
+        expected_remaining = remaining_hours * 3600
+        self.assertAlmostEqual(
+            ch_info["remaining_seconds"], expected_remaining, delta=5,
+            msg="남은 TTL 초가 정확해야 함",
+        )
+
+    def test_watch_channel_saved_after_renewal(self):
+        """갱신 후 watch_channels.json 파일이 업데이트됨."""
+        with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
+            manager = self._make_watch_manager()
+
+        ch = self._make_channel(
+            "ch-save-test", "sun2141/grace-ai", "folder-grace", 10 * 60 * 1000
+        )
+        manager._channels[ch.channel_id] = ch
+
+        def mock_stop(cid):
+            manager._channels.pop(cid, None)
+            manager._save_channels()
+            return True
+
+        def mock_register(folder_id, repo):
+            from drive_github_sync import WatchChannel
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            new_ch = WatchChannel(
+                channel_id="ch-saved",
+                resource_id="res",
+                folder_id=folder_id,
+                repo=repo,
+                expiration_ms=now_ms + 23 * 3600 * 1000,
+                page_token="tok",
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            manager._channels[new_ch.channel_id] = new_ch
+            manager._save_channels()
+            return new_ch
+
+        manager.stop_watch = mock_stop
+        manager.register_watch = mock_register
+
+        manager.renew_expiring_channels(threshold_seconds=3600)
+
+        # 파일에 새 채널이 저장되었는지 확인
+        if self.watch_state_file.exists():
+            with open(self.watch_state_file) as f:
+                saved = json.load(f)
+            channel_ids = [c["channel_id"] for c in saved.get("channels", [])]
+            self.assertIn("ch-saved", channel_ids, "갱신된 채널이 파일에 저장되어야 함")
+            self.assertNotIn("ch-save-test", channel_ids, "기존 채널은 파일에서 제거되어야 함")
+
+    def test_sync_state_tracks_both_repos(self):
+        """sync_state.json에 grace-ai와 palmoni 양쪽 추적 키 존재."""
+        import sync_logger as sl_module
+        sl_module.TMP_DIR = Path(self.tmp_dir)
+        sl_module.STATE_FILE = Path(self.tmp_dir) / "sync_state.json"
+        sl_module.LOG_FILE = Path(self.tmp_dir) / "sync_log.jsonl"
+        sl_module._sync_logger_instance = None
+
+        from sync_logger import SyncLogger
+        sl = SyncLogger()
+
+        # grace-ai 상태 추가
+        sl.update_file_state(
+            "sun2141/grace-ai", "execution/test.py", "sha001", "drive_id_001"
+        )
+        # palmoni 상태 추가
+        sl.update_file_state(
+            "sun2141/palmoni", "src/index.ts", "sha002", "drive_id_002"
+        )
+        # Drive→GitHub 상태도 추가
+        sl.update_drive_file_state(
+            "sun2141/palmoni", "src/app.ts", "drive_id_003",
+            "2026-05-05T00:00:00Z", "sha003"
+        )
+
+        # grace-ai 확인
+        grace_summary = sl.get_repo_summary("sun2141/grace-ai")
+        self.assertEqual(grace_summary["total_files"], 1)
+
+        # palmoni 확인
+        palmoni_summary = sl.get_repo_summary("sun2141/palmoni")
+        self.assertEqual(palmoni_summary["total_files"], 1)
+        self.assertIn("src/index.ts", palmoni_summary["files"])
+
+        # palmoni Drive→GitHub 확인
+        palmoni_drive = sl.get_drive_repo_summary("sun2141/palmoni")
+        self.assertEqual(palmoni_drive["total_drive_files"], 1)
+        self.assertIn("src/app.ts", palmoni_drive["files"])
+
+        # 전체 통계
+        stats = sl.get_stats()
+        self.assertIn("sun2141/grace-ai", stats["tracked_repos"])
+        self.assertIn("sun2141/palmoni", stats["tracked_repos"])
+
+        sl_module._sync_logger_instance = None
+
+    def test_sync_state_metadata_excluded_from_count(self):
+        """sync_state.json의 _metadata 키는 파일 카운트에 포함되지 않음."""
+        import sync_logger as sl_module
+        sl_module.TMP_DIR = Path(self.tmp_dir)
+        sl_module.STATE_FILE = Path(self.tmp_dir) / "sync_state.json"
+        sl_module.LOG_FILE = Path(self.tmp_dir) / "sync_log.jsonl"
+        sl_module._sync_logger_instance = None
+
+        from sync_logger import SyncLogger, STATE_FILE as sf
+        sl = SyncLogger()
+
+        # _metadata 포함된 초기 상태 직접 작성 (sync_state.json과 동일한 구조)
+        sl._state = {
+            "sun2141/palmoni": {
+                "_metadata": {
+                    "initialized_at": "2026-05-05T00:00:00Z",
+                    "status": "active",
+                }
+            },
+            "__drive__sun2141/palmoni": {
+                "_metadata": {
+                    "initialized_at": "2026-05-05T00:00:00Z",
+                    "status": "active",
+                }
+            },
+        }
+
+        summary = sl.get_repo_summary("sun2141/palmoni")
+        self.assertEqual(summary["total_files"], 0, "_metadata는 파일 카운트 제외")
+        self.assertNotIn("_metadata", summary["files"])
+        self.assertTrue(summary["initialized"], "초기화됨 플래그 True")
+
+        drive_summary = sl.get_drive_repo_summary("sun2141/palmoni")
+        self.assertEqual(drive_summary["total_drive_files"], 0, "_metadata는 Drive 파일 카운트 제외")
+        self.assertNotIn("_metadata", drive_summary["files"])
+
+        sl_module._sync_logger_instance = None
+
+
 def run_tests(verbose: bool = False):
     """테스트 실행."""
     loader = unittest.TestLoader()
@@ -722,6 +1083,7 @@ def run_tests(verbose: bool = False):
         TestGitHubSignatureVerification,
         TestDriveAuthScopes,
         TestSyncEnd2End,
+        TestDriveWatchTTLRenewal,
     ]
 
     for cls in test_classes:

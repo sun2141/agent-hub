@@ -138,19 +138,25 @@ class SyncLogger:
         """Drive→GitHub 동기화 현황 요약."""
         drive_key = f"__drive__{repo}"
         repo_state = self._state.get(drive_key, {})
+        # _metadata 키는 파일 추적 대상이 아니므로 제외
+        files = [k for k in repo_state.keys() if not k.startswith("_")]
         return {
             "repo": repo,
-            "total_drive_files": len(repo_state),
-            "files": list(repo_state.keys()),
+            "total_drive_files": len(files),
+            "files": files,
+            "initialized": "_metadata" in repo_state,
         }
 
     def get_repo_summary(self, repo: str) -> dict:
         """저장소 동기화 현황 요약."""
         repo_state = self._state.get(repo, {})
+        # _metadata 키는 파일 추적 대상이 아니므로 제외
+        files = [k for k in repo_state.keys() if not k.startswith("_")]
         return {
             "repo": repo,
-            "total_files": len(repo_state),
-            "files": list(repo_state.keys()),
+            "total_files": len(files),
+            "files": files,
+            "initialized": "_metadata" in repo_state,
         }
 
     # ─── 이력 로깅 ───────────────────────────────────────────────
@@ -225,7 +231,8 @@ class SyncLogger:
             "skipped": skipped,
             "tracked_repos": list(self._state.keys()),
             "total_tracked_files": sum(
-                len(v) for v in self._state.values()
+                len([k for k in v.keys() if not k.startswith("_")])
+                for v in self._state.values()
             ),
         }
 

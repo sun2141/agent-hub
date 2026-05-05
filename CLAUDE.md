@@ -95,6 +95,118 @@ python execution/automation_manager.py suggest   # 최적화 제안
 
 ---
 
+## Checkpoint System (작업 중단/재개 프로토콜)
+
+### 세션 시작 시 체크포인트 확인 절차
+
+새 세션이 시작되면 **반드시** 다음을 수행합니다:
+
+```bash
+python execution/restore_checkpoint.py
+```
+
+- 출력에 "중단된 작업 감지됨"이 표시되면 사용자에게 재개 여부를 묻습니다.
+- "체크포인트 없음"이면 정상적으로 작업을 시작합니다.
+
+**재개 시 절차**:
+1. `restore_checkpoint.py` 출력의 "남은 작업" 목록을 TodoWrite로 복원
+2. "저장된 컨텍스트"에 있는 정보를 참고하여 작업 계속
+3. 완료 후 `python execution/restore_checkpoint.py --clear` 실행
+
+### 자동 체크포인트 (토큰 리미트 감지 시 자동 저장)
+
+Claude Code의 `gsd-context-monitor.js` hook이 컨텍스트 사용량을 감시합니다:
+
+| 임계치 | 잔여 % | 동작 |
+|-------|--------|------|
+| WARNING | ≤ 35% | Claude에게 경고 메시지 주입 (마무리 준비) |
+| **CRITICAL** | **≤ 25%** | **경고 메시지 + `auto_checkpoint.py` 자동 실행** |
+
+**CRITICAL 도달 시 자동 흐름**:
+1. `~/.claude/hooks/gsd-context-monitor.js`가 임계치 감지
+2. `execution/auto_checkpoint.py`를 백그라운드로 실행
+3. 현재 세션의 TodoWrite 상태를 `.tmp/interrupted_task.json`에 저장
+4. 세션당 1회만 자동 저장 (`/tmp/claude-ctx-checkpoint-done-{session_id}` 락)
+
+**자동 저장 우선순위 규칙**:
+- 이미 수동 체크포인트(auto_saved 없음)가 있으면 덮어쓰지 않음
+- `auto_saved: true` 플래그로 수동/자동 구분 가능
+
+```bash
+# 자동 저장 강제 트리거 (테스트/수동 실행)
+python3 execution/auto_checkpoint.py \
+    --session-id "<세션ID>" \
+    --cwd "/Users/sun/agent-hub" \
+    --context-pct 20
+```
+
+### 작업 중 주기적 체크포인트 저장
+
+장시간 작업(3단계 이상) 시 각 중요 단계 완료 후 체크포인트를 저장합니다:
+
+```bash
+python execution/save_checkpoint.py \
+  --summary "전체 작업 요약" \
+  --completed "완료된 todo 1" "완료된 todo 2" \
+  --remaining "남은 todo 1" "남은 todo 2" \
+  --last-step "마지막으로 완료한 단계 설명"
+```
+
+또는 Python에서 직접:
+```python
+from execution.save_checkpoint import save_checkpoint
+save_checkpoint(
+    summary="작업 요약",
+    completed_todos=["완료 1", "완료 2"],
+    remaining_todos=["남은 1", "남은 2"],
+    last_completed_step="마지막 단계",
+    context={"key": "추가 정보"}
+)
+```
+
+### 체크포인트 파일 포맷 (.tmp/interrupted_task.json)
+
+```json
+{
+  "version": "1.0",
+  "saved_at": "2024-01-01T12:00:00+00:00",
+  "task_id": "task_1234567890",
+  "summary": "전체 작업에 대한 간략한 설명",
+  "last_completed_step": "마지막으로 완료한 단계",
+  "completed_todos": ["완료된 항목 1", "완료된 항목 2"],
+  "remaining_todos": ["남은 항목 1", "남은 항목 2"],
+  "context": {
+    "추가 컨텍스트 키": "값"
+  },
+  "status": "interrupted"
+}
+```
+
+### 체크포인트 파일 포맷 - 자동 저장 필드
+
+자동 저장 시 추가 필드:
+```json
+{
+  "auto_saved": true,
+  "context": {
+    "session_id": "세션 UUID",
+    "cwd": "작업 디렉토리 경로",
+    "context_remaining_pct": 20.0,
+    "trigger": "context_critical"
+  }
+}
+```
+
+### 도구 목록
+
+| 스크립트 | 역할 |
+|---------|------|
+| `execution/save_checkpoint.py` | 현재 작업 상태를 체크포인트로 수동 저장 |
+| `execution/restore_checkpoint.py` | 체크포인트 읽기 및 재개 안내 출력 |
+| `execution/auto_checkpoint.py` | 컨텍스트 CRITICAL 시 hook에서 자동 호출 |
+
+---
+
 ## Fallback System (Claude Code → Gemini)
 
 Claude Code 사용량 소진 징후 감지 시:
