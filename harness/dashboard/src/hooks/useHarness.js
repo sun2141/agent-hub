@@ -231,6 +231,17 @@ export function useHarness() {
     }
   }, [])
 
+  // 작업 결과 파일 목록 fetch
+  const fetchTaskFiles = useCallback(async (taskId) => {
+    try {
+      const data = await apiFetch(`/tasks/${taskId}/files`)
+      return data
+    } catch (e) {
+      console.error('fetchTaskFiles:', e)
+      return { ok: false, files: [], error: e.message }
+    }
+  }, [])
+
   const fetchGDriveFolder = useCallback(async (url) => {
     return apiFetch('/gdrive-folder', {
       method: 'POST',
@@ -261,7 +272,7 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, addProject, createProject,
+    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles, addProject, createProject,
     fetchGDriveFolder, fetchDropboxFolder, downloadGDriveFile, downloadDropboxFile,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }

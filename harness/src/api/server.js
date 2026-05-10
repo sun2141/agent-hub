@@ -579,6 +579,142 @@ export function createApiServer(agentRunner) {
     }
   });
 
+  // ── 작업 결과 파일 목록 조회 ─────────────────────────────
+  // git diff로 수정된 파일 목록을 반환 (commit_sha 기준)
+  app.get('/api/tasks/:id/files', async (req, res) => {
+    const { id } = req.params;
+    if (!/^task_[0-9]+_[a-z0-9]+$/.test(id)) {
+      return res.status(400).json({ error: '잘못된 task ID 형식' });
+    }
+    try {
+      const task = await taskQueries.get(id);
+      if (!task) return res.status(404).json({ error: '작업 없음' });
+
+      const project = await projectQueries.get(task.project_id);
+      if (!project) return res.status(404).json({ error: '프로젝트 없음' });
+
+      const projectPath = project.path;
+      if (!fs.existsSync(projectPath)) {
+        return res.status(404).json({ error: '프로젝트 경로가 존재하지 않습니다', path: projectPath });
+      }
+
+      let files = [];
+
+      // commit_sha가 있으면 해당 커밋에서 변경된 파일 목록
+      if (task.commit_sha) {
+        try {
+          const diffOut = execSync(
+            `git show --name-status --format="" ${task.commit_sha}`,
+            { cwd: projectPath, encoding: 'utf8', timeout: 10000 }
+          ).trim();
+          if (diffOut) {
+            files = diffOut.split('\n').filter(Boolean).map(line => {
+              const parts = line.split('\t');
+              const status = parts[0] || 'M';
+              const filePath = parts[parts.length - 1] || '';
+              const absPath = path.join(projectPath, filePath);
+              let size = 0;
+              try { size = fs.statSync(absPath).size; } catch {}
+              return {
+                path: filePath,
+                name: path.basename(filePath),
+                status, // A=추가, M=수정, D=삭제
+                size,
+                ext: path.extname(filePath).toLowerCase(),
+              };
+            }).filter(f => f.path && f.status !== 'D');
+          }
+        } catch (gitErr) {
+          console.warn('[task-files] git show 실패:', gitErr.message);
+        }
+      }
+
+      // commit_sha가 없거나 git 실패 시: git status로 현재 변경 파일 목록
+      if (files.length === 0) {
+        try {
+          const statusOut = execSync(
+            'git diff --name-status HEAD',
+            { cwd: projectPath, encoding: 'utf8', timeout: 10000 }
+          ).trim();
+          if (statusOut) {
+            files = statusOut.split('\n').filter(Boolean).map(line => {
+              const parts = line.split('\t');
+              const status = parts[0] || 'M';
+              const filePath = parts[parts.length - 1] || '';
+              const absPath = path.join(projectPath, filePath);
+              let size = 0;
+              try { size = fs.statSync(absPath).size; } catch {}
+              return {
+                path: filePath,
+                name: path.basename(filePath),
+                status,
+                size,
+                ext: path.extname(filePath).toLowerCase(),
+              };
+            }).filter(f => f.path && f.status !== 'D');
+          }
+        } catch {}
+      }
+
+      res.json({ ok: true, taskId: id, commit_sha: task.commit_sha, files, total: files.length });
+    } catch (err) {
+      console.error('[task-files]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── 작업 결과 파일 다운로드 ──────────────────────────────
+  app.get('/api/tasks/:id/files/download', async (req, res) => {
+    const { id } = req.params;
+    const { filePath: reqFilePath } = req.query;
+    if (!/^task_[0-9]+_[a-z0-9]+$/.test(id)) {
+      return res.status(400).json({ error: '잘못된 task ID 형식' });
+    }
+    if (!reqFilePath || typeof reqFilePath !== 'string') {
+      return res.status(400).json({ error: 'filePath 쿼리 파라미터 필요' });
+    }
+    // 경로 순회 공격 방지
+    const normalized = path.normalize(reqFilePath).replace(/^(\.\.[/\\])+/, '');
+    if (normalized !== reqFilePath.replace(/\\/g, '/')) {
+      return res.status(400).json({ error: '잘못된 파일 경로' });
+    }
+    try {
+      const task = await taskQueries.get(id);
+      if (!task) return res.status(404).json({ error: '작업 없음' });
+
+      const project = await projectQueries.get(task.project_id);
+      if (!project) return res.status(404).json({ error: '프로젝트 없음' });
+
+      const absPath = path.join(project.path, normalized);
+      // 프로젝트 경로 범위를 벗어나는지 확인
+      if (!absPath.startsWith(path.resolve(project.path) + path.sep) &&
+          absPath !== path.resolve(project.path)) {
+        return res.status(403).json({ error: '접근 금지: 프로젝트 경로 외부' });
+      }
+
+      if (!fs.existsSync(absPath)) {
+        return res.status(404).json({ error: '파일 없음' });
+      }
+
+      const stat = fs.statSync(absPath);
+      if (stat.isDirectory()) {
+        return res.status(400).json({ error: '디렉토리는 다운로드 불가' });
+      }
+      if (stat.size > 10 * 1024 * 1024) {
+        return res.status(400).json({ error: '파일 크기 10MB 초과' });
+      }
+
+      const fileName = path.basename(normalized);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', stat.size);
+      fs.createReadStream(absPath).pipe(res);
+    } catch (err) {
+      console.error('[task-files-download]', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── 폴더 파일 분석 ───────────────────────────────────────
   // 클라이언트에서 여러 파일(폴더 내용)을 JSON 배열로 전송 받아 파일 트리 구조를 반환
   app.post('/api/folder-parse', async (req, res) => {

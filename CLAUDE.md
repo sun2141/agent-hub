@@ -105,13 +105,18 @@ python execution/automation_manager.py suggest   # 최적화 제안
 python execution/restore_checkpoint.py
 ```
 
-- 출력에 "중단된 작업 감지됨"이 표시되면 사용자에게 재개 여부를 묻습니다.
-- "체크포인트 없음"이면 정상적으로 작업을 시작합니다.
+- exit code 2 ("중단된 작업 감지됨" 출력)이면 사용자에게 재개 여부를 묻습니다.
+- exit code 0 ("체크포인트 없음")이면 정상적으로 작업을 시작합니다.
+- 24시간 이상 지난 체크포인트는 ⚠️ 경고가 표시됩니다.
 
 **재개 시 절차**:
-1. `restore_checkpoint.py` 출력의 "남은 작업" 목록을 TodoWrite로 복원
-2. "저장된 컨텍스트"에 있는 정보를 참고하여 작업 계속
-3. 완료 후 `python execution/restore_checkpoint.py --clear` 실행
+1. `--resume` 옵션으로 TodoWrite용 JSON을 출력합니다:
+   ```bash
+   python execution/restore_checkpoint.py --resume
+   ```
+2. 출력된 JSON의 `todos` 배열을 **그대로 TodoWrite 도구에 전달**하여 작업 목록을 복원합니다.
+3. `summary`, `last_completed_step`, `context` 필드를 참고하여 작업 컨텍스트를 파악합니다.
+4. 완료 후 `python execution/restore_checkpoint.py --clear` 실행
 
 ### 자동 체크포인트 (토큰 리미트 감지 시 자동 저장)
 
@@ -203,6 +208,7 @@ save_checkpoint(
 |---------|------|
 | `execution/save_checkpoint.py` | 현재 작업 상태를 체크포인트로 수동 저장 |
 | `execution/restore_checkpoint.py` | 체크포인트 읽기 및 재개 안내 출력 |
+| `execution/restore_checkpoint.py --resume` | TodoWrite 자동 복원용 JSON 출력 (completed+remaining todos) |
 | `execution/auto_checkpoint.py` | 컨텍스트 CRITICAL 시 hook에서 자동 호출 |
 
 ---
@@ -262,6 +268,7 @@ ssh $HETZNER_USER@$HETZNER_IP
 
 | ID | 프로젝트 | 로컬 경로 | GitHub | 배포 |
 |----|---------|----------|--------|------|
+| pray-crawling | Pray-crawling | `/Users/sun/pray-crawling` | https://github.com/sun2141/pray-crawling | 개발중 |
 | palmoni | Palmoni 기도앱 | `/Users/sun/palmoni/` | sun2141/palmoni | palmoni.vercel.app |
 | facepick | FacePick | `/Users/sun/facepick/` | - | 개발중 |
 | reddit-insight | Reddit Insight | `/Users/sun/reddit-insight/` | - | 개발중 |

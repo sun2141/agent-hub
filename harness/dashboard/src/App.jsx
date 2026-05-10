@@ -806,12 +806,14 @@ function ProjectCard({ project, tasks, running, onClick }) {
 }
 
 // ── 프로젝트 상세 ─────────────────────────────────────────
-function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onDelete, onBack, fetchTaskLogs }) {
+function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onDelete, onBack, fetchTaskLogs, fetchTaskFiles }) {
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [tab, setTab] = useState('tasks')
   const [deleteConfirm, setDeleteConfirm] = useState(null)
   const [dbLogs, setDbLogs] = useState([])
+  const [taskFiles, setTaskFiles] = useState(null) // { ok, files, commit_sha, total }
+  const [taskFilesLoading, setTaskFilesLoading] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState([]) // { name, text, _sourceType: 'file'|'folder'|'link', _url?, _hostname? }
   const [attachErr, setAttachErr] = useState('')
   const [showFolderPanel, setShowFolderPanel] = useState(false)
@@ -819,6 +821,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const autoScrollRef = useRef(true)
   const fileInputRef = useRef(null)
   const textareaRef = useRef(null)
+  const resultRef = useRef(null)
 
   const PROMPT_MAX = 100000
 
@@ -856,6 +859,29 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
     }, 5000)
     return () => clearInterval(timer)
   }, [tab, targetTaskId, isRunning])
+
+  // 결과물 탭: 최신 완료 작업의 파일 목록 fetch
+  const doneTask = projectTasks.find(t => t.status === 'done')
+  useEffect(() => {
+    if (tab !== 'results' || !doneTask) return
+    setTaskFilesLoading(true)
+    fetchTaskFiles(doneTask.id).then(data => {
+      setTaskFiles(data)
+      setTaskFilesLoading(false)
+    }).catch(() => setTaskFilesLoading(false))
+  }, [tab, doneTask?.id])
+
+  // 작업 완료 시 결과 탭으로 자동 전환
+  const projectTaskIdSet = new Set(projectTasks.map(t => t.id))
+  const completeEventCount = wsEvents.filter(e => e.type === 'task:complete' && projectTaskIdSet.has(e.taskId)).length
+  useEffect(() => {
+    if (completeEventCount === 0) return
+    setTab('results')
+    setTimeout(() => {
+      resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 300)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completeEventCount])
 
   const projectTaskIds = new Set(projectTasks.map(t => t.id))
   const wsLogs = wsEvents.filter(e =>
@@ -1061,17 +1087,26 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
         )}
       </div>
 
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', padding: '0 8px', flexShrink: 0 }}>
-        {[['tasks', '작업 이력'], ['logs', '실시간 로그']].map(([key, label]) => (
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', padding: '0 8px', flexShrink: 0, overflowX: 'auto' }}>
+        {[['tasks', '작업 이력'], ['logs', '로그'], ['results', '결과물']].map(([key, label]) => (
           <button key={key} onClick={() => { vibrate(8); setTab(key) }} style={{
-            background: 'none', border: 'none', padding: '12px 16px', fontSize: 14,
+            background: 'none', border: 'none', padding: '12px 14px', fontSize: 13,
             color: tab === key ? 'var(--text)' : 'var(--text3)',
             borderBottom: tab === key ? '2px solid var(--accent)' : '2px solid transparent',
             fontWeight: tab === key ? 600 : 400,
-            minHeight: 48, WebkitTapHighlightColor: 'transparent',
-          }}>{label}</button>
+            minHeight: 48, WebkitTapHighlightColor: 'transparent', whiteSpace: 'nowrap',
+            position: 'relative',
+          }}>
+            {label}
+            {key === 'results' && doneTask && tab !== 'results' && (
+              <span style={{
+                position: 'absolute', top: 8, right: 4, width: 6, height: 6, borderRadius: '50%',
+                background: 'var(--green)', boxShadow: '0 0 4px var(--green)',
+              }} />
+            )}
+          </button>
         ))}
-        {logs.length > 0 && tab !== 'logs' && (
+        {logs.length > 0 && tab === 'tasks' && (
           <span style={{
             alignSelf: 'center', marginLeft: 4, fontSize: 10, padding: '1px 6px', borderRadius: 10,
             background: 'rgba(107,94,248,0.2)', color: 'var(--accent2)',
@@ -1121,7 +1156,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                     {t.round}/{t.max_rounds} 라운드
                   </div>
                 )}
-                <TaskReport task={t} />
+                <TaskReport task={t} onViewResults={t.status === 'done' ? () => { vibrate(8); setTab('results') } : undefined} />
               </div>
             )
           })}
@@ -1151,6 +1186,34 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
               <div key={i} style={{ color, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{text}</div>
             ) : null
           })}
+        </div>
+
+        {/* ── 결과물 탭 ── */}
+        <div style={{
+          position: 'absolute', inset: 0, overflowY: 'auto',
+          padding: '12px 16px',
+          visibility: tab === 'results' ? 'visible' : 'hidden',
+        }}>
+          <div ref={resultRef}>
+            {!doneTask ? (
+              <div style={{ color: 'var(--text3)', marginTop: 40, textAlign: 'center', fontSize: 13 }}>
+                {isRunning ? '작업 실행 중... 완료 후 결과물이 여기에 표시됩니다' : '완료된 작업이 없습니다'}
+              </div>
+            ) : (
+              <TaskResultPanel
+                task={doneTask}
+                files={taskFiles}
+                loading={taskFilesLoading}
+                onRefresh={() => {
+                  setTaskFilesLoading(true)
+                  fetchTaskFiles(doneTask.id).then(data => {
+                    setTaskFiles(data)
+                    setTaskFilesLoading(false)
+                  })
+                }}
+              />
+            )}
+          </div>
         </div>
       </div>
 
@@ -1657,8 +1720,221 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
   )
 }
 
-// ── 리포트 섹션 ───────────────────────────────────────────
-function TaskReport({ task }) {
+// ── 결과물 패널 (결과물 탭 전용) ──────────────────────────
+const API_KEY_FOR_DL = import.meta.env.VITE_API_KEY || ''
+const _API_BASE_FOR_DL = import.meta.env.VITE_API_BASE_URL || ''
+const API_BASE_FOR_DL = _API_BASE_FOR_DL ? `${_API_BASE_FOR_DL}/api` : '/api'
+
+const FILE_STATUS_LABEL = { A: '추가', M: '수정', D: '삭제', R: '이름변경' }
+const FILE_STATUS_COLOR = { A: 'var(--green)', M: 'var(--blue)', D: 'var(--red)', R: 'var(--orange)' }
+
+
+function TaskResultPanel({ task, files, loading, onRefresh }) {
+  let evalResult = null
+  if (task.eval_result) {
+    try { evalResult = JSON.parse(task.eval_result) } catch { evalResult = { raw: task.eval_result } }
+  }
+  const passed = evalResult?.passed ?? evalResult?.success ?? evalResult?.result === 'pass'
+
+  function handleDownload(filePath, fileName) {
+    const url = `${API_BASE_FOR_DL}/tasks/${task.id}/files/download?filePath=${encodeURIComponent(filePath)}`
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    // API 키를 헤더로 보내기 위해 fetch로 blob 다운로드
+    fetch(url, { headers: { 'x-api-key': API_KEY_FOR_DL } })
+      .then(r => {
+        if (!r.ok) throw new Error('다운로드 실패')
+        return r.blob()
+      })
+      .then(blob => {
+        const objectUrl = URL.createObjectURL(blob)
+        a.href = objectUrl
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+      })
+      .catch(err => alert(`다운로드 실패: ${err.message}`))
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* 상태 배너 */}
+      <div style={{
+        padding: '14px 16px',
+        background: task.status === 'done' ? 'rgba(61,214,140,0.08)' : 'rgba(248,113,113,0.08)',
+        border: '1px solid ' + (task.status === 'done' ? 'rgba(61,214,140,0.3)' : 'rgba(248,113,113,0.3)'),
+        borderRadius: 12,
+        display: 'flex', flexDirection: 'column', gap: 8,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: task.status === 'done' ? 'var(--green)' : 'var(--red)' }}>
+            {task.status === 'done' ? '✅ 작업 완료' : '❌ 작업 실패'}
+          </span>
+          {task.round > 0 && (
+            <span style={{
+              fontSize: 12, padding: '2px 8px', borderRadius: 20,
+              background: 'rgba(107,94,248,0.12)', color: 'var(--accent2)',
+              border: '1px solid rgba(107,94,248,0.25)',
+            }}>{task.round}/{task.max_rounds} 라운드</span>
+          )}
+          {evalResult && (
+            <span style={{
+              fontSize: 12, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
+              background: passed ? 'rgba(61,214,140,0.12)' : 'rgba(248,113,113,0.12)',
+              color: passed ? 'var(--green)' : 'var(--red)',
+              border: '1px solid ' + (passed ? 'rgba(61,214,140,0.3)' : 'rgba(248,113,113,0.3)'),
+            }}>Eval: {passed ? '합격' : '불합격'}</span>
+          )}
+          {evalResult?.score !== undefined && (
+            <span style={{
+              fontSize: 13, fontWeight: 700,
+              color: evalResult.score >= 70 ? 'var(--green)' : evalResult.score >= 40 ? 'var(--orange)' : 'var(--red)',
+            }}>{evalResult.score}/100점</span>
+          )}
+        </div>
+        {evalResult?.summary && (
+          <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.6 }}>
+            {evalResult.summary}
+          </div>
+        )}
+        {task.error && (
+          <div style={{ fontSize: 12, color: 'var(--red)', wordBreak: 'break-word' }}>
+            오류: {task.error}
+          </div>
+        )}
+        {task.commit_sha && (
+          <div style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
+            커밋: {task.commit_sha.slice(0, 12)}
+          </div>
+        )}
+      </div>
+
+      {/* 수정된 파일 목록 */}
+      <div style={{
+        background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 14px', borderBottom: '1px solid var(--border)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>수정된 파일</span>
+            {files?.files && (
+              <span style={{
+                fontSize: 11, padding: '1px 7px', borderRadius: 10,
+                background: 'rgba(107,94,248,0.12)', color: 'var(--accent2)',
+                border: '1px solid rgba(107,94,248,0.25)',
+              }}>{files.files.length}개</span>
+            )}
+          </div>
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            style={{
+              background: 'none', border: '1px solid var(--border)', borderRadius: 8,
+              color: 'var(--text3)', fontSize: 12, padding: '5px 10px', minHeight: 30,
+              cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.5 : 1,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >{loading ? '로딩...' : '새로고침'}</button>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text3)', fontSize: 13 }}>
+            파일 목록 불러오는 중...
+          </div>
+        ) : files?.error ? (
+          <div style={{ padding: '14px', color: 'var(--red)', fontSize: 12 }}>
+            {files.error}
+          </div>
+        ) : !files?.files?.length ? (
+          <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text3)', fontSize: 12 }}>
+            {files ? '수정된 파일이 없거나 git 정보를 가져올 수 없습니다' : '결과물 탭을 열면 파일 목록을 불러옵니다'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {files.files.map((f, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 14px',
+                borderBottom: i < files.files.length - 1 ? '1px solid var(--border)' : 'none',
+              }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, minWidth: 28, textAlign: 'center',
+                  padding: '2px 5px', borderRadius: 4,
+                  color: FILE_STATUS_COLOR[f.status?.[0]] || 'var(--text3)',
+                  background: (FILE_STATUS_COLOR[f.status?.[0]] || 'var(--text3)') + '18',
+                  border: '1px solid ' + (FILE_STATUS_COLOR[f.status?.[0]] || 'var(--border)') + '40',
+                  flexShrink: 0,
+                }}>{FILE_STATUS_LABEL[f.status?.[0]] || f.status}</span>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 12, fontWeight: 600, color: 'var(--text)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    fontFamily: 'var(--mono)',
+                  }} title={f.path}>{f.name}</div>
+                  {f.path !== f.name && (
+                    <div style={{
+                      fontSize: 10, color: 'var(--text3)',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }} title={f.path}>{f.path}</div>
+                  )}
+                </div>
+
+                {f.size > 0 && (
+                  <span style={{ fontSize: 10, color: 'var(--text3)', flexShrink: 0 }}>
+                    {f.size > 1024 * 1024 ? `${(f.size / 1024 / 1024).toFixed(1)}MB` : f.size > 1024 ? `${(f.size / 1024).toFixed(0)}KB` : `${f.size}B`}
+                  </span>
+                )}
+
+                <button
+                  onClick={() => { vibrate(10); handleDownload(f.path, f.name) }}
+                  title={`${f.name} 다운로드`}
+                  style={{
+                    background: 'rgba(107,94,248,0.12)', border: '1px solid rgba(107,94,248,0.3)',
+                    borderRadius: 8, padding: '6px 10px', color: 'var(--accent2)',
+                    fontSize: 12, fontWeight: 600, flexShrink: 0,
+                    cursor: 'pointer', minHeight: 32, display: 'flex', alignItems: 'center', gap: 4,
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                >
+                  ↓ 다운
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 플랜 요약 */}
+      {task.plan && task.plan.trim() && (
+        <details style={{ background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+          <summary style={{
+            padding: '12px 14px', fontSize: 13, fontWeight: 600,
+            cursor: 'pointer', userSelect: 'none', color: 'var(--text)',
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <span>플랜 상세보기</span>
+          </summary>
+          <div style={{
+            padding: '12px 14px', paddingTop: 0,
+            fontSize: 12, color: 'var(--text2)', lineHeight: 1.7,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            fontFamily: 'var(--mono)', maxHeight: 300, overflowY: 'auto',
+          }}>
+            {task.plan.slice(0, 2000)}{task.plan.length > 2000 ? '\n…' : ''}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// ── 리포트 섹션 (작업 이력 카드 내 간략 표시) ────────────
+function TaskReport({ task, onViewResults }) {
   if (!['done', 'failed'].includes(task.status)) return null
 
   let evalResult = null
@@ -1667,72 +1943,51 @@ function TaskReport({ task }) {
   }
 
   const passed = evalResult?.passed ?? evalResult?.success ?? evalResult?.result === 'pass'
-  const hasPlan = task.plan && task.plan.trim()
 
   return (
     <div style={{
-      marginTop: 8, padding: '12px', background: 'var(--bg)',
+      marginTop: 8, padding: '10px 12px', background: 'var(--bg)',
       border: '1px solid var(--border)', borderRadius: 10,
     }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)', letterSpacing: '0.08em', marginBottom: 8, textTransform: 'uppercase' }}>
-        리포트
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{
-          fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 600,
+          fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
           background: task.status === 'done' ? 'rgba(61,214,140,0.15)' : 'rgba(248,113,113,0.15)',
           color: task.status === 'done' ? 'var(--green)' : 'var(--red)',
           border: '1px solid ' + (task.status === 'done' ? 'rgba(61,214,140,0.4)' : 'rgba(248,113,113,0.4)'),
         }}>{task.status === 'done' ? '완료' : '실패'}</span>
 
-        {task.round > 0 && (
-          <span style={{
-            fontSize: 12, padding: '3px 9px', borderRadius: 20,
-            background: 'rgba(107,94,248,0.12)', color: 'var(--accent2)',
-            border: '1px solid rgba(107,94,248,0.25)',
-          }}>{task.round}/{task.max_rounds} 라운드</span>
-        )}
-
         {evalResult && (
           <span style={{
-            fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 600,
+            fontSize: 11, padding: '2px 8px', borderRadius: 20, fontWeight: 600,
             background: passed ? 'rgba(61,214,140,0.12)' : 'rgba(248,113,113,0.12)',
             color: passed ? 'var(--green)' : 'var(--red)',
             border: '1px solid ' + (passed ? 'rgba(61,214,140,0.3)' : 'rgba(248,113,113,0.3)'),
-          }}>Eval: {passed ? '합격' : '불합격'}</span>
+          }}>Eval: {passed ? '합격' : '불합격'}{evalResult?.score !== undefined ? ` (${evalResult.score}/100)` : ''}</span>
         )}
 
-        {evalResult?.score !== undefined && (
-          <span style={{
-            fontSize: 12, padding: '3px 9px', borderRadius: 20, fontWeight: 700,
-            background: evalResult.score >= 70 ? 'rgba(61,214,140,0.12)' : evalResult.score >= 40 ? 'rgba(245,158,11,0.12)' : 'rgba(248,113,113,0.12)',
-            color: evalResult.score >= 70 ? 'var(--green)' : evalResult.score >= 40 ? 'var(--orange)' : 'var(--red)',
-            border: '1px solid ' + (evalResult.score >= 70 ? 'rgba(61,214,140,0.3)' : evalResult.score >= 40 ? 'rgba(245,158,11,0.3)' : 'rgba(248,113,113,0.3)'),
-          }}>{evalResult.score}/100</span>
+        {onViewResults && task.status === 'done' && (
+          <button
+            onClick={() => { vibrate(8); onViewResults() }}
+            style={{
+              marginLeft: 'auto', background: 'rgba(61,214,140,0.1)', border: '1px solid rgba(61,214,140,0.35)',
+              borderRadius: 8, padding: '4px 10px', color: 'var(--green)',
+              fontSize: 11, fontWeight: 600, cursor: 'pointer', minHeight: 26,
+              display: 'flex', alignItems: 'center', gap: 4,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >결과물 보기 →</button>
         )}
       </div>
 
       {evalResult?.summary && (
-        <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginBottom: 6 }}>
-          <span style={{ color: 'var(--text3)' }}>Eval 요약: </span>{evalResult.summary}
+        <div style={{ fontSize: 11, color: 'var(--text2)', lineHeight: 1.5, marginTop: 6 }}>
+          {evalResult.summary}
         </div>
       )}
 
-      {hasPlan && (
-        <details style={{ marginTop: 4 }}>
-          <summary style={{ fontSize: 12, color: 'var(--text3)', cursor: 'pointer', userSelect: 'none' }}>플랜 보기</summary>
-          <div style={{
-            marginTop: 6, fontSize: 11, color: 'var(--text2)', lineHeight: 1.6,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            fontFamily: 'var(--mono)', background: 'var(--bg3)',
-            padding: '8px', borderRadius: 7, maxHeight: 200, overflowY: 'auto',
-          }}>{task.plan.slice(0, 1000)}{task.plan.length > 1000 ? '\n…' : ''}</div>
-        </details>
-      )}
-
       {task.error && (
-        <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 6, wordBreak: 'break-word' }}>
+        <div style={{ fontSize: 11, color: 'var(--red)', marginTop: 6, wordBreak: 'break-word' }}>
           오류: {task.error}
         </div>
       )}
@@ -1742,7 +1997,7 @@ function TaskReport({ task }) {
 
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, addProject, createProject, refresh } = useHarness()
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, refresh } = useHarness()
   const [view, setView]         = useState('list')
   const [selected, setSelected] = useState(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
@@ -1784,6 +2039,7 @@ export default function App() {
           onDelete={async id => { await deleteTask(id); refresh() }}
           onBack={() => setView('list')}
           fetchTaskLogs={fetchTaskLogs}
+          fetchTaskFiles={fetchTaskFiles}
         />
       ) : view === 'history' ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1872,9 +2128,22 @@ export default function App() {
         button[data-card]:active {
           background: var(--bg3) !important;
         }
+        @media (max-width: 768px) {
+          .task-result-grid { flex-direction: column !important; }
+          .file-row { flex-wrap: wrap !important; gap: 6px !important; }
+          .file-row button { width: 100% !important; justify-content: center !important; }
+          .tab-bar { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+          .tab-bar button { flex-shrink: 0 !important; }
+          .details-panel { padding: 12px !important; }
+        }
         @media (max-width: 480px) {
           .project-list { gap: 12px !important; }
           textarea { font-size: 16px !important; }
+          .task-card { padding: 12px !important; border-radius: 12px !important; }
+          .task-card h3 { font-size: 13px !important; }
+          .phase-badge { font-size: 10px !important; padding: 2px 6px !important; }
+          .result-panel { padding: 10px !important; }
+          .file-name { font-size: 12px !important; }
         }
         @media (hover: none) {
           button:hover { opacity: 1; }

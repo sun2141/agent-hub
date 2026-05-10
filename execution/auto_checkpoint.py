@@ -17,6 +17,7 @@ Claude Code의 gsd-context-monitor.js hook에서 CRITICAL 임계치 도달 시 �
 """
 
 import json
+import os
 import sys
 import argparse
 import glob
@@ -26,9 +27,33 @@ from pathlib import Path
 
 
 TODOS_DIR = Path.home() / ".claude" / "todos"
-CHECKPOINT_PATH = Path("/Users/sun/agent-hub/.tmp/interrupted_task.json")
 LOCK_FILE = Path(tempfile.gettempdir()) / "auto_checkpoint.lock"
 LOCK_TTL_SECONDS = 120  # 2분 이상 된 락 파일은 무효
+
+# 기본 스크립트 위치 기준 상대경로 (하드코딩 제거)
+_DEFAULT_CHECKPOINT_PATH = Path(__file__).parent.parent / ".tmp" / "interrupted_task.json"
+
+
+def get_checkpoint_path(cwd: str = "") -> Path:
+    """
+    체크포인트 파일 경로를 결정합니다.
+
+    우선순위:
+      1. 환경변수 CHECKPOINT_PATH (절대경로)
+      2. cwd 인수가 주어진 경우 cwd/.tmp/interrupted_task.json
+      3. 스크립트 위치 기준 상대경로 (../  .tmp/interrupted_task.json)
+    """
+    env_path = os.environ.get("CHECKPOINT_PATH", "").strip()
+    if env_path:
+        return Path(env_path)
+
+    if cwd:
+        cwd_path = Path(cwd) / ".tmp" / "interrupted_task.json"
+        # cwd가 실제로 존재하는 디렉토리인 경우에만 사용
+        if Path(cwd).is_dir():
+            return cwd_path
+
+    return _DEFAULT_CHECKPOINT_PATH
 
 
 def find_session_todos(session_id: str) -> list[dict]:
@@ -81,20 +106,25 @@ def save_auto_checkpoint(
 
     이미 체크포인트가 있으면 덮어쓰지 않습니다 (수동 저장 우선).
     """
+    checkpoint_path = get_checkpoint_path(cwd)
+
     # 이미 존재하는 체크포인트가 있고 수동으로 저장된 것이면 보존
-    if CHECKPOINT_PATH.exists():
+    if checkpoint_path.exists():
         try:
-            existing = json.loads(CHECKPOINT_PATH.read_text())
+            existing = json.loads(checkpoint_path.read_text())
             # 수동 저장이면 건드리지 않음 (auto 플래그 없음)
             if not existing.get("auto_saved"):
-                print(f"[자동 저장 스킵] 기존 수동 체크포인트 보존: {CHECKPOINT_PATH}", file=sys.stderr)
+                print(f"[자동 저장 스킵] 기존 수동 체크포인트 보존: {checkpoint_path}", file=sys.stderr)
                 return True
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Todo 분류
-    completed_todos = [t["content"] for t in todos if t.get("status") == "completed"]
-    remaining_todos = [t["content"] for t in todos if t.get("status") in ("pending", "in_progress")]
+    # Todo 분류 (content + activeForm 모두 보존)
+    completed_items = [t for t in todos if t.get("status") == "completed"]
+    remaining_items = [t for t in todos if t.get("status") in ("pending", "in_progress")]
+
+    completed_todos = [t["content"] for t in completed_items]
+    remaining_todos = [t["content"] for t in remaining_items]
 
     # 남은 작업이 없으면 저장 불필요
     if not remaining_todos:
@@ -105,16 +135,27 @@ def save_auto_checkpoint(
     in_progress = [t["content"] for t in todos if t.get("status") == "in_progress"]
     last_step = in_progress[0] if in_progress else (completed_todos[-1] if completed_todos else "")
 
-    CHECKPOINT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # activeForm 보존 항목 생성 (없으면 content로 폴백)
+    def _entry(t: dict) -> dict:
+        return {"content": t["content"], "activeForm": t.get("activeForm") or t["content"]}
+
+    completed_entries = [_entry(t) for t in completed_items]
+    remaining_entries = [_entry(t) for t in remaining_items]
+
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
-        "version": "1.0",
+        "version": "1.1",
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "task_id": f"auto_{session_id[:8] if session_id else 'unknown'}_{int(datetime.now().timestamp())}",
         "summary": f"컨텍스트 {100 - context_pct:.0f}% 사용 — 자동 저장됨 (작업 디렉토리: {cwd})",
         "last_completed_step": last_step,
+        # 하위 호환: 문자열 목록
         "completed_todos": completed_todos,
         "remaining_todos": remaining_todos,
+        # activeForm 포함 전체 항목
+        "completed_todo_entries": completed_entries,
+        "remaining_todo_entries": remaining_entries,
         "context": {
             "session_id": session_id,
             "cwd": cwd,
@@ -125,10 +166,10 @@ def save_auto_checkpoint(
         "status": "interrupted",
     }
 
-    CHECKPOINT_PATH.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2))
+    checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2))
     print(
         f"[자동 체크포인트] 저장 완료 — 남은 작업 {len(remaining_todos)}개 | "
-        f"컨텍스트 잔여 {context_pct:.0f}%",
+        f"컨텍스트 잔여 {context_pct:.0f}% | 경로: {checkpoint_path}",
         file=sys.stderr,
     )
     return True
