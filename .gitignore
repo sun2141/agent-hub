@@ -30,3 +30,4 @@ harness-dashboard/harness/*.pid
 harness-dashboard/dashboard/.env.local
 harness-dashboard/dashboard/dist/
 harness-dashboard/harness.pid
+harness/dashboard/dist/
