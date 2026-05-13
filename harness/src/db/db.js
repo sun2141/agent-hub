@@ -83,11 +83,13 @@ export async function initDb() {
     }
   }
 
-  // projects 테이블 마이그레이션 (hidden, updated_at 컬럼)
+  // projects 테이블 마이그레이션 (hidden, updated_at, github, deploy 컬럼)
   const projectTableInfo = await dbAll("PRAGMA table_info(projects)");
   if (projectTableInfo.length > 0) {
     const hasHidden = projectTableInfo.some(col => col.name === 'hidden');
     const hasUpdatedAt = projectTableInfo.some(col => col.name === 'updated_at');
+    const hasGithub = projectTableInfo.some(col => col.name === 'github');
+    const hasDeploy = projectTableInfo.some(col => col.name === 'deploy');
     if (!hasHidden) {
       console.log('[DB] projects.hidden 컬럼 추가');
       await dbRun("ALTER TABLE projects ADD COLUMN hidden INTEGER DEFAULT 0");
@@ -95,6 +97,14 @@ export async function initDb() {
     if (!hasUpdatedAt) {
       console.log('[DB] projects.updated_at 컬럼 추가');
       await dbRun("ALTER TABLE projects ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
+    }
+    if (!hasGithub) {
+      console.log('[DB] projects.github 컬럼 추가');
+      await dbRun("ALTER TABLE projects ADD COLUMN github TEXT");
+    }
+    if (!hasDeploy) {
+      console.log('[DB] projects.deploy 컬럼 추가');
+      await dbRun("ALTER TABLE projects ADD COLUMN deploy TEXT");
     }
   }
 
@@ -105,6 +115,8 @@ export async function initDb() {
       path        TEXT NOT NULL,
       stack       TEXT,
       description TEXT,
+      github      TEXT,
+      deploy      TEXT,
       active      INTEGER DEFAULT 1,
       hidden      INTEGER DEFAULT 0,
       created_at  TEXT DEFAULT (datetime('now')),
@@ -197,10 +209,10 @@ export const projectQueries = {
     return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
   },
 
-  async insert({ id, name, path, stack, description }) {
+  async insert({ id, name, path, stack, description, github, deploy }) {
     await dbRun(
-      'INSERT INTO projects (id, name, path, stack, description) VALUES (?, ?, ?, ?, ?)',
-      [id, name, path, stack || null, description || null]
+      'INSERT INTO projects (id, name, path, stack, description, github, deploy) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, name, path, stack || null, description || null, github || null, deploy || null]
     );
     return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
   },
@@ -230,6 +242,21 @@ export const projectQueries = {
   },
 
   async remove(id) {
+    await dbRun('DELETE FROM projects WHERE id = ?', [id]);
+  },
+
+  async countTasks(id) {
+    const row = await dbGet('SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = ?', [id]);
+    return row ? row.cnt : 0;
+  },
+
+  // logs → tasks → project 순서로 삭제 (FK 제약 준수)
+  async removeWithTasks(id) {
+    const tasks = await dbAll('SELECT id FROM tasks WHERE project_id = ?', [id]);
+    for (const t of tasks) {
+      await dbRun('DELETE FROM logs WHERE task_id = ?', [t.id]);
+    }
+    await dbRun('DELETE FROM tasks WHERE project_id = ?', [id]);
     await dbRun('DELETE FROM projects WHERE id = ?', [id]);
   },
 };

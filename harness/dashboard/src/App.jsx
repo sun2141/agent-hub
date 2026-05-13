@@ -845,9 +845,10 @@ function EditProjectModal({ project, onSave, onClose }) {
 }
 
 // ── 프로젝트 카드 ─────────────────────────────────────────
-function ProjectCard({ project, tasks, running, onClick, onEdit, onHide, onDelete }) {
+function ProjectCard({ project, tasks, running, onClick, onEdit, onHide, onDelete, onForceDelete }) {
   const [showActions, setShowActions] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleteError, setDeleteError] = useState(null) // { message, hasTasks, taskCount }
 
   const projectTasks = tasks.filter(t => t.project_id === project.id)
   const lastTask = [...projectTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
@@ -935,24 +936,58 @@ function ProjectCard({ project, tasks, running, onClick, onEdit, onHide, onDelet
           }}>👁 숨기기</button>
           <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
           {!deleteConfirm ? (
-            <button onClick={e => { e.stopPropagation(); setDeleteConfirm(true) }} style={{
+            <button onClick={e => { e.stopPropagation(); setDeleteConfirm(true); setDeleteError(null) }} style={{
               width: '100%', padding: '10px 16px', background: 'none', border: 'none',
               color: 'var(--red)', fontSize: 13, textAlign: 'left', cursor: 'pointer',
               display: 'flex', alignItems: 'center', gap: 8,
             }}>🗑 삭제</button>
           ) : (
             <div style={{ padding: '8px 12px' }}>
-              <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>정말 삭제하시겠습니까?</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button onClick={e => { e.stopPropagation(); setDeleteConfirm(false) }} style={{
-                  flex: 1, padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
-                  background: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer',
-                }}>취소</button>
-                <button onClick={e => { e.stopPropagation(); setShowActions(false); setDeleteConfirm(false); onDelete(project.id) }} style={{
-                  flex: 1, padding: '6px', borderRadius: 6, border: 'none',
-                  background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                }}>삭제</button>
-              </div>
+              {deleteError ? (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>{deleteError.message}</div>
+                  {deleteError.hasTasks && (
+                    <div style={{ display: 'flex', gap: 6, flexDirection: 'column' }}>
+                      <button onClick={e => { e.stopPropagation(); setShowActions(false); setDeleteConfirm(false); setDeleteError(null); onForceDelete && onForceDelete(project.id) }} style={{
+                        padding: '6px', borderRadius: 6, border: 'none',
+                        background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}>작업 포함 강제 삭제</button>
+                      <button onClick={e => { e.stopPropagation(); setDeleteConfirm(false); setDeleteError(null) }} style={{
+                        padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
+                        background: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer',
+                      }}>취소</button>
+                    </div>
+                  )}
+                  {!deleteError.hasTasks && (
+                    <button onClick={e => { e.stopPropagation(); setDeleteConfirm(false); setDeleteError(null) }} style={{
+                      width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
+                      background: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer',
+                    }}>닫기</button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>정말 삭제하시겠습니까?</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={e => { e.stopPropagation(); setDeleteConfirm(false) }} style={{
+                      flex: 1, padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
+                      background: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer',
+                    }}>취소</button>
+                    <button onClick={async e => {
+                      e.stopPropagation()
+                      const result = await onDelete(project.id)
+                      if (result?.error) {
+                        setDeleteError({ message: result.error, hasTasks: result.hasTasks, taskCount: result.taskCount })
+                      } else {
+                        setShowActions(false); setDeleteConfirm(false)
+                      }
+                    }} style={{
+                      flex: 1, padding: '6px', borderRadius: 6, border: 'none',
+                      background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                    }}>삭제</button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1585,7 +1620,7 @@ function TaskHistory({ tasks, projects }) {
 }
 
 // ── 프로젝트 등록 모달 ────────────────────────────────────
-function RegisterProjectModal({ onAdd, onCreate, onClose }) {
+function RegisterProjectModal({ onAdd, onCreate, onClose, onRestoreHidden }) {
   const [mode, setMode] = useState('register') // 'register' | 'create'
   const [form, setForm] = useState({
     id: '', name: '', path: '', stack: '', description: '',
@@ -1597,6 +1632,7 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState(null)
+  const [hiddenConflict, setHiddenConflict] = useState(null) // { existingId, existingName }
 
   const set = (key) => (e) => {
     const val = e.target.type === 'checkbox' ? e.target.checked : e.target.value
@@ -1655,9 +1691,31 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
       }
 
       if (res?.error) {
-        setError(res.error)
+        if (res.hidden && res.existingId) {
+          // 숨겨진 프로젝트와 ID 충돌 → 복원 안내
+          setHiddenConflict({ existingId: res.existingId, existingName: res.existingName })
+        } else {
+          setError(res.error)
+        }
       } else {
         setResult(res)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRestoreHidden = async () => {
+    if (!hiddenConflict) return
+    setSaving(true)
+    try {
+      const result = await onRestoreHidden(hiddenConflict.existingId)
+      if (result?.error) {
+        setError(result.error)
+        setHiddenConflict(null)
+      } else {
+        setHiddenConflict(null)
+        setResult({ id: hiddenConflict.existingId, name: hiddenConflict.existingName, _restored: true })
       }
     } finally {
       setSaving(false)
@@ -1705,11 +1763,31 @@ function RegisterProjectModal({ onAdd, onCreate, onClose }) {
           }}>×</button>
         </div>
 
-        {/* 완료 화면 */}
-        {result ? (
+        {hiddenConflict ? (
+          /* 숨겨진 프로젝트 충돌 화면 */
+          <div style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--orange)' }}>⚠️ 숨겨진 프로젝트 있음</div>
+            <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
+              <b>{hiddenConflict.existingName}</b> (<code style={{ fontSize: 11 }}>{hiddenConflict.existingId}</code>) 프로젝트가 이미 숨겨진 상태로 존재합니다.
+              <br />복원하시겠습니까?
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button onClick={handleRestoreHidden} disabled={saving} style={{
+                padding: '13px', borderRadius: 8, border: 'none',
+                background: 'var(--accent)', color: 'white', fontSize: 14, fontWeight: 600,
+                opacity: saving ? 0.5 : 1, minHeight: 52, cursor: saving ? 'not-allowed' : 'pointer',
+              }}>{saving ? '복원 중…' : '복원 (보이기)'}</button>
+              <button onClick={() => setHiddenConflict(null)} style={{
+                padding: '13px', borderRadius: 8, border: '1px solid var(--border)',
+                background: 'none', color: 'var(--text3)', fontSize: 14, minHeight: 52,
+              }}>취소 (다른 ID 사용)</button>
+            </div>
+          </div>
+        ) : result ? (
+          /* 완료 화면 */
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--green)', marginBottom: 10 }}>
-              {mode === 'create' ? '✅ 프로젝트 생성 완료' : '✅ 프로젝트 등록 완료'}
+              {result._restored ? '✅ 프로젝트 복원 완료' : (mode === 'create' ? '✅ 프로젝트 생성 완료' : '✅ 프로젝트 등록 완료')}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.8 }}>
               {mode === 'create' ? (
@@ -2158,7 +2236,7 @@ function TaskReport({ task, onViewResults }) {
 
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, toggleProjectVisibility, refresh } = useHarness()
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility, refresh } = useHarness()
   const [view, setView]               = useState('list')
   const [selected, setSelected]       = useState(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
@@ -2191,6 +2269,10 @@ export default function App() {
           onAdd={addProject}
           onCreate={createProject}
           onClose={handleRegisterClose}
+          onRestoreHidden={async (id) => {
+            const result = await toggleProjectVisibility(id, false)
+            return result
+          }}
         />
       )}
 
@@ -2260,7 +2342,8 @@ export default function App() {
                 onClick={() => { setSelected(p); setView('detail') }}
                 onEdit={setEditingProject}
                 onHide={async (id, hidden) => { await toggleProjectVisibility(id, hidden) }}
-                onDelete={async (id) => { await deleteProject(id) }}
+                onDelete={async (id) => { return await deleteProject(id) }}
+                onForceDelete={async (id) => { await forceDeleteProject(id) }}
               />
             ))}
             {productProjects.length === 0 && !showRegisterModal && (
@@ -2333,7 +2416,8 @@ export default function App() {
                     onClick={() => { setSelected(p); setView('detail') }}
                     onEdit={setEditingProject}
                     onHide={async (id, hidden) => { await toggleProjectVisibility(id, hidden) }}
-                    onDelete={async (id) => { await deleteProject(id) }}
+                    onDelete={async (id) => { return await deleteProject(id) }}
+                    onForceDelete={async (id) => { await forceDeleteProject(id) }}
                   />
                 ))}
               </div>

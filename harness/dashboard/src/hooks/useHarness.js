@@ -167,6 +167,18 @@ export function useHarness() {
     }
   }, [loadProjects])
 
+  const forceDeleteProject = useCallback(async (id) => {
+    try {
+      const result = await apiFetch(`/projects/${id}/force`, { method: 'DELETE' })
+      if (result && !result.error) {
+        await loadProjects()
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 강제 삭제 실패' }
+    }
+  }, [loadProjects])
+
   const toggleProjectVisibility = useCallback(async (id, hidden) => {
     try {
       const result = await apiFetch(`/projects/${id}/visibility`, {
@@ -315,7 +327,7 @@ export function useHarness() {
   return {
     projects, tasks, status, connected, wsEvents,
     runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles,
-    addProject, createProject, updateProject, deleteProject, toggleProjectVisibility,
+    addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility,
     fetchGDriveFolder, fetchDropboxFolder, downloadGDriveFile, downloadDropboxFile,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }

@@ -509,7 +509,35 @@ export function createApiServer(agentRunner) {
     try {
       const existing = await projectQueries.get(req.params.id);
       if (!existing) return res.status(404).json({ error: '프로젝트 없음' });
+
+      // tasks FK 제약 방어: 연결된 작업 수 확인
+      const taskCount = await projectQueries.countTasks(req.params.id);
+      if (taskCount > 0) {
+        return res.status(409).json({
+          error: `이 프로젝트에 연결된 작업이 ${taskCount}개 있습니다. 작업을 먼저 삭제하거나 강제 삭제 옵션을 사용하세요.`,
+          taskCount,
+          hasTasks: true,
+        });
+      }
+
       await projectQueries.remove(req.params.id);
+      res.json({ ok: true, id: req.params.id });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── 프로젝트 강제 삭제 (tasks 포함) ──────────────────────
+  app.delete('/api/projects/:id/force', async (req, res) => {
+    if (!/^[a-z0-9-]{1,50}$/.test(req.params.id)) {
+      return res.status(400).json({ error: '잘못된 프로젝트 ID' });
+    }
+    try {
+      const existing = await projectQueries.get(req.params.id);
+      if (!existing) return res.status(404).json({ error: '프로젝트 없음' });
+
+      // logs → tasks → project 순서로 삭제 (FK 제약 준수)
+      await projectQueries.removeWithTasks(req.params.id);
       res.json({ ok: true, id: req.params.id });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -564,8 +592,19 @@ export function createApiServer(agentRunner) {
 
     try {
       const existing = await projectQueries.get(id);
-      if (existing) return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
-      const project = await projectQueries.insert({ id, name, path: projectPath, stack, description });
+      if (existing) {
+        if (existing.hidden === 1) {
+          // 숨겨진 프로젝트와 ID 충돌: 복원 옵션 안내
+          return res.status(409).json({
+            error: `'${id}' ID의 숨겨진 프로젝트가 이미 있습니다. 복원하시겠습니까?`,
+            hidden: true,
+            existingId: existing.id,
+            existingName: existing.name,
+          });
+        }
+        return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
+      }
+      const project = await projectQueries.insert({ id, name, path: projectPath, stack, description, github, deploy });
 
       // CLAUDE.md 레지스트리 자동 업데이트
       const claudeResult = updateClaudeMdRegistry({
