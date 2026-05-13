@@ -26,7 +26,7 @@ export function useHarness() {
 
   const loadProjects = useCallback(async () => {
     try {
-      const data = await apiFetch('/projects')
+      const data = await apiFetch('/projects?includeHidden=true')
       if (Array.isArray(data)) setProjects(data)
     } catch (e) { console.error('projects:', e) }
   }, [])
@@ -139,6 +139,48 @@ export function useHarness() {
     }, isPollingOnly ? 10000 : 30000)
     return () => clearInterval(timer)
   }, [])
+
+  const updateProject = useCallback(async (id, data) => {
+    try {
+      const result = await apiFetch(`/projects/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      })
+      if (result && !result.error) {
+        await loadProjects()
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 수정 실패' }
+    }
+  }, [loadProjects])
+
+  const deleteProject = useCallback(async (id) => {
+    try {
+      const result = await apiFetch(`/projects/${id}`, { method: 'DELETE' })
+      if (result && !result.error) {
+        await loadProjects()
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 삭제 실패' }
+    }
+  }, [loadProjects])
+
+  const toggleProjectVisibility = useCallback(async (id, hidden) => {
+    try {
+      const result = await apiFetch(`/projects/${id}/visibility`, {
+        method: 'PATCH',
+        body: JSON.stringify({ hidden }),
+      })
+      if (result && !result.error) {
+        await loadProjects()
+      }
+      return result
+    } catch (e) {
+      return { error: e.message || '프로젝트 숨기기 실패' }
+    }
+  }, [loadProjects])
 
   const addProject = useCallback(async (data) => {
     try {
@@ -272,7 +314,8 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles, addProject, createProject,
+    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles,
+    addProject, createProject, updateProject, deleteProject, toggleProjectVisibility,
     fetchGDriveFolder, fetchDropboxFolder, downloadGDriveFile, downloadDropboxFile,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },
   }

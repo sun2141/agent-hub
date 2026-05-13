@@ -747,8 +747,108 @@ function StatusBar({ status, connected, onRefresh }) {
   )
 }
 
+// ── 프로젝트 수정 모달 ────────────────────────────────────
+function EditProjectModal({ project, onSave, onClose }) {
+  const [form, setForm] = useState({
+    name:        project.name        || '',
+    path:        project.path        || '',
+    stack:       project.stack       || '',
+    description: project.description || '',
+    github:      project.github      || '',
+    deploy:      project.deploy      || '',
+  })
+  const [error, setError]   = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { setError('이름은 필수입니다'); return }
+    if (!form.path.trim()) { setError('경로는 필수입니다'); return }
+    setError(''); setSaving(true)
+    const result = await onSave(project.id, {
+      name:        form.name.trim(),
+      path:        form.path.trim(),
+      stack:       form.stack.trim()       || undefined,
+      description: form.description.trim() || undefined,
+      github:      form.github.trim()      || undefined,
+      deploy:      form.deploy.trim()      || undefined,
+    })
+    setSaving(false)
+    if (result?.error) { setError(result.error); return }
+    onClose()
+  }
+
+  const overlay = {
+    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 200, padding: 16,
+  }
+  const modal = {
+    background: 'var(--bg2)', borderRadius: 16, padding: 24,
+    width: '100%', maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 14,
+    maxHeight: '90dvh', overflowY: 'auto',
+  }
+  const fieldStyle = {
+    width: '100%', background: 'var(--bg3)', border: '1px solid var(--border)',
+    borderRadius: 8, padding: '10px 12px', color: 'var(--text)', fontSize: 14,
+    outline: 'none', boxSizing: 'border-box',
+  }
+  const labelStyle = { fontSize: 12, color: 'var(--text3)', marginBottom: 4, display: 'block' }
+
+  return (
+    <div style={overlay} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={modal}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontSize: 15, fontWeight: 700 }}>프로젝트 수정</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text3)', fontSize: 20, cursor: 'pointer', minWidth: 36, minHeight: 36 }}>×</button>
+        </div>
+        {error && <div style={{ color: 'var(--red)', fontSize: 13 }}>{error}</div>}
+        <div>
+          <label style={labelStyle}>이름 *</label>
+          <input value={form.name} onChange={set('name')} style={fieldStyle} placeholder="My Project" />
+        </div>
+        <div>
+          <label style={labelStyle}>로컬 경로 *</label>
+          <input value={form.path} onChange={set('path')} style={fieldStyle} placeholder="/Users/sun/my-project" />
+        </div>
+        <div>
+          <label style={labelStyle}>기술 스택</label>
+          <input value={form.stack} onChange={set('stack')} style={fieldStyle} placeholder="Next.js, TypeScript..." />
+        </div>
+        <div>
+          <label style={labelStyle}>설명</label>
+          <input value={form.description} onChange={set('description')} style={fieldStyle} placeholder="프로젝트 설명" />
+        </div>
+        <div>
+          <label style={labelStyle}>GitHub</label>
+          <input value={form.github} onChange={set('github')} style={fieldStyle} placeholder="sun2141/my-project" />
+        </div>
+        <div>
+          <label style={labelStyle}>배포 URL</label>
+          <input value={form.deploy} onChange={set('deploy')} style={fieldStyle} placeholder="my-project.vercel.app" />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+          <button onClick={onClose} style={{
+            flex: 1, padding: '12px', borderRadius: 10, border: '1px solid var(--border)',
+            background: 'none', color: 'var(--text3)', fontSize: 14, cursor: 'pointer',
+          }}>취소</button>
+          <button onClick={handleSave} disabled={saving} style={{
+            flex: 1, padding: '12px', borderRadius: 10, border: 'none',
+            background: 'var(--accent)', color: '#fff', fontSize: 14,
+            fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1,
+          }}>{saving ? '저장 중...' : '저장'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── 프로젝트 카드 ─────────────────────────────────────────
-function ProjectCard({ project, tasks, running, onClick }) {
+function ProjectCard({ project, tasks, running, onClick, onEdit, onHide, onDelete }) {
+  const [showActions, setShowActions] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+
   const projectTasks = tasks.filter(t => t.project_id === project.id)
   const lastTask = [...projectTasks].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
 
@@ -762,46 +862,107 @@ function ProjectCard({ project, tasks, running, onClick }) {
   const isInfra = INFRA_IDS.includes(project.id)
 
   return (
-    <button onClick={() => { vibrate(); onClick() }} style={{
-      display: 'flex', alignItems: 'center', gap: 12,
-      padding: '14px 16px', background: 'var(--bg2)',
-      border: '1px solid var(--border)', borderRadius: 12,
-      textAlign: 'left', width: '100%', minHeight: 64,
-      WebkitTapHighlightColor: 'transparent', transition: 'opacity 0.1s, transform 0.1s',
-    }}>
-      <div style={{
-        width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-        background: isInfra ? 'rgba(90,90,120,0.3)' : 'rgba(107,94,248,0.15)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18,
-        border: '1px solid ' + (isInfra ? 'rgba(90,90,120,0.4)' : 'rgba(107,94,248,0.3)'),
+    <div style={{ position: 'relative' }}>
+      <button onClick={() => { vibrate(); onClick() }} style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '14px 16px', background: 'var(--bg2)',
+        border: '1px solid var(--border)', borderRadius: 12,
+        textAlign: 'left', width: '100%', minHeight: 64,
+        WebkitTapHighlightColor: 'transparent', transition: 'opacity 0.1s, transform 0.1s',
+        paddingRight: 44,
       }}>
-        {isInfra ? '⚙' : project.name[0]}
-      </div>
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{project.name}</div>
-        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
-          {project.stack || project.description || ''}
-          {lastTask && !activeRun && (
-            <span style={{ marginLeft: 6 }}>{timeAgo(lastTask.created_at)}</span>
-          )}
-        </div>
-      </div>
-
-      {phase && (
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 5,
-          padding: '3px 9px', borderRadius: 20, flexShrink: 0,
-          background: phase.color + '18', border: '1px solid ' + phase.color + '40',
+          width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+          background: isInfra ? 'rgba(90,90,120,0.3)' : 'rgba(107,94,248,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18,
+          border: '1px solid ' + (isInfra ? 'rgba(90,90,120,0.4)' : 'rgba(107,94,248,0.3)'),
         }}>
-          <span style={{ fontSize: 10, color: phase.color }}>{phase.icon}</span>
-          <span style={{ fontSize: 11, color: phase.color, fontWeight: 500 }}>{phase.label}</span>
-          {activeRun && <span style={{ fontSize: 11, color: phase.color }}>R{activeRun.round}</span>}
+          {isInfra ? '⚙' : project.name[0]}
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{project.name}</div>
+          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+            {project.stack || project.description || ''}
+            {lastTask && !activeRun && (
+              <span style={{ marginLeft: 6 }}>{timeAgo(lastTask.created_at)}</span>
+            )}
+          </div>
+        </div>
+
+        {phase && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            padding: '3px 9px', borderRadius: 20, flexShrink: 0,
+            background: phase.color + '18', border: '1px solid ' + phase.color + '40',
+          }}>
+            <span style={{ fontSize: 10, color: phase.color }}>{phase.icon}</span>
+            <span style={{ fontSize: 11, color: phase.color, fontWeight: 500 }}>{phase.label}</span>
+            {activeRun && <span style={{ fontSize: 11, color: phase.color }}>R{activeRun.round}</span>}
+          </div>
+        )}
+      </button>
+
+      {/* 더보기 버튼 */}
+      {!isInfra && (
+        <button
+          onClick={e => { e.stopPropagation(); vibrate(6); setShowActions(a => !a); setDeleteConfirm(false) }}
+          style={{
+            position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+            background: 'none', border: 'none', color: 'var(--text3)', fontSize: 18,
+            minWidth: 32, minHeight: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            borderRadius: 8, cursor: 'pointer', WebkitTapHighlightColor: 'transparent',
+          }}
+        >⋯</button>
+      )}
+
+      {/* 액션 드롭다운 */}
+      {showActions && (
+        <div style={{
+          position: 'absolute', right: 4, top: '100%', marginTop: 4, zIndex: 100,
+          background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: 10,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)', padding: '6px 0', minWidth: 140,
+        }}>
+          <button onClick={e => { e.stopPropagation(); setShowActions(false); onEdit(project) }} style={{
+            width: '100%', padding: '10px 16px', background: 'none', border: 'none',
+            color: 'var(--text)', fontSize: 13, textAlign: 'left', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>✏️ 수정</button>
+          <button onClick={e => { e.stopPropagation(); setShowActions(false); onHide(project.id, true) }} style={{
+            width: '100%', padding: '10px 16px', background: 'none', border: 'none',
+            color: 'var(--text)', fontSize: 13, textAlign: 'left', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>👁 숨기기</button>
+          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+          {!deleteConfirm ? (
+            <button onClick={e => { e.stopPropagation(); setDeleteConfirm(true) }} style={{
+              width: '100%', padding: '10px 16px', background: 'none', border: 'none',
+              color: 'var(--red)', fontSize: 13, textAlign: 'left', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 8,
+            }}>🗑 삭제</button>
+          ) : (
+            <div style={{ padding: '8px 12px' }}>
+              <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>정말 삭제하시겠습니까?</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={e => { e.stopPropagation(); setDeleteConfirm(false) }} style={{
+                  flex: 1, padding: '6px', borderRadius: 6, border: '1px solid var(--border)',
+                  background: 'none', color: 'var(--text3)', fontSize: 12, cursor: 'pointer',
+                }}>취소</button>
+                <button onClick={e => { e.stopPropagation(); setShowActions(false); setDeleteConfirm(false); onDelete(project.id) }} style={{
+                  flex: 1, padding: '6px', borderRadius: 6, border: 'none',
+                  background: 'var(--red)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}>삭제</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <span style={{ color: 'var(--text3)', fontSize: 14, flexShrink: 0 }}>›</span>
-    </button>
+      {/* 드롭다운 닫기 오버레이 */}
+      {showActions && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => { setShowActions(false); setDeleteConfirm(false) }} />
+      )}
+    </div>
   )
 }
 
@@ -1997,13 +2158,16 @@ function TaskReport({ task, onViewResults }) {
 
 // ── 메인 ─────────────────────────────────────────────────
 export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, refresh } = useHarness()
-  const [view, setView]         = useState('list')
-  const [selected, setSelected] = useState(null)
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, toggleProjectVisibility, refresh } = useHarness()
+  const [view, setView]               = useState('list')
+  const [selected, setSelected]       = useState(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
+  const [editingProject, setEditingProject] = useState(null)
+  const [showHidden, setShowHidden]   = useState(false)
 
-  const productProjects = projects.filter(p => !INFRA_IDS.includes(p.id))
-  const infraProjects   = projects.filter(p => INFRA_IDS.includes(p.id))
+  const productProjects = projects.filter(p => !INFRA_IDS.includes(p.id) && !p.hidden)
+  const infraProjects   = projects.filter(p =>  INFRA_IDS.includes(p.id))
+  const hiddenProjects  = projects.filter(p => !INFRA_IDS.includes(p.id) &&  p.hidden)
   const running = status?.running || []
 
   const handleRun = async (projectId, prompt, attachments) => {
@@ -2027,6 +2191,15 @@ export default function App() {
           onAdd={addProject}
           onCreate={createProject}
           onClose={handleRegisterClose}
+        />
+      )}
+
+      {/* 프로젝트 수정 모달 */}
+      {editingProject && (
+        <EditProjectModal
+          project={editingProject}
+          onSave={updateProject}
+          onClose={() => setEditingProject(null)}
         />
       )}
 
@@ -2084,12 +2257,72 @@ export default function App() {
           <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
             {productProjects.map(p => (
               <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
-                onClick={() => { setSelected(p); setView('detail') }} />
+                onClick={() => { setSelected(p); setView('detail') }}
+                onEdit={setEditingProject}
+                onHide={async (id, hidden) => { await toggleProjectVisibility(id, hidden) }}
+                onDelete={async (id) => { await deleteProject(id) }}
+              />
             ))}
             {productProjects.length === 0 && !showRegisterModal && (
               <div style={{ color: 'var(--text3)', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>연결 중...</div>
             )}
           </div>
+
+          {/* 숨긴 프로젝트 섹션 */}
+          {hiddenProjects.length > 0 && (
+            <>
+              <button
+                onClick={() => { vibrate(6); setShowHidden(h => !h) }}
+                style={{
+                  background: 'none', border: 'none', padding: 0,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  color: 'var(--text3)', fontSize: 11, fontWeight: 600,
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                  marginBottom: showHidden ? 8 : 16, cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                <span style={{ fontSize: 10 }}>{showHidden ? '▼' : '▶'}</span>
+                숨긴 프로젝트 ({hiddenProjects.length})
+              </button>
+              {showHidden && (
+                <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24, opacity: 0.65 }}>
+                  {hiddenProjects.map(p => (
+                    <div key={p.id} style={{ position: 'relative' }}>
+                      <button onClick={() => { setSelected(p); setView('detail') }} style={{
+                        display: 'flex', alignItems: 'center', gap: 12,
+                        padding: '12px 16px', background: 'var(--bg2)',
+                        border: '1px solid var(--border)', borderRadius: 12,
+                        textAlign: 'left', width: '100%', minHeight: 56,
+                        WebkitTapHighlightColor: 'transparent', paddingRight: 96,
+                      }}>
+                        <div style={{
+                          width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                          background: 'rgba(80,80,100,0.2)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16,
+                          border: '1px solid rgba(80,80,100,0.3)',
+                        }}>{p.name[0]}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text2)' }}>{p.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text3)' }}>{p.stack || p.description || ''}</div>
+                        </div>
+                      </button>
+                      <div style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', display: 'flex', gap: 4 }}>
+                        <button onClick={() => setEditingProject(p)} style={{
+                          background: 'rgba(107,94,248,0.1)', border: '1px solid rgba(107,94,248,0.3)',
+                          borderRadius: 6, padding: '4px 8px', color: 'var(--accent2)', fontSize: 11, cursor: 'pointer',
+                        }}>수정</button>
+                        <button onClick={async () => { await toggleProjectVisibility(p.id, false) }} style={{
+                          background: 'rgba(61,214,140,0.1)', border: '1px solid rgba(61,214,140,0.3)',
+                          borderRadius: 6, padding: '4px 8px', color: 'var(--green)', fontSize: 11, cursor: 'pointer',
+                        }}>보이기</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
 
           {infraProjects.length > 0 && (
             <>
@@ -2097,7 +2330,11 @@ export default function App() {
               <div className="project-list" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
                 {infraProjects.map(p => (
                   <ProjectCard key={p.id} project={p} tasks={tasks} running={running}
-                    onClick={() => { setSelected(p); setView('detail') }} />
+                    onClick={() => { setSelected(p); setView('detail') }}
+                    onEdit={setEditingProject}
+                    onHide={async (id, hidden) => { await toggleProjectVisibility(id, hidden) }}
+                    onDelete={async (id) => { await deleteProject(id) }}
+                  />
                 ))}
               </div>
             </>

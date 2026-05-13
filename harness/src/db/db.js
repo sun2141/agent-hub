@@ -83,6 +83,21 @@ export async function initDb() {
     }
   }
 
+  // projects 테이블 마이그레이션 (hidden, updated_at 컬럼)
+  const projectTableInfo = await dbAll("PRAGMA table_info(projects)");
+  if (projectTableInfo.length > 0) {
+    const hasHidden = projectTableInfo.some(col => col.name === 'hidden');
+    const hasUpdatedAt = projectTableInfo.some(col => col.name === 'updated_at');
+    if (!hasHidden) {
+      console.log('[DB] projects.hidden 컬럼 추가');
+      await dbRun("ALTER TABLE projects ADD COLUMN hidden INTEGER DEFAULT 0");
+    }
+    if (!hasUpdatedAt) {
+      console.log('[DB] projects.updated_at 컬럼 추가');
+      await dbRun("ALTER TABLE projects ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
+    }
+  }
+
   await dbExec(`
     CREATE TABLE IF NOT EXISTS projects (
       id          TEXT PRIMARY KEY,
@@ -91,7 +106,9 @@ export async function initDb() {
       stack       TEXT,
       description TEXT,
       active      INTEGER DEFAULT 1,
-      created_at  TEXT DEFAULT (datetime('now'))
+      hidden      INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -151,14 +168,28 @@ export const projectQueries = {
     }
   },
 
-  async list() {
+  async list({ includeHidden = false } = {}) {
+    const hiddenFilter = includeHidden ? '' : 'AND (p.hidden IS NULL OR p.hidden = 0)';
     return dbAll(`
       SELECT p.*,
         (SELECT status FROM tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_status,
         (SELECT created_at FROM tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_at
-      FROM projects p WHERE p.active = 1
+      FROM projects p WHERE p.active = 1 ${hiddenFilter}
+      ORDER BY p.created_at DESC
+    `);
+  },
+
+  async listHidden() {
+    return dbAll(`
+      SELECT p.*,
+        (SELECT status FROM tasks WHERE project_id = p.id
+         ORDER BY created_at DESC LIMIT 1) AS last_task_status,
+        (SELECT created_at FROM tasks WHERE project_id = p.id
+         ORDER BY created_at DESC LIMIT 1) AS last_task_at
+      FROM projects p WHERE p.active = 1 AND p.hidden = 1
+      ORDER BY p.updated_at DESC
     `);
   },
 
@@ -172,7 +203,35 @@ export const projectQueries = {
       [id, name, path, stack || null, description || null]
     );
     return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
-  }
+  },
+
+  async update(id, { name, path, stack, description, github, deploy }) {
+    const fields = [];
+    const values = [];
+    if (name       !== undefined) { fields.push('name = ?');        values.push(name); }
+    if (path       !== undefined) { fields.push('path = ?');        values.push(path); }
+    if (stack      !== undefined) { fields.push('stack = ?');       values.push(stack || null); }
+    if (description !== undefined) { fields.push('description = ?'); values.push(description || null); }
+    if (github     !== undefined) { fields.push('github = ?');      values.push(github || null); }
+    if (deploy     !== undefined) { fields.push('deploy = ?');      values.push(deploy || null); }
+    if (fields.length === 0) return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+    await dbRun(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, values);
+    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+  },
+
+  async setVisibility(id, hidden) {
+    await dbRun(
+      "UPDATE projects SET hidden = ?, updated_at = datetime('now') WHERE id = ?",
+      [hidden ? 1 : 0, id]
+    );
+    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+  },
+
+  async remove(id) {
+    await dbRun('DELETE FROM projects WHERE id = ?', [id]);
+  },
 };
 
 // ── tasks ─────────────────────────────────────────────────────
