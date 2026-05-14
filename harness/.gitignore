@@ -5,3 +5,6 @@ data/
 *.db-journal
 .DS_Store
 .claude/
+logs/
+harness.pid
+.session_secret

@@ -6,7 +6,7 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, projectQueries } from './db/db.js';
+import { initDb, projectQueries, taskQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { createApiServer } from './api/server.js';
@@ -124,7 +124,7 @@ async function main() {
     console.log('');
     console.log('  대시보드 외부 접근을 위해 SSH 터널을 시작하세요:');
     console.log('    npm run tunnel');
-    console.log('  접속 주소: http://91.99.58.70:9090');
+    console.log('  접속 주소: http://91.99.58.70:9091');
     console.log('');
   });
 
@@ -133,6 +133,39 @@ async function main() {
   console.log('[Boot] Telegram 봇 준비');
 
   notify('🟢 <b>하네스 시작됨</b>\n/help 로 명령어 확인');
+
+  // 5. 토큰 리미트 재개 스케줄러 (1분마다 체크)
+  const SCHEDULER_INTERVAL = parseInt(process.env.RATE_LIMIT_CHECK_INTERVAL_MS || '60000', 10);
+  let schedulerRunning = false;
+
+  async function checkAndResumeRateLimited() {
+    if (schedulerRunning) return;
+    schedulerRunning = true;
+    try {
+      const pendingTasks = await taskQueries.getPendingRateLimitedTasks();
+      for (const task of pendingTasks) {
+        // 이미 실행 중인 작업은 스킵
+        if (agent._running.has(task.id)) continue;
+        console.log(`[scheduler] rate_limited 작업 재개: taskId=${task.id}, scheduled_resume_at=${task.scheduled_resume_at}`);
+        try {
+          await taskQueries.updateScheduledResumeAt(task.id, null);
+          await agent.resume(task.id);
+          notify(`⏰ <b>토큰 리미트 해제 — 작업 재개</b>\ntask: ${task.id}`);
+        } catch (resumeErr) {
+          console.error(`[scheduler] 재개 실패: taskId=${task.id}, err=${resumeErr.message}`);
+        }
+      }
+    } catch (err) {
+      console.error('[scheduler] 오류:', err.message);
+    } finally {
+      schedulerRunning = false;
+    }
+  }
+
+  // 서버 시작 시 이미 지난 rate_limited 작업 즉시 처리
+  setTimeout(checkAndResumeRateLimited, 5000);
+  const schedulerTimer = setInterval(checkAndResumeRateLimited, SCHEDULER_INTERVAL);
+  console.log(`[Boot] 토큰 리미트 재개 스케줄러 시작 (interval: ${SCHEDULER_INTERVAL}ms)`);
 
   agent.on('phase:start',    ({ taskId, phase, round }) =>
     console.log(`[${phase.toUpperCase()}] ${taskId} Round ${round} 시작`));
@@ -145,6 +178,7 @@ async function main() {
 
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);
+    clearInterval(schedulerTimer);
     releaseLock();
     notify('🔴 <b>하네스 종료됨</b>');
     server.close(() => process.exit(0));

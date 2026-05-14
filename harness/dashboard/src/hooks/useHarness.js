@@ -1,16 +1,17 @@
 // src/hooks/useHarness.js
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-const API_KEY = import.meta.env.VITE_API_KEY || ''
+// API_KEY를 브라우저 번들에 노출하지 않기 위해 VITE_API_KEY 제거
+// 대시보드 인증은 세션 쿠키(로그인 후 자동 첲부)  방식으로만 처리
 const _API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 const API_BASE = _API_BASE_URL ? `${_API_BASE_URL}/api` : '/api'
 
 function apiFetch(path, options = {}) {
   return fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: 'include', // 세션 쿠키 자동 첲부
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': API_KEY,
       ...options.headers,
     },
   }).then(r => r.json())
@@ -72,12 +73,25 @@ export function useHarness() {
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
-      ws.onopen = () => {
+      ws.onopen = async () => {
         setConnected(true)
         reconnectCount = 0
         console.log('[WS] 연결됨')
-        // API_KEY로 인증
-        ws.send(JSON.stringify({ type: 'auth', key: API_KEY }))
+        // 세션 기반 WS 토큰 발급 (브라우저 번들에 API_KEY 불필요)
+        try {
+          const BASE = _API_BASE_URL || ''
+          const tokenRes = await fetch(`${BASE}/auth/ws-token`, { credentials: 'include' })
+          const tokenData = await tokenRes.json()
+          if (tokenData.token) {
+            ws.send(JSON.stringify({ type: 'auth', token: tokenData.token }))
+          } else {
+            console.warn('[WS] ws-token 발급 실패:', tokenData)
+            ws.close()
+          }
+        } catch (e) {
+          console.warn('[WS] ws-token fetch 실패:', e)
+          ws.close()
+        }
       }
 
       ws.onmessage = (e) => {
@@ -85,7 +99,7 @@ export function useHarness() {
           const msg = JSON.parse(e.data)
           console.log('[WS msg]', msg.type)
           setWsEvents(prev => [...prev.slice(-200), msg])
-          if (['task:complete', 'task:failed', 'task:paused', 'phase:complete'].includes(msg.type)) {
+          if (['task:complete', 'task:failed', 'task:paused', 'task:rate_limited', 'task:resuming', 'phase:complete'].includes(msg.type)) {
             loadTasks()
             loadStatus()
           }
@@ -252,6 +266,10 @@ export function useHarness() {
     })
   }, [])
 
+  const resumeNow = useCallback((taskId) => {
+    return apiFetch(`/tasks/${taskId}/resume-now`, { method: 'POST' })
+  }, [])
+
   const getTaskLogs = useCallback((taskId) => {
     return wsEvents.filter(e =>
       e.taskId === taskId &&
@@ -326,7 +344,7 @@ export function useHarness() {
 
   return {
     projects, tasks, status, connected, wsEvents,
-    runTask, stopTask, resumeTask, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles,
+    runTask, stopTask, resumeTask, resumeNow, deleteTask, getTaskLogs, fetchTaskLogs, fetchTaskFiles,
     addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility,
     fetchGDriveFolder, fetchDropboxFolder, downloadGDriveFile, downloadDropboxFile,
     refresh: () => { loadProjects(); loadTasks(); loadStatus() },

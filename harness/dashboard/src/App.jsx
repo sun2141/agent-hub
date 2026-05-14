@@ -9,13 +9,16 @@ function vibrate(pattern = 10) {
 
 // ── 상수 ──────────────────────────────────────────────────
 const PHASE = {
-  pending:    { icon: '○', label: '대기',     color: '#585870' },
-  planning:   { icon: '◈', label: 'Plan',    color: '#a78bfa' },
-  building:   { icon: '◆', label: 'Build',   color: '#60a5fa' },
-  evaluating: { icon: '◉', label: 'Eval',    color: '#fb923c' },
-  done:       { icon: '●', label: '완료',     color: '#3dd68c' },
-  failed:     { icon: '✕', label: '실패',     color: '#f87171' },
-  paused:     { icon: '▸', label: '재개대기', color: '#f59e0b' },
+  pending:         { icon: '○', label: '대기',       color: '#585870' },
+  planning:        { icon: '◈', label: 'Plan',      color: '#a78bfa' },
+  building:        { icon: '◆', label: 'Build',     color: '#60a5fa' },
+  evaluating:      { icon: '◉', label: 'Eval',      color: '#fb923c' },
+  done:            { icon: '●', label: '완료',       color: '#3dd68c' },
+  failed:          { icon: '✕', label: '실패',       color: '#f87171' },
+  paused:          { icon: '▸', label: '재개대기',   color: '#f59e0b' },
+  rate_limited:    { icon: '⏳', label: '리미트 대기', color: '#f97316' },
+  handoff_pending: { icon: '⇢', label: 'Handoff',   color: '#818cf8' },
+  fallback_running:{ icon: '⟳', label: 'Codex',     color: '#818cf8' },
 }
 
 const INFRA_IDS = ['agent-hub']
@@ -47,15 +50,14 @@ function readFileAsText(file) {
 }
 
 // ── API 헬퍼 (훅 외부에서 사용) ───────────────────────────
-const API_KEY_RAW = import.meta.env.VITE_API_KEY || ''
 const _API_BASE_URL_RAW = import.meta.env.VITE_API_BASE_URL || ''
 const API_BASE_RAW = _API_BASE_URL_RAW ? `${_API_BASE_URL_RAW}/api` : '/api'
 function apiFetchRaw(path, options = {}) {
   return fetch(`${API_BASE_RAW}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': API_KEY_RAW,
       ...options.headers,
     },
   }).then(r => r.json())
@@ -1002,7 +1004,7 @@ function ProjectCard({ project, tasks, running, onClick, onEdit, onHide, onDelet
 }
 
 // ── 프로젝트 상세 ─────────────────────────────────────────
-function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onDelete, onBack, fetchTaskLogs, fetchTaskFiles }) {
+function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResume, onResumeNow, onDelete, onBack, fetchTaskLogs, fetchTaskFiles }) {
   const [prompt, setPrompt] = useState('')
   const [sending, setSending] = useState(false)
   const [tab, setTab] = useState('tasks')
@@ -1083,7 +1085,8 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
   const wsLogs = wsEvents.filter(e =>
     e.taskId && projectTaskIds.has(e.taskId) &&
     ['agent:text', 'agent:tool', 'phase:start', 'phase:complete',
-     'task:complete', 'task:failed', 'task:paused', 'task:created'].includes(e.type)
+     'task:complete', 'task:failed', 'task:paused', 'task:created',
+     'task:rate_limited', 'task:resuming'].includes(e.type)
   )
 
   const logs = (() => {
@@ -1323,18 +1326,33 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             </div>
           ) : projectTasks.map(t => {
             const p = PHASE[t.status] || PHASE.pending
-            const canDelete = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating'].includes(t.status)
+            const canDelete = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating', 'rate_limited'].includes(t.status)
+            const isRateLimited = t.status === 'rate_limited'
+            const resumeAt = t.scheduled_resume_at
             return (
               <div key={t.id} style={{
-                padding: '10px 12px', background: 'var(--bg3)',
-                borderRadius: 10, border: '1px solid var(--border)',
+                padding: '10px 12px', background: isRateLimited ? 'rgba(249,115,22,0.06)' : 'var(--bg3)',
+                borderRadius: 10, border: isRateLimited ? '1px solid rgba(249,115,22,0.35)' : '1px solid var(--border)',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                   <span style={{ fontSize: 12, color: p.color }}>{p.icon}</span>
                   <span style={{ fontSize: 12, color: p.color, fontWeight: 500 }}>{p.label}</span>
+                  {t.provider && t.provider !== 'claude' && (
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 5, background: 'rgba(129,140,248,0.15)', color: '#818cf8', border: '1px solid rgba(129,140,248,0.35)' }}>CODEX</span>
+                  )}
                   <span style={{ fontSize: 11, color: 'var(--text3)', marginLeft: 'auto' }}>
                     {timeAgo(t.created_at)}
                   </span>
+                  {isRateLimited && (
+                    <button
+                      onClick={async () => { vibrate(10); onResumeNow && await onResumeNow(t.id) }}
+                      style={{
+                        background: 'rgba(249,115,22,0.15)', border: '1px solid rgba(249,115,22,0.4)',
+                        color: '#f97316', borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 600,
+                        minHeight: 28, WebkitTapHighlightColor: 'transparent', lineHeight: 1, cursor: 'pointer',
+                      }}
+                    >지금 재개</button>
+                  )}
                   {canDelete && (
                     <button
                       onClick={() => { vibrate(10); setDeleteConfirm({ taskId: t.id, status: t.status, prompt: t.prompt }) }}
@@ -1346,6 +1364,11 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                     >삭제</button>
                   )}
                 </div>
+                {isRateLimited && resumeAt && (
+                  <div style={{ fontSize: 11, color: '#f97316', marginBottom: 4, padding: '4px 8px', background: 'rgba(249,115,22,0.08)', borderRadius: 6 }}>
+                    ⏰ 재개 예정: {timeAgo(resumeAt)} ({new Date(resumeAt.endsWith('Z') ? resumeAt : resumeAt.replace(' ', 'T') + 'Z').toLocaleTimeString()})
+                  </div>
+                )}
                 <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.4 }}>{t.prompt}</div>
                 {t.round > 0 && (
                   <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
@@ -1375,9 +1398,11 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             else if (e.type === 'phase:complete') { text = `✓ ${p.label||e.phase} 완료`;    color = 'var(--green)' }
             else if (e.type === 'agent:tool')     { text = `  [${e.tool}]`;                 color = 'var(--text3)' }
             else if (e.type === 'agent:text')     { text = `  ${(e.content||'').slice(0,300)}`; color = 'var(--text2)' }
-            else if (e.type === 'task:complete')  { text = `\n✅ 완료 — ${e.round} 라운드`; color = 'var(--green)' }
-            else if (e.type === 'task:failed')    { text = `\n❌ 실패: ${e.error||''}`;     color = 'var(--red)' }
-            else if (e.type === 'task:paused')    { text = `\n⏸ 일시정지: ${e.reason||''}`; color = 'var(--orange)' }
+            else if (e.type === 'task:complete')     { text = `\n✅ 완료 — ${e.round} 라운드`; color = 'var(--green)' }
+            else if (e.type === 'task:failed')       { text = `\n❌ 실패: ${e.error||''}`;     color = 'var(--red)' }
+            else if (e.type === 'task:paused')       { text = `\n⏸ 일시정지: ${e.reason||''}`; color = 'var(--orange)' }
+            else if (e.type === 'task:rate_limited') { text = `\n⏳ 토큰 리미트 — 재개 예정: ${e.scheduledResumeAt||''}`.trim(); color = '#f97316' }
+            else if (e.type === 'task:resuming')     { text = `\n▶ 작업 재개 중...`;             color = 'var(--accent2)' }
             return text ? (
               <div key={i} style={{ color, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{text}</div>
             ) : null
@@ -1603,6 +1628,9 @@ function TaskHistory({ tasks, projects }) {
               <span style={{ fontSize: 12, color: p.color }}>{p.icon}</span>
               <span style={{ fontSize: 12, fontWeight: 600, color: p.color }}>{p.label}</span>
               <span style={{ fontSize: 11, color: 'var(--text3)' }}>{proj?.name || t.project_id}</span>
+              {t.provider && t.provider !== 'claude' && (
+                <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 5, background: 'rgba(129,140,248,0.15)', color: '#818cf8', border: '1px solid rgba(129,140,248,0.35)' }}>CODEX</span>
+              )}
               <span style={{ fontSize: 11, color: 'var(--text3)', marginLeft: 'auto' }}>{timeAgo(t.created_at)}</span>
             </div>
             <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.4 }}>
@@ -1960,7 +1988,6 @@ function RegisterProjectModal({ onAdd, onCreate, onClose, onRestoreHidden }) {
 }
 
 // ── 결과물 패널 (결과물 탭 전용) ──────────────────────────
-const API_KEY_FOR_DL = import.meta.env.VITE_API_KEY || ''
 const _API_BASE_FOR_DL = import.meta.env.VITE_API_BASE_URL || ''
 const API_BASE_FOR_DL = _API_BASE_FOR_DL ? `${_API_BASE_FOR_DL}/api` : '/api'
 
@@ -1980,8 +2007,8 @@ function TaskResultPanel({ task, files, loading, onRefresh }) {
     const a = document.createElement('a')
     a.href = url
     a.download = fileName
-    // API 키를 헤더로 보내기 위해 fetch로 blob 다운로드
-    fetch(url, { headers: { 'x-api-key': API_KEY_FOR_DL } })
+    // 세션 쿠키로 인증
+    fetch(url, { credentials: 'include' })
       .then(r => {
         if (!r.ok) throw new Error('다운로드 실패')
         return r.blob()
@@ -2234,9 +2261,52 @@ function TaskReport({ task, onViewResults }) {
   )
 }
 
-// ── 메인 ─────────────────────────────────────────────────
-export default function App() {
-  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility, refresh } = useHarness()
+// ── 로그인 화면 ─────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [password, setPassword] = useState('')
+  const [error, setError]       = useState('')
+  const [loading, setLoading]   = useState(false)
+  const BASE = import.meta.env.VITE_API_BASE_URL || ''
+
+  const handleLogin = async () => {
+    if (!password.trim()) return
+    setLoading(true); setError('')
+    try {
+      const res = await fetch(`${BASE}/auth/login`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      const data = await res.json()
+      if (data.ok) { onLogin() } else { setError(data.error || '비밀번호가 올바르지 않습니다') }
+    } catch { setError('서버에 연결할 수 없습니다') } finally { setLoading(false) }
+  }
+
+  return (
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 24, gap: 20 }}>
+      <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: '-1px', color: 'var(--text)' }}>Agent Harness</div>
+      <div style={{ fontSize: 13, color: 'var(--text3)', marginTop: -12 }}>대시보드 로그인</div>
+      <div style={{ width: '100%', maxWidth: 320, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <input type="password" value={password}
+          onChange={e => { setPassword(e.target.value); setError('') }}
+          onKeyDown={e => e.key === 'Enter' && handleLogin()}
+          placeholder="비밀번호" autoFocus
+          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg2)', border: '1px solid ' + (error ? 'var(--red)' : 'var(--border)'), borderRadius: 12, padding: '14px 16px', color: 'var(--text)', fontSize: 16, outline: 'none' }}
+        />
+        {error && <div style={{ fontSize: 13, color: 'var(--red)', padding: '8px 12px', background: 'rgba(248,113,113,0.08)', borderRadius: 8 }}>{error}</div>}
+        <button onClick={handleLogin} disabled={loading || !password.trim()}
+          style={{ width: '100%', background: 'var(--accent)', border: 'none', borderRadius: 12, padding: '14px', color: 'white', fontSize: 15, fontWeight: 600, opacity: (loading || !password.trim()) ? 0.5 : 1, cursor: (loading || !password.trim()) ? 'default' : 'pointer', minHeight: 52 }}
+        >{loading ? '로그인 중…' : '로그인'}</button>
+      </div>
+    </div>
+  )
+}
+
+// ── 메인 콘텐츠 (인증 후 렌더링) ──────────────────────────
+const _AUTH_BASE = import.meta.env.VITE_API_BASE_URL || ''
+
+function AppContent({ onLogout }) {
+  const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, resumeNow, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility, refresh } = useHarness()
   const [view, setView]               = useState('list')
   const [selected, setSelected]       = useState(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
@@ -2291,6 +2361,7 @@ export default function App() {
           onRun={handleRun}
           onStop={async id => { await stopTask(id); refresh() }}
           onResume={async id => { await resumeTask(id); refresh() }}
+          onResumeNow={async id => { await resumeNow(id); refresh() }}
           onDelete={async id => { await deleteTask(id); refresh() }}
           onBack={() => setView('list')}
           fetchTaskLogs={fetchTaskLogs}
@@ -2472,4 +2543,22 @@ export default function App() {
       `}</style>
     </div>
   )
+}
+
+export default function App() {
+  const [authed, setAuthed] = useState(null)
+  useEffect(() => {
+    fetch(`${_AUTH_BASE}/auth/status`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => setAuthed(d.authenticated !== false))
+      .catch(() => setAuthed(false))
+  }, [])
+
+  if (authed === null) {
+    return <div style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--text3)', fontSize: 13 }}>연결 중…</div>
+  }
+  if (!authed) {
+    return <LoginScreen onLogin={() => setAuthed(true)} />
+  }
+  return <AppContent onLogout={() => setAuthed(false)} />
 }

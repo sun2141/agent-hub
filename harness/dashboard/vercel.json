@@ -4,7 +4,9 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "http://91.99.58.70:3000/api/:path*" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/health",        "destination": "http://91.99.58.70:9091/health" },
+    { "source": "/auth/:path*",   "destination": "http://91.99.58.70:9091/auth/:path*" },
+    { "source": "/api/:path*",    "destination": "http://91.99.58.70:9091/api/:path*" },
+    { "source": "/(.*)",          "destination": "/index.html" }
   ]
 }

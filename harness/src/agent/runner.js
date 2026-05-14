@@ -10,10 +10,14 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask } from '../db/db.js';
 
+// 토큰 리미트 해제까지 대기 시간 (기본 5시간)
+const RATE_LIMIT_RESET_HOURS = parseFloat(process.env.RATE_LIMIT_RESET_HOURS || '5');
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+const CODEX_CLI    = process.env.CODEX_CLI_PATH || '/Users/sun/.nvm/versions/node/v22.22.2/bin/codex';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
 const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
 
@@ -92,10 +96,10 @@ export class AgentRunner extends EventEmitter {
       throw new Error(`이미 실행 중인 task가 있습니다: ${activeTask.id} (${activeTask.status}). 완료 후 다시 시도하세요.`);
     }
 
-    const effectiveMaxRounds = Math.max(
-      typeof maxRounds === 'number' && maxRounds > 0 ? maxRounds : MAX_ROUNDS,
-      MAX_ROUNDS
-    );
+    // 사용자가 지정한 값 사용, 단 MAX_ROUNDS를 상한으로 제한 (Math.min)
+    const effectiveMaxRounds = typeof maxRounds === 'number' && maxRounds > 0
+      ? Math.min(maxRounds, MAX_ROUNDS)
+      : MAX_ROUNDS;
 
     const taskId = `task_${Date.now()}_${randomUUID().slice(0, 6)}`;
 
@@ -160,7 +164,13 @@ export class AgentRunner extends EventEmitter {
   async resume(taskId) {
     const task = await taskQueries.get(taskId);
     if (!task) throw new Error(`작업 없음: ${taskId}`);
-    if (task.status !== PHASE.PAUSED) throw new Error(`재개 불가 상태: ${task.status}`);
+    if (task.status !== PHASE.PAUSED && task.status !== 'rate_limited') {
+      throw new Error(`재개 불가 상태: ${task.status}`);
+    }
+    // rate_limited 상태면 scheduled_resume_at 초기화
+    if (task.status === 'rate_limited') {
+      await taskQueries.updateScheduledResumeAt(taskId, null);
+    }
     this.emit('task:resuming', { taskId });
     this._startPipeline(taskId);
   }
@@ -284,8 +294,15 @@ export class AgentRunner extends EventEmitter {
       if (this._deleted.has(taskId)) {
         console.log(`[pipeline] taskId=${taskId} 삭제 진행 중 — catch 블록 스킵`);
       } else if (err.message === 'RATE_LIMIT') {
-        await taskQueries.updateStatus(taskId, PHASE.PAUSED);
-        this.emit('task:paused', { taskId, reason: 'rate_limit' });
+        // 토큰 리미트 감지: 즉시 중단 + 5시간 후 재개 예약
+        const resetAt = new Date(Date.now() + RATE_LIMIT_RESET_HOURS * 60 * 60 * 1000);
+        const resetAtIso = resetAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+        console.log(`[pipeline] Claude 토큰 리미트 감지 → 즉시 중단, 재개 예정: ${resetAtIso}`);
+        await taskQueries.updateStatus(taskId, 'rate_limited');
+        await taskQueries.updateScheduledResumeAt(taskId, resetAtIso);
+        await logQueries.append({ task_id: taskId, phase: 'system', round: 0, level: 'warn',
+          content: `[rate_limited] 토큰 리미트 도달. ${RATE_LIMIT_RESET_HOURS}시간 후 재개 예정: ${resetAtIso}` });
+        this.emit('task:rate_limited', { taskId, projectId: task?.project_id, scheduledResumeAt: resetAtIso });
       } else {
         const safeError = err.message.replace(/\/Users\/[^\s]+/g, '[path]');
         await taskQueries.updateStatus(taskId, PHASE.FAILED, { error: safeError });
@@ -485,31 +502,20 @@ export class AgentRunner extends EventEmitter {
     const sameRepo = harnessGitRoot && projectGitRoot && harnessGitRoot === projectGitRoot;
     console.log(`[deploy] sameRepo=${sameRepo}, harnessGitRoot=${harnessGitRoot}, projectGitRoot=${projectGitRoot}`);
 
-    if (sameRepo) {
-      const sha = await doCommit('repo', harnessGitRoot, '.');
-      if (sha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
+    // 프로젝트 파일만 커밋 — 하네스 자체 변경은 커밋 대상에서 제외
+    // sameRepo인 경우에도 프로젝트 하위 경로만 스테이징
+    const targetGitRoot = sameRepo ? harnessGitRoot : projectGitRoot;
+    if (targetGitRoot) {
+      const projectRelPath = path.relative(targetGitRoot, safeCwdReal);
+      const projectStageTarget = projectRelPath === '' ? '.' : projectRelPath;
+      if (!projectStageTarget.startsWith('..')) {
+        const sha = await doCommit('project', targetGitRoot, projectStageTarget);
+        if (sha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
+      } else {
+        console.error(`[deploy] safeCwdReal이 gitRoot 외부 — 건너뜀: ${projectRelPath}`);
+      }
     } else {
-      if (harnessGitRoot) {
-        const harnessRelPath = path.relative(harnessGitRoot, harnessAbsPath);
-        const harnessStageTarget = harnessRelPath === '' ? '.' : harnessRelPath;
-        if (!harnessStageTarget.startsWith('..')) {
-          const sha = await doCommit('harness', harnessGitRoot, harnessStageTarget);
-          if (sha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
-        } else {
-          console.error(`[deploy] harnessAbsPath가 gitRoot 외부 — 건너뜀: ${harnessRelPath}`);
-        }
-      }
-
-      if (projectGitRoot) {
-        const projectRelPath = path.relative(projectGitRoot, safeCwdReal);
-        const projectStageTarget = projectRelPath === '' ? '.' : projectRelPath;
-        if (!projectStageTarget.startsWith('..')) {
-          const sha = await doCommit('project', projectGitRoot, projectStageTarget);
-          if (sha && !commitSha) { commitSha = sha; await taskQueries.updateCommit(task.id, commitSha); }
-        } else {
-          console.error(`[deploy] safeCwdReal이 projectGitRoot 외부 — 건너뜀: ${projectRelPath}`);
-        }
-      }
+      console.log('[deploy] 프로젝트 git root 없음 — 커밋 건너뜀');
     }
 
     console.log(`[deploy] 커밋 단계 완료. commitSha=${commitSha || '(없음)'}`);
@@ -674,6 +680,105 @@ export class AgentRunner extends EventEmitter {
   // --setting-sources user 제거: CLAUDE_CONFIG_DIR(harness 전용)을 우선 사용
   // hasTrustDialogAccepted는 .claude.json의 projects 항목에서 true로 설정 필요
 
+  _isCodexAvailable() {
+    try {
+      const res = spawnSync(CODEX_CLI, ['--version'], { timeout: 3000, stdio: 'pipe' });
+      return res.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async _runCodexFallback(taskId) {
+    const task    = await taskQueries.get(taskId);
+    const project = await projectQueries.get(task.project_id);
+    const safeCwd = this._validateProjectPath(project.path);
+    const plan    = task.plan
+      ? JSON.parse(task.plan)
+      : { title: task.prompt.slice(0, 60), features: [], acceptance_criteria: [] };
+    const round    = (task.round || 0) + 1;
+    const prevEval = task.eval_result ? JSON.parse(task.eval_result) : null;
+    console.log(`[codex] fallback taskId=${taskId}, round=${round}`);
+    this._running.set(taskId, { process: null, phase: 'building', round });
+    try {
+      await taskQueries.updateStatus(taskId, 'fallback_running');
+      await taskQueries.updateProvider(taskId, 'codex');
+      this.emit('task:paused', { taskId, reason: 'fallback_running', provider: 'codex' });
+      const handoffPrompt = this._buildHandoffPrompt(task, plan, round, prevEval);
+      await logQueries.append({ task_id: taskId, phase: 'build', round, level: 'info', content: `[codex fallback] round=${round}` });
+      await this._codexRun({ taskId, phase: 'build', round, cwd: safeCwd, prompt: handoffPrompt });
+      await taskQueries.updateStatus(taskId, PHASE.EVAL);
+      await taskQueries.incrementRound(taskId);
+      this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
+      const evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+      this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
+      await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
+      if (this._isEvalPassed(evalResult)) {
+        let deployResult = 'skipped';
+        try { deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd); } catch {}
+        await taskQueries.updateStatus(taskId, PHASE.DONE);
+        this.emit('task:complete', { taskId, projectId: task.project_id, round, evalResult, provider: 'codex', deployFailed: deployResult === 'deploy_failed' });
+      } else {
+        await taskQueries.updateStatus(taskId, PHASE.PAUSED, { error: 'codex_eval_failed' });
+        this.emit('task:paused', { taskId, reason: 'codex_eval_failed', provider: 'codex', evalResult });
+      }
+    } catch (err) {
+      console.error(`[codex fallback] failed: ${err.message}`);
+      await taskQueries.updateStatus(taskId, PHASE.PAUSED, { error: `codex_failed: ${err.message.slice(0, 200)}` });
+      this.emit('task:paused', { taskId, reason: 'codex_failed' });
+    } finally {
+      this._running.delete(taskId);
+      this._drainQueue();
+    }
+  }
+
+  _buildHandoffPrompt(task, plan, round, prevEval) {
+    const lines = [
+      '[Codex Handoff]',
+      `## task: ${plan.title || task.prompt.slice(0, 80)}`,
+      `## summary: ${plan.summary || plan.title || ''}`,
+      '',
+      '## features',
+      ...(plan.features || []).map((f, i) => `${i + 1}. ${f}`),
+      '',
+      '## acceptance_criteria (all must be met)',
+      ...(plan.acceptance_criteria || []).map((c, i) => `${i + 1}. ${c}`),
+    ];
+    if (prevEval) {
+      const issues = Array.isArray(prevEval.issues) ? prevEval.issues : [];
+      lines.push('', `## prev eval round=${round - 1} score=${prevEval.score ?? '?'}/100`, '## unresolved issues', ...issues.map((x, i) => `${i + 1}. ${x}`), `## suggestions: ${prevEval.suggestions || 'none'}`);
+    }
+    lines.push('', `Round ${round}: implement all acceptance_criteria above.`, 'WARNING: do NOT git commit or deploy. Only implement.');
+    return lines.join('\n');
+  }
+
+  _codexRun({ taskId, phase, round, cwd, prompt }) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(CODEX_CLI, ['exec', prompt], { cwd, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const entry = this._running.get(taskId) || { process: null, phase, round };
+      entry.process = proc;
+      this._running.set(taskId, entry);
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', chunk => {
+        const text = chunk.toString();
+        stdout += text;
+        logQueries.append({ task_id: taskId, phase, round, level: 'info', content: text.slice(0, 1000) });
+        this.emit('agent:text', { taskId, phase, round, content: text, provider: 'codex' });
+      });
+      proc.stderr.on('data', chunk => {
+        stderr += chunk.toString();
+        logQueries.append({ task_id: taskId, phase, round, level: 'error', content: chunk.toString().slice(0, 500) });
+      });
+      proc.on('close', code => {
+        console.log(`[codex close:${phase}] code=${code} len=${stdout.length}`);
+        if (code !== 0 && !stdout.trim()) reject(new Error(`Codex exit ${code}: ${stderr.slice(0, 200)}`));
+        else resolve(stdout.trim());
+      });
+      proc.on('error', err => reject(new Error(`Codex spawn failed: ${err.message}`)));
+    });
+  }
+
   _claudeRun({ taskId, phase, round, cwd, prompt }) {
     return new Promise((resolve, reject) => {
       const args = [
@@ -723,6 +828,17 @@ export class AgentRunner extends EventEmitter {
           try {
             const msg = JSON.parse(line);
             if (msg.type !== 'system') console.log(`[CLI msg:${phase}] type=${msg.type} ${msg.error||''}`);
+            // stream-json result 메시지에서 rate limit 감지
+            if (!rejected && msg.type === 'result' && msg.is_error) {
+              const errText = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result || '');
+              if (errText.includes('rate limit') || errText.includes('429') ||
+                  errText.toLowerCase().includes('usage limit') || errText.includes('overloaded')) {
+                rejected = true;
+                proc.kill('SIGTERM');
+                reject(new Error('RATE_LIMIT'));
+                break;
+              }
+            }
             this._handleStreamMsg(taskId, phase, round, msg,
               (text) => { assistantTexts.push(text); },
               (r)    => { finalResult = r; }
@@ -734,8 +850,16 @@ export class AgentRunner extends EventEmitter {
       proc.stderr.on('data', (chunk) => {
         const text = chunk.toString();
         console.error(`[CLI stderr:${phase}] ${text.trim()}`);
-        if (!rejected && (text.includes('rate limit') || text.includes('429'))) {
+        if (!rejected && (
+          text.includes('rate limit') ||
+          text.includes('Rate limit') ||
+          text.includes('429') ||
+          text.includes('overloaded') ||
+          text.includes('Claude AI usage limit') ||
+          text.toLowerCase().includes('usage limit')
+        )) {
           rejected = true;
+          proc.kill('SIGTERM');
           reject(new Error('RATE_LIMIT'));
         }
         logQueries.append({ task_id: taskId, phase, round, level: 'error', content: text.substring(0, 500) });

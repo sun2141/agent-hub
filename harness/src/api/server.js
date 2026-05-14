@@ -7,7 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries } from '../db/db.js';
 import crypto from 'crypto';
 import fs from 'fs';
-import { execSync, spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import session from 'express-session';
@@ -179,6 +179,27 @@ function updateClaudeMdRegistry({ id, name, localPath, github, deploy }) {
 const API_KEY = process.env.API_KEY;
 // 쉼표로 구분된 여러 origin 지원 (예: "https://a.vercel.app,https://b.vercel.app")
 
+// ── WS 일회용 토큰 (대시보드 세션 → WS 인증 브릿지) ─────
+// 브라우저 번들에 API_KEY를 노출하지 않고 세션 기반 WS 인증을 위해 사용
+const wsTokenStore = new Map(); // token → expiry
+function generateWsToken() {
+  const token = crypto.randomBytes(16).toString('hex');
+  wsTokenStore.set(token, Date.now() + 30_000); // 30초 유효
+  return token;
+}
+function consumeWsToken(token) {
+  const expiry = wsTokenStore.get(token);
+  if (!expiry) return false;
+  wsTokenStore.delete(token); // 일회용
+  return Date.now() < expiry;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, expiry] of wsTokenStore) {
+    if (now > expiry) wsTokenStore.delete(token);
+  }
+}, 60_000);
+
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
 
 // SESSION_SECRET: 파일에 저장하여 서버 재시작 후에도 세션 유지
@@ -241,6 +262,9 @@ function dashboardAuthMiddleware(req, res, next) {
     return res.status(503).json({ error: 'DASHBOARD_PASSWORD not configured.' });
   }
   if (req.session?.dashboardAuthenticated) return next();
+  // API Key 인증도 허용
+  const key = req.headers['x-api-key'];
+  if (API_KEY && key === API_KEY) return next();
   return res.status(401).json({ error: 'Dashboard authentication required' });
 }
 
@@ -335,6 +359,17 @@ export function createApiServer(agentRunner) {
     res.json({ authenticated, passwordRequired: true });
   });
 
+  // ── WS 일회용 토큰 발급 ────────────────────────
+  // 세션으로 로그인된 사용자에게 WS 인증용 일회용 토큰 제공
+  // 브라우저는 VITE_API_KEY 없이 이 토큰으로 WS 연결 통과
+  app.get('/auth/ws-token', (req, res) => {
+    if (!req.session?.dashboardAuthenticated) {
+      const key = req.headers['x-api-key'];
+      if (!API_KEY || key !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+    }
+    res.json({ token: generateWsToken() });
+  });
+
   app.use(dashboardAuthMiddleware);
 
   app.use('/api', authMiddleware);
@@ -365,9 +400,9 @@ export function createApiServer(agentRunner) {
       fs.mkdirSync(resolvedPath, { recursive: true });
       results.folderCreated = true;
 
-      execSync(`git init`, { cwd: resolvedPath, stdio: 'pipe' });
-      execSync(`git checkout -b main`, { cwd: resolvedPath, stdio: 'pipe' });
-      results.gitInit = true;
+      const gitInit = spawnSync('git', ['init'], { cwd: resolvedPath, stdio: 'pipe' });
+      spawnSync('git', ['checkout', '-b', 'main'], { cwd: resolvedPath, stdio: 'pipe' });
+      results.gitInit = gitInit.status === 0;
 
       if (githubRepo && GITHUB_TOKEN) {
         const repoName = (githubRepo === true || githubRepo === 'auto')
@@ -393,7 +428,7 @@ export function createApiServer(agentRunner) {
 
         if (ghRes.ok) {
           results.githubRepo = { name: repoName, url: ghData.html_url, sshUrl: ghData.ssh_url, cloneUrl: ghData.clone_url };
-          execSync(`git remote add origin ${ghData.ssh_url}`, { cwd: resolvedPath, stdio: 'pipe' });
+          spawnSync('git', ['remote', 'add', 'origin', ghData.ssh_url], { cwd: resolvedPath, stdio: 'pipe' });
         } else {
           results.githubError = ghData.message || 'GitHub 레포 생성 실패';
         }
@@ -401,7 +436,8 @@ export function createApiServer(agentRunner) {
 
       const readmeContent = `# ${name}\n\n${description || ''}\n`;
       fs.writeFileSync(path.join(resolvedPath, 'README.md'), readmeContent);
-      execSync(`git add README.md && git commit -m "Initial commit"`, { cwd: resolvedPath, stdio: 'pipe', shell: true });
+      spawnSync('git', ['add', 'README.md'], { cwd: resolvedPath, stdio: 'pipe' });
+      spawnSync('git', ['commit', '-m', 'Initial commit'], { cwd: resolvedPath, stdio: 'pipe' });
 
       const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description });
       results.dbInserted = true;
@@ -736,6 +772,16 @@ export function createApiServer(agentRunner) {
     }
   });
 
+  // ── 토큰 리미트 대기 중인 작업 목록 (:id 라우트보다 먼저 등록) ──
+  app.get('/api/tasks/rate-limited', async (req, res) => {
+    try {
+      const tasks = await taskQueries.getRateLimitedTasks();
+      res.json(tasks);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/tasks/:id', async (req, res) => {
     const { id } = req.params;
     if (!/^task_[0-9]+_[a-z0-9]+$/.test(id)) {
@@ -760,9 +806,9 @@ export function createApiServer(agentRunner) {
       const task = await taskQueries.get(taskId);
       if (!task) return res.status(404).json({ error: '작업 없음' });
 
-      const DELETABLE = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating'];
+      const DELETABLE = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating', 'rate_limited'];
       if (!DELETABLE.includes(task.status)) {
-        return res.status(409).json({ error: `삭제 불가 상태: ${task.status}. failed/paused/building 상태만 삭제 가능합니다.` });
+        return res.status(409).json({ error: `삭제 불가 상태: ${task.status}. failed/paused/building/rate_limited 상태만 삭제 가능합니다.` });
       }
 
       const result = await agentRunner.deleteTask(taskId);
@@ -796,10 +842,11 @@ export function createApiServer(agentRunner) {
       // commit_sha가 있으면 해당 커밋에서 변경된 파일 목록
       if (task.commit_sha) {
         try {
-          const diffOut = execSync(
-            `git show --name-status --format="" ${task.commit_sha}`,
+          const diffRes = spawnSync(
+            'git', ['show', '--name-status', '--format=', task.commit_sha],
             { cwd: projectPath, encoding: 'utf8', timeout: 10000 }
-          ).trim();
+          );
+          const diffOut = (diffRes.stdout || '').trim();
           if (diffOut) {
             files = diffOut.split('\n').filter(Boolean).map(line => {
               const parts = line.split('\t');
@@ -825,10 +872,11 @@ export function createApiServer(agentRunner) {
       // commit_sha가 없거나 git 실패 시: git status로 현재 변경 파일 목록
       if (files.length === 0) {
         try {
-          const statusOut = execSync(
-            'git diff --name-status HEAD',
+          const statusRes = spawnSync(
+            'git', ['diff', '--name-status', 'HEAD'],
             { cwd: projectPath, encoding: 'utf8', timeout: 10000 }
-          ).trim();
+          );
+          const statusOut = (statusRes.stdout || '').trim();
           if (statusOut) {
             files = statusOut.split('\n').filter(Boolean).map(line => {
               const parts = line.split('\t');
@@ -1155,7 +1203,6 @@ export function createApiServer(agentRunner) {
 
         // 폴더 공유 링크 기반 개별 파일 다운로드 URL 구성
         // Dropbox shared link + ?dl=1 for direct download (per-file path via path param)
-        const folderShareBase = url.split('?')[0];
         const files = (listData.entries || []).filter(e => e['.tag'] === 'file').map(f => {
           // 파일 path_display를 이용해 개별 파일 공유 링크 구성 (sharing/get_shared_link_file 방식)
           // 또는 토큰 있을 경우 get_temporary_link URL 사용 예정 (아래 enrichment 단계)
@@ -1329,6 +1376,25 @@ export function createApiServer(agentRunner) {
     }
   });
 
+  // ── rate_limited 작업 수동 재개 ──────────────────────────
+  app.post('/api/tasks/:taskId/resume-now', async (req, res) => {
+    const { taskId } = req.params;
+    if (!/^task_[0-9]+_[a-z0-9]+$/.test(taskId)) {
+      return res.status(400).json({ error: '잘못된 taskId 형식' });
+    }
+    try {
+      const task = await taskQueries.get(taskId);
+      if (!task) return res.status(404).json({ error: '작업 없음' });
+      if (task.status !== 'rate_limited' && task.status !== 'paused') {
+        return res.status(409).json({ error: `재개 불가 상태: ${task.status}` });
+      }
+      await agentRunner.resume(taskId);
+      res.json({ taskId, status: 'resuming' });
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
   app.post('/api/deploy', (req, res) => {
     const harnessRoot = path.resolve(__dirname, '../..');
     const scriptPath = path.join(harnessRoot, 'scripts', 'deploy_detached.sh');
@@ -1399,12 +1465,19 @@ export function createApiServer(agentRunner) {
         clearTimeout(authTimeout);
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.type === 'auth' && msg.key === API_KEY) {
-            authenticated = true;
-            clients.add(ws);
-            ws.send(JSON.stringify({ type: 'authenticated', status: agentRunner.getStatus() }));
+          if (msg.type === 'auth') {
+            // API_KEY(서버내부/Telegram) 또는 WS 일회용 토큰(대시보드 세션)
+            const byApiKey = API_KEY && msg.key === API_KEY;
+            const byWsToken = msg.token && consumeWsToken(msg.token);
+            if (byApiKey || byWsToken) {
+              authenticated = true;
+              clients.add(ws);
+              ws.send(JSON.stringify({ type: 'authenticated', status: agentRunner.getStatus() }));
+            } else {
+              ws.close(1008, 'Unauthorized');
+            }
           } else {
-            ws.close(1008, 'Unauthorized');
+            ws.close(1008, 'Invalid auth message');
           }
         } catch {
           ws.close(1008, 'Invalid auth message');
@@ -1427,16 +1500,18 @@ export function createApiServer(agentRunner) {
     }
   }
 
-  agentRunner.on('task:created',   d => broadcast('task:created',   d));
-  agentRunner.on('task:queued',    d => broadcast('task:queued',    d));
-  agentRunner.on('task:complete',  d => broadcast('task:complete',  d));
-  agentRunner.on('task:paused',    d => broadcast('task:paused',    d));
-  agentRunner.on('task:failed',    d => broadcast('task:failed',    d));
-  agentRunner.on('task:deleted',   d => broadcast('task:deleted',   d));
-  agentRunner.on('phase:start',    d => broadcast('phase:start',    d));
-  agentRunner.on('phase:complete', d => broadcast('phase:complete', d));
-  agentRunner.on('agent:text',     d => broadcast('agent:text',     d));
-  agentRunner.on('agent:tool',     d => broadcast('agent:tool',     d));
+  agentRunner.on('task:created',      d => broadcast('task:created',      d));
+  agentRunner.on('task:queued',       d => broadcast('task:queued',       d));
+  agentRunner.on('task:complete',     d => broadcast('task:complete',     d));
+  agentRunner.on('task:paused',       d => broadcast('task:paused',       d));
+  agentRunner.on('task:failed',       d => broadcast('task:failed',       d));
+  agentRunner.on('task:deleted',      d => broadcast('task:deleted',      d));
+  agentRunner.on('task:rate_limited', d => broadcast('task:rate_limited', d));
+  agentRunner.on('task:resuming',     d => broadcast('task:resuming',     d));
+  agentRunner.on('phase:start',       d => broadcast('phase:start',       d));
+  agentRunner.on('phase:complete',    d => broadcast('phase:complete',    d));
+  agentRunner.on('agent:text',        d => broadcast('agent:text',        d));
+  agentRunner.on('agent:tool',        d => broadcast('agent:tool',        d));
 
   return { app, server: httpServer };
 }

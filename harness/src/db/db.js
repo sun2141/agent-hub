@@ -66,9 +66,14 @@ export async function initDb() {
   const tableInfo = await dbAll("PRAGMA table_info(tasks)");
   if (tableInfo.length > 0) {
     const maxRoundsCol = tableInfo.find(col => col.name === 'max_rounds');
+    // DEFAULT가 '3'인 경우에만 마이그레이션 (최초 1회)
     if (maxRoundsCol && String(maxRoundsCol.dflt_value) === '3') {
-      console.log('[DB] max_rounds DEFAULT 마이그레이션: 3→10 (기존 task 중 max_rounds=3인 것 수정)');
-      await dbRun("UPDATE tasks SET max_rounds = 10 WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
+      const staleCount = await dbAll("SELECT COUNT(*) AS cnt FROM tasks WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
+      const cnt = staleCount[0]?.cnt ?? 0;
+      if (cnt > 0) {
+        console.log(`[DB] max_rounds 마이그레이션: ${cnt}개 task의 max_rounds 3→10`);
+        await dbRun("UPDATE tasks SET max_rounds = 10 WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
+      }
     }
     // commit_sha, deploy_status 컬럼 마이그레이션 (기존 DB 대응)
     const hasCommitSha = tableInfo.some(col => col.name === 'commit_sha');
@@ -80,6 +85,16 @@ export async function initDb() {
     if (!hasDeployStatus) {
       console.log('[DB] deploy_status 컬럼 추가');
       await dbRun("ALTER TABLE tasks ADD COLUMN deploy_status TEXT");
+    }
+    const hasProvider = tableInfo.some(col => col.name === 'provider');
+    if (!hasProvider) {
+      console.log('[DB] provider 컬럼 추가 (claude|codex)');
+      await dbRun("ALTER TABLE tasks ADD COLUMN provider TEXT DEFAULT 'claude'");
+    }
+    const hasScheduledResumeAt = tableInfo.some(col => col.name === 'scheduled_resume_at');
+    if (!hasScheduledResumeAt) {
+      console.log('[DB] scheduled_resume_at 컬럼 추가 (리미트 해제 예정 시각)');
+      await dbRun("ALTER TABLE tasks ADD COLUMN scheduled_resume_at TEXT");
     }
   }
 
@@ -96,7 +111,7 @@ export async function initDb() {
     }
     if (!hasUpdatedAt) {
       console.log('[DB] projects.updated_at 컬럼 추가');
-      await dbRun("ALTER TABLE projects ADD COLUMN updated_at TEXT DEFAULT (datetime('now'))");
+      await dbRun("ALTER TABLE projects ADD COLUMN updated_at TEXT");
     }
     if (!hasGithub) {
       console.log('[DB] projects.github 컬럼 추가');
@@ -133,10 +148,12 @@ export async function initDb() {
       round         INTEGER DEFAULT 0,
       max_rounds    INTEGER DEFAULT 10,
       error         TEXT,
-      commit_sha    TEXT,
-      deploy_status TEXT,
-      created_at    TEXT DEFAULT (datetime('now')),
-      updated_at    TEXT DEFAULT (datetime('now'))
+      commit_sha           TEXT,
+      deploy_status        TEXT,
+      provider             TEXT DEFAULT 'claude',
+      scheduled_resume_at  TEXT,
+      created_at           TEXT DEFAULT (datetime('now')),
+      updated_at           TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS logs (
@@ -308,11 +325,33 @@ export const taskQueries = {
     await dbRun('UPDATE tasks SET deploy_status = ? WHERE id = ?', [deployStatus, id]);
   },
 
+  async updateProvider(id, provider) {
+    await dbRun("UPDATE tasks SET provider = ? WHERE id = ?", [provider, id]);
+  },
+
+  async updateScheduledResumeAt(id, scheduledResumeAt) {
+    await dbRun("UPDATE tasks SET scheduled_resume_at = ? WHERE id = ?", [scheduledResumeAt, id]);
+  },
+
   // 특정 프로젝트에 현재 활성 중인 task가 있는지 확인
   async getActiveForProject(projectId) {
     return dbGet(
-      "SELECT id, status FROM tasks WHERE project_id = ? AND status NOT IN ('done','failed','paused') ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, status FROM tasks WHERE project_id = ? AND status NOT IN ('done','failed','paused','rate_limited') ORDER BY created_at DESC LIMIT 1",
       [projectId]
+    );
+  },
+
+  // 재개 예정 시각이 지난 rate_limited 작업 목록 조회
+  async getPendingRateLimitedTasks() {
+    return dbAll(
+      "SELECT * FROM tasks WHERE status = 'rate_limited' AND scheduled_resume_at IS NOT NULL AND scheduled_resume_at <= datetime('now') ORDER BY scheduled_resume_at ASC"
+    );
+  },
+
+  // rate_limited 상태의 모든 작업 조회 (대시보드 표시용)
+  async getRateLimitedTasks() {
+    return dbAll(
+      "SELECT * FROM tasks WHERE status = 'rate_limited' ORDER BY created_at DESC"
     );
   },
 };
