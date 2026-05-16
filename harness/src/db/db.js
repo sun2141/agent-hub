@@ -1,151 +1,48 @@
 // src/db/db.js
-// SQLite 스키마 정의 및 쿼리 모음 (sqlite3 기반 - 동기 래퍼)
+// Neon DB (PostgreSQL) 스키마 정의 및 쿼리 모음
+// harness 전용 스키마(harness)를 사용하여 기존 public 스키마와 분리
 
-import sqlite3pkg from 'sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
+import { neon } from '@neondatabase/serverless';
+import dotenv from 'dotenv';
 
-const sqlite3 = sqlite3pkg.verbose();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '../../data');
-const DB_PATH = path.join(DATA_DIR, 'harness.db');
+dotenv.config();
 
-let _db = null;
+let _sql = null;
 
-// sqlite3는 비동기 기반이므로 동기처럼 쓸 수 있는 래퍼 제공
-function dbRun(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    _db.run(sql, params, function (err) {
-      if (err) reject(err);
-      else resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
+function getSql() {
+  if (!_sql) {
+    const dbUrl = process.env.NEON_DATABASE_URL;
+    if (!dbUrl) throw new Error('NEON_DATABASE_URL 환경변수가 설정되지 않았습니다.');
+    _sql = neon(dbUrl);
+  }
+  return _sql;
 }
 
-function dbGet(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    _db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row || null);
-    });
-  });
+async function dbRun(query, params = []) {
+  const s = getSql();
+  const rows = await s.query(query, params);
+  return rows;
 }
 
-function dbAll(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    _db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows || []);
-    });
-  });
+async function dbGet(query, params = []) {
+  const s = getSql();
+  const rows = await s.query(query, params);
+  return rows[0] || null;
 }
 
-function dbExec(sql) {
-  return new Promise((resolve, reject) => {
-    _db.exec(sql, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+async function dbAll(query, params = []) {
+  const s = getSql();
+  const rows = await s.query(query, params);
+  return rows || [];
 }
 
+// ── DB 초기화 (harness 스키마 생성 + 테이블) ──────────────────
 export async function initDb() {
-  if (_db) return _db;
+  // harness 전용 스키마 생성
+  await dbRun(`CREATE SCHEMA IF NOT EXISTS harness`);
 
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-
-  _db = new sqlite3.Database(DB_PATH);
-
-  await dbRun('PRAGMA journal_mode = WAL');
-  await dbRun('PRAGMA foreign_keys = ON');
-
-  // 기존 DB의 max_rounds 컬럼 DEFAULT가 3인 경우 대응:
-  // SQLite는 ALTER COLUMN DEFAULT를 지원하지 않으므로
-  // 잘못 저장된 기존 task의 max_rounds=3을 10으로 마이그레이션
-  const tableInfo = await dbAll("PRAGMA table_info(tasks)");
-  if (tableInfo.length > 0) {
-    const maxRoundsCol = tableInfo.find(col => col.name === 'max_rounds');
-    // DEFAULT가 '3'인 경우에만 마이그레이션 (최초 1회)
-    if (maxRoundsCol && String(maxRoundsCol.dflt_value) === '3') {
-      const staleCount = await dbAll("SELECT COUNT(*) AS cnt FROM tasks WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
-      const cnt = staleCount[0]?.cnt ?? 0;
-      if (cnt > 0) {
-        console.log(`[DB] max_rounds 마이그레이션: ${cnt}개 task의 max_rounds 3→10`);
-        await dbRun("UPDATE tasks SET max_rounds = 10 WHERE max_rounds = 3 AND status NOT IN ('done','failed')");
-      }
-    }
-    // commit_sha, deploy_status 컬럼 마이그레이션 (기존 DB 대응)
-    const hasCommitSha = tableInfo.some(col => col.name === 'commit_sha');
-    const hasDeployStatus = tableInfo.some(col => col.name === 'deploy_status');
-    if (!hasCommitSha) {
-      console.log('[DB] commit_sha 컬럼 추가');
-      await dbRun("ALTER TABLE tasks ADD COLUMN commit_sha TEXT");
-    }
-    if (!hasDeployStatus) {
-      console.log('[DB] deploy_status 컬럼 추가');
-      await dbRun("ALTER TABLE tasks ADD COLUMN deploy_status TEXT");
-    }
-    const hasProvider = tableInfo.some(col => col.name === 'provider');
-    if (!hasProvider) {
-      console.log('[DB] provider 컬럼 추가 (claude|codex)');
-      await dbRun("ALTER TABLE tasks ADD COLUMN provider TEXT DEFAULT 'claude'");
-    }
-    const hasScheduledResumeAt = tableInfo.some(col => col.name === 'scheduled_resume_at');
-    if (!hasScheduledResumeAt) {
-      console.log('[DB] scheduled_resume_at 컬럼 추가 (리미트 해제 예정 시각)');
-      await dbRun("ALTER TABLE tasks ADD COLUMN scheduled_resume_at TEXT");
-    }
-  }
-
-  // projects 테이블 마이그레이션 (hidden, updated_at, github, deploy 컬럼)
-  const projectTableInfo = await dbAll("PRAGMA table_info(projects)");
-  if (projectTableInfo.length > 0) {
-    const hasHidden = projectTableInfo.some(col => col.name === 'hidden');
-    const hasUpdatedAt = projectTableInfo.some(col => col.name === 'updated_at');
-    const hasGithub = projectTableInfo.some(col => col.name === 'github');
-    const hasDeploy = projectTableInfo.some(col => col.name === 'deploy');
-    if (!hasHidden) {
-      console.log('[DB] projects.hidden 컬럼 추가');
-      await dbRun("ALTER TABLE projects ADD COLUMN hidden INTEGER DEFAULT 0");
-    }
-    if (!hasUpdatedAt) {
-      console.log('[DB] projects.updated_at 컬럼 추가');
-      await dbRun("ALTER TABLE projects ADD COLUMN updated_at TEXT");
-    }
-    if (!hasGithub) {
-      console.log('[DB] projects.github 컬럼 추가');
-      await dbRun("ALTER TABLE projects ADD COLUMN github TEXT");
-    }
-    if (!hasDeploy) {
-      console.log('[DB] projects.deploy 컬럼 추가');
-      await dbRun("ALTER TABLE projects ADD COLUMN deploy TEXT");
-    }
-  }
-
-  // limit_events 테이블 마이그레이션
-  const limitEventsInfo = await dbAll("PRAGMA table_info(limit_events)");
-  if (limitEventsInfo.length === 0) {
-    console.log('[DB] limit_events 테이블 생성');
-  }
-
-  await dbExec(`
-    CREATE TABLE IF NOT EXISTS limit_events (
-      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id             TEXT,
-      project_id          TEXT,
-      detected_at         TEXT DEFAULT (datetime('now')),
-      resume_available_at TEXT,
-      checkpoint_path     TEXT,
-      checkpoint_summary  TEXT,
-      notified            INTEGER DEFAULT 0,
-      resumed_at          TEXT,
-      created_at          TEXT DEFAULT (datetime('now'))
-    );
-  `);
-
-  await dbExec(`
-    CREATE TABLE IF NOT EXISTS projects (
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.projects (
       id          TEXT PRIMARY KEY,
       name        TEXT NOT NULL,
       path        TEXT NOT NULL,
@@ -155,51 +52,89 @@ export async function initDb() {
       deploy      TEXT,
       active      INTEGER DEFAULT 1,
       hidden      INTEGER DEFAULT 0,
-      created_at  TEXT DEFAULT (datetime('now')),
-      updated_at  TEXT DEFAULT (datetime('now'))
-    );
+      created_at  TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+      updated_at  TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
+  `);
 
-    CREATE TABLE IF NOT EXISTS tasks (
-      id            TEXT PRIMARY KEY,
-      project_id    TEXT NOT NULL REFERENCES projects(id),
-      prompt        TEXT NOT NULL,
-      status        TEXT DEFAULT 'pending',
-      plan          TEXT,
-      eval_result   TEXT,
-      round         INTEGER DEFAULT 0,
-      max_rounds    INTEGER DEFAULT 10,
-      error         TEXT,
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.tasks (
+      id                   TEXT PRIMARY KEY,
+      project_id           TEXT NOT NULL REFERENCES harness.projects(id),
+      prompt               TEXT NOT NULL,
+      status               TEXT DEFAULT 'pending',
+      plan                 TEXT,
+      eval_result          TEXT,
+      round                INTEGER DEFAULT 0,
+      max_rounds           INTEGER DEFAULT 10,
+      error                TEXT,
       commit_sha           TEXT,
       deploy_status        TEXT,
       provider             TEXT DEFAULT 'claude',
       scheduled_resume_at  TEXT,
-      created_at           TEXT DEFAULT (datetime('now')),
-      updated_at           TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS logs (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id     TEXT NOT NULL REFERENCES tasks(id),
-      phase       TEXT NOT NULL,
-      round       INTEGER DEFAULT 0,
-      level       TEXT DEFAULT 'info',
-      content     TEXT NOT NULL,
-      created_at  TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TRIGGER IF NOT EXISTS tasks_updated_at
-    AFTER UPDATE ON tasks
-    BEGIN
-      UPDATE tasks SET updated_at = datetime('now') WHERE id = NEW.id;
-    END;
+      created_at           TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+      updated_at           TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
   `);
 
-  return _db;
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.logs (
+      id         SERIAL PRIMARY KEY,
+      task_id    TEXT NOT NULL REFERENCES harness.tasks(id),
+      phase      TEXT NOT NULL,
+      round      INTEGER DEFAULT 0,
+      level      TEXT DEFAULT 'info',
+      content    TEXT NOT NULL,
+      created_at TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
+  `);
+
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.limit_events (
+      id                  SERIAL PRIMARY KEY,
+      task_id             TEXT,
+      project_id          TEXT,
+      detected_at         TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+      resume_available_at TEXT,
+      checkpoint_path     TEXT,
+      checkpoint_summary  TEXT,
+      notified            INTEGER DEFAULT 0,
+      resumed_at          TEXT,
+      created_at          TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
+  `);
+
+  // updated_at 자동 갱신 트리거
+  await dbRun(`
+    CREATE OR REPLACE FUNCTION harness.update_tasks_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS');
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+  `);
+
+  await dbRun(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger WHERE tgname = 'harness_tasks_updated_at'
+      ) THEN
+        CREATE TRIGGER harness_tasks_updated_at
+        BEFORE UPDATE ON harness.tasks
+        FOR EACH ROW EXECUTE FUNCTION harness.update_tasks_updated_at();
+      END IF;
+    END;
+    $$
+  `);
+
+  console.log('[DB] Neon DB (harness 스키마) 초기화 완료');
+  return true;
 }
 
 export function getDb() {
-  if (!_db) throw new Error('DB 미초기화. initDb()를 먼저 호출하세요.');
-  return _db;
+  return getSql();
 }
 
 // ── projects ──────────────────────────────────────────────────
@@ -207,13 +142,13 @@ export const projectQueries = {
   async seed(projects) {
     for (const p of projects) {
       await dbRun(`
-        INSERT INTO projects (id, name, path, stack, description)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO harness.projects (id, name, path, stack, description)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT(id) DO UPDATE SET
-          name = excluded.name,
-          path = excluded.path,
-          stack = excluded.stack,
-          description = excluded.description
+          name = EXCLUDED.name,
+          path = EXCLUDED.path,
+          stack = EXCLUDED.stack,
+          description = EXCLUDED.description
       `, [p.id, p.name, p.path, p.stack, p.description]);
     }
   },
@@ -222,11 +157,11 @@ export const projectQueries = {
     const hiddenFilter = includeHidden ? '' : 'AND (p.hidden IS NULL OR p.hidden = 0)';
     return dbAll(`
       SELECT p.*,
-        (SELECT status FROM tasks WHERE project_id = p.id
+        (SELECT status FROM harness.tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_status,
-        (SELECT created_at FROM tasks WHERE project_id = p.id
+        (SELECT created_at FROM harness.tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_at
-      FROM projects p WHERE p.active = 1 ${hiddenFilter}
+      FROM harness.projects p WHERE p.active = 1 ${hiddenFilter}
       ORDER BY p.created_at DESC
     `);
   },
@@ -234,68 +169,68 @@ export const projectQueries = {
   async listHidden() {
     return dbAll(`
       SELECT p.*,
-        (SELECT status FROM tasks WHERE project_id = p.id
+        (SELECT status FROM harness.tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_status,
-        (SELECT created_at FROM tasks WHERE project_id = p.id
+        (SELECT created_at FROM harness.tasks WHERE project_id = p.id
          ORDER BY created_at DESC LIMIT 1) AS last_task_at
-      FROM projects p WHERE p.active = 1 AND p.hidden = 1
+      FROM harness.projects p WHERE p.active = 1 AND p.hidden = 1
       ORDER BY p.updated_at DESC
     `);
   },
 
   async get(id) {
-    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+    return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
 
   async insert({ id, name, path, stack, description, github, deploy }) {
     await dbRun(
-      'INSERT INTO projects (id, name, path, stack, description, github, deploy) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO harness.projects (id, name, path, stack, description, github, deploy) VALUES ($1, $2, $3, $4, $5, $6, $7)',
       [id, name, path, stack || null, description || null, github || null, deploy || null]
     );
-    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+    return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
 
   async update(id, { name, path, stack, description, github, deploy }) {
     const fields = [];
     const values = [];
-    if (name       !== undefined) { fields.push('name = ?');        values.push(name); }
-    if (path       !== undefined) { fields.push('path = ?');        values.push(path); }
-    if (stack      !== undefined) { fields.push('stack = ?');       values.push(stack || null); }
-    if (description !== undefined) { fields.push('description = ?'); values.push(description || null); }
-    if (github     !== undefined) { fields.push('github = ?');      values.push(github || null); }
-    if (deploy     !== undefined) { fields.push('deploy = ?');      values.push(deploy || null); }
-    if (fields.length === 0) return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
-    fields.push("updated_at = datetime('now')");
+    let idx = 1;
+    if (name        !== undefined) { fields.push(`name = $${idx++}`);        values.push(name); }
+    if (path        !== undefined) { fields.push(`path = $${idx++}`);        values.push(path); }
+    if (stack       !== undefined) { fields.push(`stack = $${idx++}`);       values.push(stack || null); }
+    if (description !== undefined) { fields.push(`description = $${idx++}`); values.push(description || null); }
+    if (github      !== undefined) { fields.push(`github = $${idx++}`);      values.push(github || null); }
+    if (deploy      !== undefined) { fields.push(`deploy = $${idx++}`);      values.push(deploy || null); }
+    if (fields.length === 0) return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
+    fields.push(`updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')`);
     values.push(id);
-    await dbRun(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`, values);
-    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+    await dbRun(`UPDATE harness.projects SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+    return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
 
   async setVisibility(id, hidden) {
     await dbRun(
-      "UPDATE projects SET hidden = ?, updated_at = datetime('now') WHERE id = ?",
+      `UPDATE harness.projects SET hidden = $1, updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = $2`,
       [hidden ? 1 : 0, id]
     );
-    return dbGet('SELECT * FROM projects WHERE id = ?', [id]);
+    return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
 
   async remove(id) {
-    await dbRun('DELETE FROM projects WHERE id = ?', [id]);
+    await dbRun('DELETE FROM harness.projects WHERE id = $1', [id]);
   },
 
   async countTasks(id) {
-    const row = await dbGet('SELECT COUNT(*) AS cnt FROM tasks WHERE project_id = ?', [id]);
-    return row ? row.cnt : 0;
+    const row = await dbGet('SELECT COUNT(*) AS cnt FROM harness.tasks WHERE project_id = $1', [id]);
+    return row ? Number(row.cnt) : 0;
   },
 
-  // logs → tasks → project 순서로 삭제 (FK 제약 준수)
   async removeWithTasks(id) {
-    const tasks = await dbAll('SELECT id FROM tasks WHERE project_id = ?', [id]);
+    const tasks = await dbAll('SELECT id FROM harness.tasks WHERE project_id = $1', [id]);
     for (const t of tasks) {
-      await dbRun('DELETE FROM logs WHERE task_id = ?', [t.id]);
+      await dbRun('DELETE FROM harness.logs WHERE task_id = $1', [t.id]);
     }
-    await dbRun('DELETE FROM tasks WHERE project_id = ?', [id]);
-    await dbRun('DELETE FROM projects WHERE id = ?', [id]);
+    await dbRun('DELETE FROM harness.tasks WHERE project_id = $1', [id]);
+    await dbRun('DELETE FROM harness.projects WHERE id = $1', [id]);
   },
 };
 
@@ -303,76 +238,74 @@ export const projectQueries = {
 export const taskQueries = {
   async create({ id, project_id, prompt, max_rounds = 10 }) {
     await dbRun(
-      'INSERT INTO tasks (id, project_id, prompt, max_rounds) VALUES (?, ?, ?, ?)',
+      'INSERT INTO harness.tasks (id, project_id, prompt, max_rounds) VALUES ($1, $2, $3, $4)',
       [id, project_id, prompt, max_rounds]
     );
   },
 
   async get(id) {
-    return dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+    return dbGet('SELECT * FROM harness.tasks WHERE id = $1', [id]);
   },
 
   async list(limit = 20) {
     return dbAll(`
       SELECT t.*, p.name AS project_name
-      FROM tasks t JOIN projects p ON t.project_id = p.id
-      ORDER BY t.created_at DESC LIMIT ?
+      FROM harness.tasks t JOIN harness.projects p ON t.project_id = p.id
+      ORDER BY t.created_at DESC LIMIT $1
     `, [limit]);
   },
 
   async updateStatus(id, status, extra = {}) {
     const keys = Object.keys(extra);
     if (keys.length === 0) {
-      await dbRun('UPDATE tasks SET status = ? WHERE id = ?', [status, id]);
+      await dbRun('UPDATE harness.tasks SET status = $1 WHERE id = $2', [status, id]);
     } else {
-      const fields = keys.map(k => `${k} = ?`).join(', ');
+      let idx = 2;
+      const fields = keys.map(k => `${k} = $${idx++}`).join(', ');
       const values = keys.map(k => extra[k]);
       await dbRun(
-        `UPDATE tasks SET status = ?, ${fields} WHERE id = ?`,
+        `UPDATE harness.tasks SET status = $1, ${fields} WHERE id = $${idx}`,
         [status, ...values, id]
       );
     }
   },
 
   async incrementRound(id) {
-    await dbRun('UPDATE tasks SET round = round + 1 WHERE id = ?', [id]);
+    await dbRun('UPDATE harness.tasks SET round = round + 1 WHERE id = $1', [id]);
   },
 
   async updateCommit(id, commitSha) {
-    await dbRun('UPDATE tasks SET commit_sha = ? WHERE id = ?', [commitSha, id]);
+    await dbRun('UPDATE harness.tasks SET commit_sha = $1 WHERE id = $2', [commitSha, id]);
   },
 
   async updateDeploy(id, deployStatus) {
-    await dbRun('UPDATE tasks SET deploy_status = ? WHERE id = ?', [deployStatus, id]);
+    await dbRun('UPDATE harness.tasks SET deploy_status = $1 WHERE id = $2', [deployStatus, id]);
   },
 
   async updateProvider(id, provider) {
-    await dbRun("UPDATE tasks SET provider = ? WHERE id = ?", [provider, id]);
+    await dbRun('UPDATE harness.tasks SET provider = $1 WHERE id = $2', [provider, id]);
   },
 
   async updateScheduledResumeAt(id, scheduledResumeAt) {
-    await dbRun("UPDATE tasks SET scheduled_resume_at = ? WHERE id = ?", [scheduledResumeAt, id]);
+    await dbRun('UPDATE harness.tasks SET scheduled_resume_at = $1 WHERE id = $2', [scheduledResumeAt, id]);
   },
 
-  // 특정 프로젝트에 현재 활성 중인 task가 있는지 확인
   async getActiveForProject(projectId) {
     return dbGet(
-      "SELECT id, status FROM tasks WHERE project_id = ? AND status NOT IN ('done','failed','paused','rate_limited') ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, status FROM harness.tasks WHERE project_id = $1 AND status NOT IN ('done','failed','paused','rate_limited') ORDER BY created_at DESC LIMIT 1",
       [projectId]
     );
   },
 
-  // 재개 예정 시각이 지난 rate_limited 작업 목록 조회
   async getPendingRateLimitedTasks() {
     return dbAll(
-      "SELECT * FROM tasks WHERE status = 'rate_limited' AND scheduled_resume_at IS NOT NULL AND scheduled_resume_at <= datetime('now') ORDER BY scheduled_resume_at ASC"
+      `SELECT * FROM harness.tasks WHERE status = 'rate_limited' AND scheduled_resume_at IS NOT NULL AND scheduled_resume_at <= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') ORDER BY scheduled_resume_at ASC`
     );
   },
 
-  // rate_limited 상태의 모든 작업 조회 (대시보드 표시용)
   async getRateLimitedTasks() {
     return dbAll(
-      "SELECT * FROM tasks WHERE status = 'rate_limited' ORDER BY created_at DESC"
+      "SELECT * FROM harness.tasks WHERE status = 'rate_limited' ORDER BY created_at DESC"
     );
   },
 };
@@ -381,60 +314,62 @@ export const taskQueries = {
 export const logQueries = {
   async append({ task_id, phase, round = 0, level = 'info', content }) {
     await dbRun(
-      'INSERT INTO logs (task_id, phase, round, level, content) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO harness.logs (task_id, phase, round, level, content) VALUES ($1, $2, $3, $4, $5)',
       [task_id, phase, round, level, content]
     );
   },
 
   async forTask(task_id, limit = 200) {
     return dbAll(
-      'SELECT * FROM logs WHERE task_id = ? ORDER BY created_at DESC LIMIT ?',
+      'SELECT * FROM harness.logs WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2',
       [task_id, limit]
     );
   },
 
   async deleteForTask(task_id) {
-    await dbRun('DELETE FROM logs WHERE task_id = ?', [task_id]);
+    await dbRun('DELETE FROM harness.logs WHERE task_id = $1', [task_id]);
   },
 };
 
 // ── limit_events ───────────────────────────────────────────────
 export const limitEventQueries = {
   async insert({ task_id, project_id, resume_available_at, checkpoint_path, checkpoint_summary }) {
-    const res = await dbRun(
-      `INSERT INTO limit_events (task_id, project_id, resume_available_at, checkpoint_path, checkpoint_summary)
-       VALUES (?, ?, ?, ?, ?)`,
+    const rows = await dbRun(
+      `INSERT INTO harness.limit_events (task_id, project_id, resume_available_at, checkpoint_path, checkpoint_summary)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
       [task_id || null, project_id || null, resume_available_at || null, checkpoint_path || null, checkpoint_summary || null]
     );
-    return dbGet('SELECT * FROM limit_events WHERE id = ?', [res.lastID]);
+    const id = rows[0]?.id;
+    return dbGet('SELECT * FROM harness.limit_events WHERE id = $1', [id]);
   },
 
   async list(limit = 20) {
     return dbAll(
-      'SELECT * FROM limit_events ORDER BY created_at DESC LIMIT ?',
+      'SELECT * FROM harness.limit_events ORDER BY created_at DESC LIMIT $1',
       [limit]
     );
   },
 
   async getLatestActive() {
-    // resumed_at이 없는 (아직 재개되지 않은) 가장 최근 이벤트
     return dbGet(
-      "SELECT * FROM limit_events WHERE resumed_at IS NULL ORDER BY created_at DESC LIMIT 1"
+      'SELECT * FROM harness.limit_events WHERE resumed_at IS NULL ORDER BY created_at DESC LIMIT 1'
     );
   },
 
   async markNotified(id) {
-    await dbRun('UPDATE limit_events SET notified = 1 WHERE id = ?', [id]);
+    await dbRun('UPDATE harness.limit_events SET notified = 1 WHERE id = $1', [id]);
   },
 
   async markResumed(id) {
-    await dbRun("UPDATE limit_events SET resumed_at = datetime('now') WHERE id = ?", [id]);
+    await dbRun(
+      `UPDATE harness.limit_events SET resumed_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') WHERE id = $1`,
+      [id]
+    );
   },
 
-  // resume_available_at이 지났고 아직 알림 미발송된 이벤트 조회
   async getPendingNotifications() {
     return dbAll(
-      "SELECT * FROM limit_events WHERE notified = 0 AND resumed_at IS NULL AND resume_available_at IS NOT NULL AND resume_available_at <= datetime('now') ORDER BY created_at ASC"
+      `SELECT * FROM harness.limit_events WHERE notified = 0 AND resumed_at IS NULL AND resume_available_at IS NOT NULL AND resume_available_at <= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') ORDER BY created_at ASC`
     );
   },
 };
@@ -442,5 +377,5 @@ export const limitEventQueries = {
 // ── 작업 삭제 (logs → tasks 순서로 삭제하여 FK 제약 준수) ──────
 export async function deleteTask(task_id) {
   await logQueries.deleteForTask(task_id);
-  await dbRun('DELETE FROM tasks WHERE id = ?', [task_id]);
+  await dbRun('DELETE FROM harness.tasks WHERE id = $1', [task_id]);
 }

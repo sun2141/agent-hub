@@ -12,9 +12,13 @@
     "dev": "node --watch src/index.js",
     "tunnel": "bash scripts/tunnel.sh",
     "tunnel:quick": "bash scripts/tunnel.sh --quick",
-    "watchdog": "node src/watchdog.js"
+    "watchdog": "node src/watchdog.js",
+    "migrate:neon": "node src/db/migrate_to_neon.js",
+    "migrate:neon:schema": "node src/db/migrate_to_neon.js --schema-only",
+    "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.3",
     "express-session": "^1.19.0",
