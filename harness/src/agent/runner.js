@@ -226,11 +226,25 @@ export class AgentRunner extends EventEmitter {
       if (!plan) plan = await this._runPlanner(task, project, safeCwd, attachmentPaths);
       if (this._deleted.has(taskId)) return;
 
+      // 플래너 완료 후 task를 다시 읽어 최신 상태 반영
+      task = await taskQueries.get(taskId);
+      if (!task) return; // 삭제된 경우
+
       let round = task.round || 0;
       let evalResult = null;
       while (true) {
         if (this._deleted.has(taskId)) break;
+
+        // 루프 시작마다 DB에서 fresh한 task 조회
         const currentTask = await taskQueries.get(taskId);
+        if (!currentTask) break; // 삭제된 경우
+
+        // 외부에서 상태가 변경된 경우(manual stop, delete 등) 중단
+        if (currentTask.status === PHASE.PAUSED || currentTask.status === PHASE.FAILED || currentTask.status === PHASE.DONE) {
+          console.log(`[pipeline] 외부 상태 변경 감지 (${currentTask.status}) → 루프 중단`);
+          break;
+        }
+
         if (round >= currentTask.max_rounds) break;
         round++;
         const isLastRound = round >= currentTask.max_rounds;
@@ -239,13 +253,13 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.updateStatus(taskId, PHASE.BUILD);
         await taskQueries.incrementRound(taskId);
         this.emit('phase:start', { taskId, phase: PHASE.BUILD, round });
-        await this._runGenerator(task, project, plan, round, currentTask.max_rounds, prevEval, safeCwd, attachmentPaths);
+        await this._runGenerator(currentTask, project, plan, round, currentTask.max_rounds, prevEval, safeCwd, attachmentPaths);
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.BUILD, round });
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
-        evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+        evalResult = await this._runEvaluator(currentTask, project, plan, round, safeCwd);
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
@@ -262,7 +276,7 @@ export class AgentRunner extends EventEmitter {
             content: `[eval 합격] score=${evalResult.score}, passed=true → commit/deploy 진행` });
           let deployResult = 'skipped';
           try {
-            deployResult = await this._runCommitAndDeploy(task, project, plan, round, safeCwd);
+            deployResult = await this._runCommitAndDeploy(currentTask, project, plan, round, safeCwd);
           } catch (deployErr) {
             console.error(`[pipeline] commit/deploy 예외 발생 (task는 DONE 처리): ${deployErr.message}`);
             await logQueries.append({ task_id: taskId, phase: 'deploy', round, level: 'error',
@@ -272,7 +286,7 @@ export class AgentRunner extends EventEmitter {
           const deployFailed = deployResult === 'deploy_failed';
           console.log(`[pipeline] 완료 처리: deployResult=${deployResult}, deployFailed=${deployFailed}`);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, projectId: task?.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
+          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
           break;
         }
 
@@ -283,7 +297,7 @@ export class AgentRunner extends EventEmitter {
             content: `[eval 불합격] 최대 라운드 도달, unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, projectId: task?.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues });
+          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues });
           break;
         }
       }
@@ -765,40 +779,6 @@ export class AgentRunner extends EventEmitter {
       console.error(`[rate_limit_checkpoint] 예외: ${err.message}`);
       return null;
     }
-  }
-
-  // ── Supabase 이중 저장 ─────────────────────────────────────
-  async _saveToSupabase(data) {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY;
-    if (!supabaseUrl || !supabaseKey) {
-      console.log('[supabase] 환경변수 미설정 — 저장 건너뜀');
-      return;
-    }
-    const resp = await fetch(`${supabaseUrl}/rest/v1/harness_limit_events`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({
-        task_id: data.task_id || null,
-        project_id: data.project_id || null,
-        detected_at: new Date().toISOString(),
-        resume_available_at: data.resume_available_at || null,
-        checkpoint_path: data.checkpoint_path || null,
-        checkpoint_summary: data.checkpoint_summary || null,
-        completed_todos: data.completed_todos || [],
-        remaining_todos: data.remaining_todos || [],
-      }),
-    });
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Supabase insert 실패: ${resp.status} ${errText.slice(0, 200)}`);
-    }
-    console.log(`[supabase] harness_limit_events 저장 완료`);
   }
 
   // ── Claude CLI 실행 ────────────────────────────────────────

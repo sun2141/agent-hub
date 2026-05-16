@@ -14,8 +14,15 @@ function apiFetch(path, options = {}) {
       'Content-Type': 'application/json',
       ...options.headers,
     },
-  }).then(r => r.json())
+  }).then(async r => {
+    const data = await r.json()
+    if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`)
+    return data
+  })
 }
+
+// 실행 중으로 간주하는 상태 목록 — DB 폴링이 이 상태의 작업을 덮어쓰지 않음
+const ACTIVE_STATUSES = new Set(['planning', 'building', 'evaluating', 'deploying'])
 
 export function useHarness() {
   const [projects, setProjects]   = useState([])
@@ -24,6 +31,17 @@ export function useHarness() {
   const [wsEvents, setWsEvents]   = useState([])
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
+  // 현재 tasks 상태를 ref로 유지 — loadTasks 클로저에서 최신 값 참조용
+  const tasksRef = useRef([])
+
+  // tasks 상태 변경 시 ref도 동기화
+  const setTasksSafe = useCallback((updater) => {
+    setTasks(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      tasksRef.current = next
+      return next
+    })
+  }, [])
 
   const loadProjects = useCallback(async () => {
     try {
@@ -35,9 +53,26 @@ export function useHarness() {
   const loadTasks = useCallback(async () => {
     try {
       const data = await apiFetch('/tasks?limit=30')
-      if (Array.isArray(data)) setTasks(data)
+      if (!Array.isArray(data)) return
+      // 현재 로컬에서 실행 중(active)인 작업은 DB 결과로 덮어쓰지 않음
+      // — DB 폴링이 도착했을 때 메모리 상의 최신 상태가 더 정확할 수 있음
+      setTasksSafe(prev => {
+        const localActiveMap = new Map(
+          prev.filter(t => ACTIVE_STATUSES.has(t.status)).map(t => [t.id, t])
+        )
+        if (localActiveMap.size === 0) return data
+        return data.map(dbTask => {
+          const localTask = localActiveMap.get(dbTask.id)
+          // 로컬에 실행 중 상태가 있고, DB가 아직 이전 상태(paused/queued 등)를 반환한다면
+          // 로컬 상태를 우선 유지 (단, DB가 이미 더 최신 활성 상태라면 DB 사용)
+          if (localTask && !ACTIVE_STATUSES.has(dbTask.status)) {
+            return localTask
+          }
+          return dbTask
+        })
+      })
     } catch (e) { console.error('tasks:', e) }
-  }, [])
+  }, [setTasksSafe])
 
   const loadStatus = useCallback(async () => {
     try {
@@ -77,6 +112,9 @@ export function useHarness() {
         setConnected(true)
         reconnectCount = 0
         console.log('[WS] 연결됨')
+        // WS 재연결 시 최신 task 목록을 즉시 갱신 (연결 끊김 동안의 상태 손실 복구)
+        loadTasks()
+        loadStatus()
         // 세션 기반 WS 토큰 발급 (브라우저 번들에 API_KEY 불필요)
         try {
           const BASE = _API_BASE_URL || ''
@@ -99,16 +137,38 @@ export function useHarness() {
           const msg = JSON.parse(e.data)
           console.log('[WS msg]', msg.type)
           setWsEvents(prev => [...prev.slice(-200), msg])
-          if (['task:complete', 'task:failed', 'task:paused', 'task:rate_limited', 'task:resuming', 'phase:complete'].includes(msg.type)) {
+
+          // phase:start — 로컬 상태를 즉시 업데이트하여 폴링 덮어쓰기 방지
+          if (msg.type === 'phase:start' && msg.taskId && msg.phase) {
+            setTasksSafe(prev => prev.map(t =>
+              t.id === msg.taskId ? { ...t, status: msg.phase, round: msg.round ?? t.round } : t
+            ))
+          }
+
+          // 작업 종료/일시정지 이벤트 — DB 재조회로 최종 상태 반영
+          if (['task:complete', 'task:failed', 'task:paused', 'task:rate_limited', 'task:resuming'].includes(msg.type)) {
             loadTasks()
             loadStatus()
           }
+
+          // phase:complete — 다음 phase 전환을 DB에서 확인 (단, 즉각적인 상태는 phase:start가 처리)
+          if (msg.type === 'phase:complete') {
+            loadStatus()
+          }
+
+          // task:queued — 큐에 추가된 작업의 상태를 로컬에서 즉시 반영
+          if (msg.type === 'task:queued' && msg.taskId) {
+            setTasksSafe(prev => prev.map(t =>
+              t.id === msg.taskId ? { ...t, status: 'queued' } : t
+            ))
+          }
+
           if (msg.type === 'task:created') {
             loadTasks()
             loadStatus()
           }
           if (msg.type === 'task:deleted') {
-            setTasks(prev => prev.filter(t => t.id !== msg.taskId))
+            setTasksSafe(prev => prev.filter(t => t.id !== msg.taskId))
             loadStatus()
           }
         } catch {}
@@ -254,10 +314,10 @@ export function useHarness() {
   const deleteTask = useCallback(async (taskId) => {
     const result = await apiFetch(`/tasks/${taskId}`, { method: 'DELETE' })
     if (!result?.error) {
-      setTasks(prev => prev.filter(t => t.id !== taskId))
+      setTasksSafe(prev => prev.filter(t => t.id !== taskId))
     }
     return result
-  }, [])
+  }, [setTasksSafe])
 
   const resumeTask = useCallback((taskId) => {
     return apiFetch('/resume', {
