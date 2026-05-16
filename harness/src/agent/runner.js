@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { taskQueries, logQueries, projectQueries, deleteTask } from '../db/db.js';
+import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
 
 // 토큰 리미트 해제까지 대기 시간 (기본 5시간)
 const RATE_LIMIT_RESET_HOURS = parseFloat(process.env.RATE_LIMIT_RESET_HOURS || '5');
@@ -302,6 +302,35 @@ export class AgentRunner extends EventEmitter {
         await taskQueries.updateScheduledResumeAt(taskId, resetAtIso);
         await logQueries.append({ task_id: taskId, phase: 'system', round: 0, level: 'warn',
           content: `[rate_limited] 토큰 리미트 도달. ${RATE_LIMIT_RESET_HOURS}시간 후 재개 예정: ${resetAtIso}` });
+
+        // 체크포인트 자동 저장
+        const checkpointInfo = await this._saveRateLimitCheckpoint(taskId, task, resetAtIso);
+
+        // limit_events 이력 기록 (SQLite)
+        try {
+          await limitEventQueries.insert({
+            task_id: taskId,
+            project_id: task?.project_id,
+            resume_available_at: resetAtIso,
+            checkpoint_path: checkpointInfo?.checkpointPath || null,
+            checkpoint_summary: checkpointInfo?.summary || null,
+          });
+          console.log(`[pipeline] limit_event 기록됨: taskId=${taskId}`);
+        } catch (dbErr) {
+          console.error(`[pipeline] limit_event DB 저장 실패: ${dbErr.message}`);
+        }
+
+        // Supabase 이중 저장 (비동기, 실패해도 무시)
+        this._saveToSupabase({
+          task_id: taskId,
+          project_id: task?.project_id,
+          resume_available_at: resetAt.toISOString(),
+          checkpoint_path: checkpointInfo?.checkpointPath || null,
+          checkpoint_summary: checkpointInfo?.summary || null,
+          completed_todos: checkpointInfo?.completedTodos || [],
+          remaining_todos: checkpointInfo?.remainingTodos || [],
+        }).catch(e => console.error(`[pipeline] Supabase 저장 실패: ${e.message}`));
+
         this.emit('task:rate_limited', { taskId, projectId: task?.project_id, scheduledResumeAt: resetAtIso });
       } else {
         const safeError = err.message.replace(/\/Users\/[^\s]+/g, '[path]');
@@ -676,6 +705,120 @@ export class AgentRunner extends EventEmitter {
     }
   }
 
+  // ── Rate Limit 체크포인트 저장 ─────────────────────────────
+  async _saveRateLimitCheckpoint(taskId, task, resetAtIso) {
+    try {
+      const plan = task?.plan ? JSON.parse(task.plan) : null;
+      const round = task?.round || 0;
+      const maxRounds = task?.max_rounds || 10;
+
+      const summary = plan
+        ? `[rate_limited] ${plan.title || plan.summary || task?.prompt?.slice(0, 80) || taskId} — Round ${round}/${maxRounds}`
+        : `[rate_limited] ${task?.prompt?.slice(0, 80) || taskId} — Round ${round}/${maxRounds}`;
+
+      const completedTodos = [];
+      const remainingTodos = [];
+
+      if (plan) {
+        // 완료된 라운드를 completed로 표시
+        if (round > 0) {
+          completedTodos.push(`Plan 단계 완료`);
+          for (let r = 1; r <= round; r++) {
+            completedTodos.push(`Round ${r} Build 완료`);
+          }
+        }
+        // 남은 라운드를 remaining으로 표시
+        for (let r = round + 1; r <= maxRounds; r++) {
+          remainingTodos.push(`Round ${r} Build & Eval`);
+        }
+        remainingTodos.push(`최종 배포 및 완료`);
+      }
+
+      const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+      const checkpointScript = path.join(AGENT_HUB_ROOT, 'execution', 'save_checkpoint.py');
+
+      if (!fs.existsSync(checkpointScript)) {
+        console.warn(`[rate_limit_checkpoint] save_checkpoint.py 없음: ${checkpointScript}`);
+        return { summary, completedTodos, remainingTodos, checkpointPath: null };
+      }
+
+      const completedArgs = completedTodos.map(t => `"${t.replace(/"/g, '\\"')}"`);
+      const remainingArgs = remainingTodos.map(t => `"${t.replace(/"/g, '\\"')}"`);
+      const contextJson = JSON.stringify({
+        taskId,
+        project_id: task?.project_id,
+        round,
+        maxRounds,
+        reset_at: resetAtIso,
+        trigger: 'rate_limit',
+        prompt: task?.prompt?.slice(0, 200) || '',
+      }).replace(/'/g, "'\\''");
+
+      const args = [
+        checkpointScript,
+        '--summary', summary,
+        '--task-id', taskId,
+        '--last-step', `Round ${round} 완료 후 토큰 리미트 도달`,
+        '--context', contextJson,
+      ];
+      if (completedTodos.length > 0) args.push('--completed', ...completedTodos);
+      if (remainingTodos.length > 0) args.push('--remaining', ...remainingTodos);
+
+      const result = spawnSync('python3', args, {
+        cwd: AGENT_HUB_ROOT,
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: 'pipe',
+      });
+
+      if (result.status === 0) {
+        const checkpointPath = path.join(AGENT_HUB_ROOT, '.tmp', 'interrupted_task.json');
+        console.log(`[rate_limit_checkpoint] 저장 완료: ${checkpointPath}`);
+        return { summary, completedTodos, remainingTodos, checkpointPath };
+      } else {
+        console.error(`[rate_limit_checkpoint] 저장 실패: ${result.stderr || result.stdout}`);
+        return { summary, completedTodos, remainingTodos, checkpointPath: null };
+      }
+    } catch (err) {
+      console.error(`[rate_limit_checkpoint] 예외: ${err.message}`);
+      return null;
+    }
+  }
+
+  // ── Supabase 이중 저장 ─────────────────────────────────────
+  async _saveToSupabase(data) {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_ANON_KEY;
+    if (!supabaseUrl || !supabaseKey) {
+      console.log('[supabase] 환경변수 미설정 — 저장 건너뜀');
+      return;
+    }
+    const resp = await fetch(`${supabaseUrl}/rest/v1/harness_limit_events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({
+        task_id: data.task_id || null,
+        project_id: data.project_id || null,
+        detected_at: new Date().toISOString(),
+        resume_available_at: data.resume_available_at || null,
+        checkpoint_path: data.checkpoint_path || null,
+        checkpoint_summary: data.checkpoint_summary || null,
+        completed_todos: data.completed_todos || [],
+        remaining_todos: data.remaining_todos || [],
+      }),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Supabase insert 실패: ${resp.status} ${errText.slice(0, 200)}`);
+    }
+    console.log(`[supabase] harness_limit_events 저장 완료`);
+  }
+
   // ── Claude CLI 실행 ────────────────────────────────────────
   // --setting-sources user 제거: CLAUDE_CONFIG_DIR(harness 전용)을 우선 사용
   // hasTrustDialogAccepted는 .claude.json의 projects 항목에서 true로 설정 필요
@@ -832,11 +975,28 @@ export class AgentRunner extends EventEmitter {
             if (!rejected && msg.type === 'result' && msg.is_error) {
               const errText = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result || '');
               if (errText.includes('rate limit') || errText.includes('429') ||
-                  errText.toLowerCase().includes('usage limit') || errText.includes('overloaded')) {
+                  errText.toLowerCase().includes('usage limit') || errText.includes('overloaded') ||
+                  errText.includes("You've hit the limit") || errText.includes("hit the limit") ||
+                  errText.includes("You have reached")) {
                 rejected = true;
                 proc.kill('SIGTERM');
                 reject(new Error('RATE_LIMIT'));
                 break;
+              }
+            }
+            // assistant 메시지에서 rate limit 감지 (claude가 텍스트로 알릴 때)
+            if (!rejected && msg.type === 'assistant' && msg.message?.content) {
+              for (const block of msg.message.content) {
+                if (block.type === 'text') {
+                  const t = block.text || '';
+                  if (t.includes("You've hit the limit") || t.includes("hit the limit") ||
+                      t.includes("You have reached your") || t.includes("usage limit")) {
+                    rejected = true;
+                    proc.kill('SIGTERM');
+                    reject(new Error('RATE_LIMIT'));
+                    break;
+                  }
+                }
               }
             }
             this._handleStreamMsg(taskId, phase, round, msg,
@@ -856,7 +1016,10 @@ export class AgentRunner extends EventEmitter {
           text.includes('429') ||
           text.includes('overloaded') ||
           text.includes('Claude AI usage limit') ||
-          text.toLowerCase().includes('usage limit')
+          text.toLowerCase().includes('usage limit') ||
+          text.includes("You've hit the limit") ||
+          text.includes("You have reached") ||
+          text.includes("hit the limit")
         )) {
           rejected = true;
           proc.kill('SIGTERM');

@@ -123,6 +123,27 @@ export async function initDb() {
     }
   }
 
+  // limit_events 테이블 마이그레이션
+  const limitEventsInfo = await dbAll("PRAGMA table_info(limit_events)");
+  if (limitEventsInfo.length === 0) {
+    console.log('[DB] limit_events 테이블 생성');
+  }
+
+  await dbExec(`
+    CREATE TABLE IF NOT EXISTS limit_events (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id             TEXT,
+      project_id          TEXT,
+      detected_at         TEXT DEFAULT (datetime('now')),
+      resume_available_at TEXT,
+      checkpoint_path     TEXT,
+      checkpoint_summary  TEXT,
+      notified            INTEGER DEFAULT 0,
+      resumed_at          TEXT,
+      created_at          TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   await dbExec(`
     CREATE TABLE IF NOT EXISTS projects (
       id          TEXT PRIMARY KEY,
@@ -374,6 +395,47 @@ export const logQueries = {
 
   async deleteForTask(task_id) {
     await dbRun('DELETE FROM logs WHERE task_id = ?', [task_id]);
+  },
+};
+
+// ── limit_events ───────────────────────────────────────────────
+export const limitEventQueries = {
+  async insert({ task_id, project_id, resume_available_at, checkpoint_path, checkpoint_summary }) {
+    const res = await dbRun(
+      `INSERT INTO limit_events (task_id, project_id, resume_available_at, checkpoint_path, checkpoint_summary)
+       VALUES (?, ?, ?, ?, ?)`,
+      [task_id || null, project_id || null, resume_available_at || null, checkpoint_path || null, checkpoint_summary || null]
+    );
+    return dbGet('SELECT * FROM limit_events WHERE id = ?', [res.lastID]);
+  },
+
+  async list(limit = 20) {
+    return dbAll(
+      'SELECT * FROM limit_events ORDER BY created_at DESC LIMIT ?',
+      [limit]
+    );
+  },
+
+  async getLatestActive() {
+    // resumed_at이 없는 (아직 재개되지 않은) 가장 최근 이벤트
+    return dbGet(
+      "SELECT * FROM limit_events WHERE resumed_at IS NULL ORDER BY created_at DESC LIMIT 1"
+    );
+  },
+
+  async markNotified(id) {
+    await dbRun('UPDATE limit_events SET notified = 1 WHERE id = ?', [id]);
+  },
+
+  async markResumed(id) {
+    await dbRun("UPDATE limit_events SET resumed_at = datetime('now') WHERE id = ?", [id]);
+  },
+
+  // resume_available_at이 지났고 아직 알림 미발송된 이벤트 조회
+  async getPendingNotifications() {
+    return dbAll(
+      "SELECT * FROM limit_events WHERE notified = 0 AND resumed_at IS NULL AND resume_available_at IS NOT NULL AND resume_available_at <= datetime('now') ORDER BY created_at ASC"
+    );
   },
 };
 

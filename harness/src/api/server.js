@@ -4,7 +4,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { projectQueries, taskQueries, logQueries } from '../db/db.js';
+import { projectQueries, taskQueries, logQueries, limitEventQueries } from '../db/db.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import { spawn, spawnSync } from 'child_process';
@@ -1392,6 +1392,155 @@ export function createApiServer(agentRunner) {
       res.json({ taskId, status: 'resuming' });
     } catch (err) {
       res.status(400).json({ error: err.message });
+    }
+  });
+
+  // ── limit_events 이력 조회 ─────────────────────────────────
+  app.get('/api/limit-events', async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
+      const events = await limitEventQueries.list(limit);
+      res.json(events);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── 활성 limit_event (재개 대기 중인 최신 이벤트) 조회 ────
+  app.get('/api/limit-events/active', async (req, res) => {
+    try {
+      const event = await limitEventQueries.getLatestActive();
+      res.json(event || null);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── checkpoint 복원 (restore_checkpoint.py 실행) ──────────
+  app.post('/api/checkpoint/restore', async (req, res) => {
+    const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+    const checkpointScript = path.join(AGENT_HUB_ROOT, 'execution', 'restore_checkpoint.py');
+
+    if (!fs.existsSync(checkpointScript)) {
+      return res.status(404).json({ error: 'restore_checkpoint.py 없음', path: checkpointScript });
+    }
+
+    try {
+      const result = spawnSync('python3', [checkpointScript, '--json'], {
+        cwd: AGENT_HUB_ROOT,
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: 'pipe',
+      });
+
+      // exit code 0 = 체크포인트 없음, 2 = 체크포인트 있음, 1 = 오류
+      if (result.status === 1) {
+        return res.status(500).json({ error: result.stderr || '복원 스크립트 실패' });
+      }
+
+      const hasCheckpoint = result.status === 2;
+      let checkpointData = null;
+
+      if (hasCheckpoint && result.stdout) {
+        try {
+          checkpointData = JSON.parse(result.stdout.trim());
+        } catch {
+          // JSON 파싱 실패 시 raw 출력 반환
+          checkpointData = { raw: result.stdout };
+        }
+      }
+
+      // limit_event에 resumed_at 기록
+      const { eventId } = req.body || {};
+      if (eventId) {
+        try {
+          await limitEventQueries.markResumed(eventId);
+        } catch (dbErr) {
+          console.error(`[checkpoint/restore] limit_event markResumed 실패: ${dbErr.message}`);
+        }
+      }
+
+      res.json({
+        hasCheckpoint,
+        checkpoint: checkpointData,
+        stdout: result.stdout,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── checkpoint todos 조회 (TodoWrite 복원용 JSON) ─────────
+  app.get('/api/checkpoint/todos', async (req, res) => {
+    const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+    const checkpointScript = path.join(AGENT_HUB_ROOT, 'execution', 'restore_checkpoint.py');
+
+    if (!fs.existsSync(checkpointScript)) {
+      return res.status(404).json({ error: 'restore_checkpoint.py 없음' });
+    }
+
+    try {
+      // --exists로 체크포인트 유무 먼저 확인 (exit 0 = 있음, 1 = 없음)
+      const existsResult = spawnSync('python3', [checkpointScript, '--exists'], {
+        cwd: AGENT_HUB_ROOT,
+        encoding: 'utf8',
+        timeout: 5_000,
+        stdio: 'pipe',
+      });
+      const hasCheckpoint = existsResult.status === 0;
+
+      if (!hasCheckpoint) {
+        return res.json({ hasCheckpoint: false, todos: [], summary: '', last_completed_step: '', context: {} });
+      }
+
+      // --resume으로 TodoWrite 복원용 JSON 가져오기
+      const resumeResult = spawnSync('python3', [checkpointScript, '--resume'], {
+        cwd: AGENT_HUB_ROOT,
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: 'pipe',
+      });
+
+      let resumeData = null;
+      if (resumeResult.stdout) {
+        try {
+          resumeData = JSON.parse(resumeResult.stdout.trim());
+        } catch {
+          resumeData = null;
+        }
+      }
+
+      res.json({
+        hasCheckpoint: true,
+        todos: resumeData?.todos || [],
+        summary: resumeData?.summary || '',
+        last_completed_step: resumeData?.last_completed_step || '',
+        context: resumeData?.context || {},
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── checkpoint 삭제 ────────────────────────────────────────
+  app.delete('/api/checkpoint', async (req, res) => {
+    const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+    const checkpointScript = path.join(AGENT_HUB_ROOT, 'execution', 'restore_checkpoint.py');
+
+    if (!fs.existsSync(checkpointScript)) {
+      return res.status(404).json({ error: 'restore_checkpoint.py 없음' });
+    }
+
+    try {
+      spawnSync('python3', [checkpointScript, '--clear'], {
+        cwd: AGENT_HUB_ROOT,
+        encoding: 'utf8',
+        timeout: 5_000,
+        stdio: 'pipe',
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 

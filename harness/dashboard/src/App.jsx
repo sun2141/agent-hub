@@ -2305,6 +2305,135 @@ function LoginScreen({ onLogin }) {
 // ── 메인 콘텐츠 (인증 후 렌더링) ──────────────────────────
 const _AUTH_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
+// ── 카운트다운 타이머 훅 ───────────────────────────────────
+function useCountdown(targetDateStr) {
+  const [timeLeft, setTimeLeft] = useState(null)
+
+  useEffect(() => {
+    if (!targetDateStr) { setTimeLeft(null); return }
+    const target = new Date(
+      targetDateStr.endsWith('Z') ? targetDateStr : targetDateStr.replace(' ', 'T') + 'Z'
+    ).getTime()
+
+    function calc() {
+      const diff = target - Date.now()
+      if (diff <= 0) { setTimeLeft(null); return }
+      const h = Math.floor(diff / 3600000)
+      const m = Math.floor((diff % 3600000) / 60000)
+      const s = Math.floor((diff % 60000) / 1000)
+      setTimeLeft({ h, m, s, diff })
+    }
+    calc()
+    const id = setInterval(calc, 1000)
+    return () => clearInterval(id)
+  }, [targetDateStr])
+
+  return timeLeft
+}
+
+// ── 한도 초과 배너 컴포넌트 ───────────────────────────────
+function LimitBanner({ event, onContinue, onDismiss }) {
+  const countdown = useCountdown(event?.resume_available_at)
+  const [resuming, setResuming] = useState(false)
+  const [checkpointData, setCheckpointData] = useState(null)
+
+  const canResume = !countdown || countdown.diff <= 0
+
+  const handleContinue = async () => {
+    setResuming(true)
+    try {
+      const result = await apiFetchRaw('/checkpoint/restore', {
+        method: 'POST',
+        body: JSON.stringify({ eventId: event?.id }),
+      })
+      setCheckpointData(result)
+      if (onContinue) onContinue(result)
+    } catch (err) {
+      console.error('[LimitBanner] 복원 실패:', err)
+    } finally {
+      setResuming(false)
+    }
+  }
+
+  if (!event) return null
+
+  const countdownStr = countdown
+    ? `${countdown.h > 0 ? `${countdown.h}시간 ` : ''}${countdown.m}분 ${countdown.s}초`
+    : null
+
+  return (
+    <div style={{
+      padding: '12px 14px', borderRadius: 12, marginBottom: 16,
+      background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.35)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 16 }}>⏳</span>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#f97316' }}>Claude 한도 초과 — 작업 중단됨</div>
+          {event.checkpoint_summary && (
+            <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2, lineHeight: 1.4 }}>
+              {event.checkpoint_summary.substring(0, 120)}
+            </div>
+          )}
+        </div>
+        {onDismiss && (
+          <button onClick={onDismiss} style={{
+            background: 'none', border: 'none', color: 'var(--text3)', fontSize: 18,
+            cursor: 'pointer', padding: 4, lineHeight: 1,
+            WebkitTapHighlightColor: 'transparent',
+          }}>✕</button>
+        )}
+      </div>
+
+      {countdown ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '8px 10px', background: 'rgba(249,115,22,0.12)', borderRadius: 8,
+          marginBottom: 8,
+        }}>
+          <span style={{ fontSize: 12, color: '#f97316', fontWeight: 600 }}>⏰ 재개 가능까지</span>
+          <span style={{
+            fontSize: 15, fontWeight: 700, color: '#fb923c',
+            fontFamily: 'var(--mono)', letterSpacing: '0.05em',
+          }}>{countdownStr}</span>
+        </div>
+      ) : (
+        <div style={{
+          padding: '6px 10px', background: 'rgba(61,214,140,0.1)', borderRadius: 8,
+          marginBottom: 8, fontSize: 12, color: '#3dd68c', fontWeight: 600,
+        }}>✅ 지금 재개 가능합니다!</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          onClick={handleContinue}
+          disabled={resuming || (!canResume && !!countdown)}
+          style={{
+            flex: 1, padding: '10px', borderRadius: 9, fontSize: 13, fontWeight: 700,
+            background: canResume ? '#f97316' : 'rgba(249,115,22,0.2)',
+            color: canResume ? 'white' : 'rgba(249,115,22,0.6)',
+            border: canResume ? 'none' : '1px solid rgba(249,115,22,0.3)',
+            cursor: canResume ? 'pointer' : 'default',
+            WebkitTapHighlightColor: 'transparent',
+            opacity: resuming ? 0.6 : 1,
+          }}
+        >
+          {resuming ? '복원 중…' : '계속하기 ▶'}
+        </button>
+      </div>
+
+      {checkpointData?.hasCheckpoint && (
+        <div style={{
+          marginTop: 8, padding: '8px 10px', background: 'rgba(107,94,248,0.08)',
+          borderRadius: 8, fontSize: 11, color: 'var(--accent2)',
+        }}>
+          ✓ 체크포인트 복원됨 — 새 세션에서 작업을 재개하세요
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AppContent({ onLogout }) {
   const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, resumeNow, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility, refresh } = useHarness()
   const [view, setView]               = useState('list')
@@ -2312,6 +2441,36 @@ function AppContent({ onLogout }) {
   const [showRegisterModal, setShowRegisterModal] = useState(false)
   const [editingProject, setEditingProject] = useState(null)
   const [showHidden, setShowHidden]   = useState(false)
+  const [activeLimit, setActiveLimit] = useState(null)
+  const [limitDismissed, setLimitDismissed] = useState(false)
+
+  // limit_event 활성 이벤트 폴링
+  useEffect(() => {
+    let mounted = true
+    const fetchActive = async () => {
+      try {
+        const evt = await apiFetchRaw('/limit-events/active')
+        if (mounted) setActiveLimit(evt)
+      } catch { /* 무시 */ }
+    }
+    fetchActive()
+    const id = setInterval(fetchActive, 60_000) // 1분마다 갱신
+    return () => { mounted = false; clearInterval(id) }
+  }, [])
+
+  // WS 이벤트로 rate_limited 감지 시 즉시 새로고침
+  useEffect(() => {
+    const latest = wsEvents[wsEvents.length - 1]
+    if (latest?.type === 'task:rate_limited') {
+      setLimitDismissed(false)
+      setTimeout(async () => {
+        try {
+          const evt = await apiFetchRaw('/limit-events/active')
+          setActiveLimit(evt)
+        } catch {}
+      }, 2000)
+    }
+  }, [wsEvents])
 
   const productProjects = projects.filter(p => !INFRA_IDS.includes(p.id) && !p.hidden)
   const infraProjects   = projects.filter(p =>  INFRA_IDS.includes(p.id))
@@ -2381,6 +2540,17 @@ function AppContent({ onLogout }) {
         </div>
       ) : (
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+              {/* 한도 초과 배너 */}
+          {activeLimit && !limitDismissed && (
+            <LimitBanner
+              event={activeLimit}
+              onContinue={(result) => {
+                console.log('[LimitBanner] 체크포인트 복원됨:', result)
+              }}
+              onDismiss={() => setLimitDismissed(true)}
+            />
+          )}
+
           {running.length > 0 && (
             <div style={{
               padding: '10px 14px', borderRadius: 12, marginBottom: 16,

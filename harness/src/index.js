@@ -6,7 +6,7 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, projectQueries, taskQueries } from './db/db.js';
+import { initDb, projectQueries, taskQueries, limitEventQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { createApiServer } from './api/server.js';
@@ -142,6 +142,7 @@ async function main() {
     if (schedulerRunning) return;
     schedulerRunning = true;
     try {
+      // 5-1. rate_limited 작업 자동 재개
       const pendingTasks = await taskQueries.getPendingRateLimitedTasks();
       for (const task of pendingTasks) {
         // 이미 실행 중인 작업은 스킵
@@ -153,6 +154,31 @@ async function main() {
           notify(`⏰ <b>토큰 리미트 해제 — 작업 재개</b>\ntask: ${task.id}`);
         } catch (resumeErr) {
           console.error(`[scheduler] 재개 실패: taskId=${task.id}, err=${resumeErr.message}`);
+        }
+      }
+
+      // 5-2. limit_events 알림 미발송 항목 처리 (재개 가능 시간 도달 시 텔레그램 알림)
+      const pendingNotifications = await limitEventQueries.getPendingNotifications();
+      for (const evt of pendingNotifications) {
+        console.log(`[scheduler] limit_event 알림 발송: id=${evt.id}, task_id=${evt.task_id}`);
+        try {
+          const resumeAt = evt.resume_available_at
+            ? new Date(evt.resume_available_at.endsWith('Z') ? evt.resume_available_at : evt.resume_available_at.replace(' ', 'T') + 'Z')
+            : null;
+          const resumeTimeStr = resumeAt
+            ? resumeAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' })
+            : '알 수 없음';
+
+          await notify(
+            `⏰ <b>Claude 토큰 리미트 해제 — 작업 재개 가능</b>\n\n` +
+            `작업 ID: <code>${evt.task_id || '없음'}</code>\n` +
+            `재개 가능 시각: ${resumeTimeStr}\n` +
+            `요약: ${(evt.checkpoint_summary || '없음').substring(0, 200)}\n\n` +
+            `대시보드에서 <b>계속하기</b> 버튼을 눌러 작업을 재개하세요.`
+          );
+          await limitEventQueries.markNotified(evt.id);
+        } catch (notifyErr) {
+          console.error(`[scheduler] limit_event 알림 실패: id=${evt.id}, err=${notifyErr.message}`);
         }
       }
     } catch (err) {
