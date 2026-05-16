@@ -6,7 +6,7 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, projectQueries, taskQueries, limitEventQueries } from './db/db.js';
+import { initDb, projectQueries, taskQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { createApiServer } from './api/server.js';
@@ -134,64 +134,7 @@ async function main() {
 
   notify('🟢 <b>하네스 시작됨</b>\n/help 로 명령어 확인');
 
-  // 5. 토큰 리미트 재개 스케줄러 (1분마다 체크)
-  const SCHEDULER_INTERVAL = parseInt(process.env.RATE_LIMIT_CHECK_INTERVAL_MS || '60000', 10);
-  let schedulerRunning = false;
-
-  async function checkAndResumeRateLimited() {
-    if (schedulerRunning) return;
-    schedulerRunning = true;
-    try {
-      // 5-1. rate_limited 작업 자동 재개
-      const pendingTasks = await taskQueries.getPendingRateLimitedTasks();
-      for (const task of pendingTasks) {
-        // 이미 실행 중인 작업은 스킵
-        if (agent._running.has(task.id)) continue;
-        console.log(`[scheduler] rate_limited 작업 재개: taskId=${task.id}, scheduled_resume_at=${task.scheduled_resume_at}`);
-        try {
-          await taskQueries.updateScheduledResumeAt(task.id, null);
-          await agent.resume(task.id);
-          notify(`⏰ <b>토큰 리미트 해제 — 작업 재개</b>\ntask: ${task.id}`);
-        } catch (resumeErr) {
-          console.error(`[scheduler] 재개 실패: taskId=${task.id}, err=${resumeErr.message}`);
-        }
-      }
-
-      // 5-2. limit_events 알림 미발송 항목 처리 (재개 가능 시간 도달 시 텔레그램 알림)
-      const pendingNotifications = await limitEventQueries.getPendingNotifications();
-      for (const evt of pendingNotifications) {
-        console.log(`[scheduler] limit_event 알림 발송: id=${evt.id}, task_id=${evt.task_id}`);
-        try {
-          const resumeAt = evt.resume_available_at
-            ? new Date(evt.resume_available_at.endsWith('Z') ? evt.resume_available_at : evt.resume_available_at.replace(' ', 'T') + 'Z')
-            : null;
-          const resumeTimeStr = resumeAt
-            ? resumeAt.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' })
-            : '알 수 없음';
-
-          await notify(
-            `⏰ <b>Claude 토큰 리미트 해제 — 작업 재개 가능</b>\n\n` +
-            `작업 ID: <code>${evt.task_id || '없음'}</code>\n` +
-            `재개 가능 시각: ${resumeTimeStr}\n` +
-            `요약: ${(evt.checkpoint_summary || '없음').substring(0, 200)}\n\n` +
-            `대시보드에서 <b>계속하기</b> 버튼을 눌러 작업을 재개하세요.`
-          );
-          await limitEventQueries.markNotified(evt.id);
-        } catch (notifyErr) {
-          console.error(`[scheduler] limit_event 알림 실패: id=${evt.id}, err=${notifyErr.message}`);
-        }
-      }
-    } catch (err) {
-      console.error('[scheduler] 오류:', err.message);
-    } finally {
-      schedulerRunning = false;
-    }
-  }
-
-  // 서버 시작 시 이미 지난 rate_limited 작업 즉시 처리
-  setTimeout(checkAndResumeRateLimited, 5000);
-  const schedulerTimer = setInterval(checkAndResumeRateLimited, SCHEDULER_INTERVAL);
-  console.log(`[Boot] 토큰 리미트 재개 스케줄러 시작 (interval: ${SCHEDULER_INTERVAL}ms)`);
+  // 5. rate_limited 작업은 대시보드 '계속하기' 버튼으로 수동 재개 (자동 재개 스케줄러 제거)
 
   agent.on('phase:start',    ({ taskId, phase, round }) =>
     console.log(`[${phase.toUpperCase()}] ${taskId} Round ${round} 시작`));
@@ -204,7 +147,6 @@ async function main() {
 
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);
-    clearInterval(schedulerTimer);
     releaseLock();
     notify('🔴 <b>하네스 종료됨</b>');
     server.close(() => process.exit(0));

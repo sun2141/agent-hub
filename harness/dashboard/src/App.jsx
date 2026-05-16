@@ -60,7 +60,11 @@ function apiFetchRaw(path, options = {}) {
       'Content-Type': 'application/json',
       ...options.headers,
     },
-  }).then(r => r.json())
+  }).then(async r => {
+    const data = await r.json()
+    if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`)
+    return data
+  })
 }
 
 // ── 파일 트리 노드 렌더러 ─────────────────────────────────
@@ -1328,7 +1332,6 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             const p = PHASE[t.status] || PHASE.pending
             const canDelete = ['failed', 'paused', 'building', 'pending', 'planning', 'evaluating', 'rate_limited'].includes(t.status)
             const isRateLimited = t.status === 'rate_limited'
-            const resumeAt = t.scheduled_resume_at
             return (
               <div key={t.id} style={{
                 padding: '10px 12px', background: isRateLimited ? 'rgba(249,115,22,0.06)' : 'var(--bg3)',
@@ -1364,9 +1367,9 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
                     >삭제</button>
                   )}
                 </div>
-                {isRateLimited && resumeAt && (
+                {isRateLimited && (
                   <div style={{ fontSize: 11, color: '#f97316', marginBottom: 4, padding: '4px 8px', background: 'rgba(249,115,22,0.08)', borderRadius: 6 }}>
-                    ⏰ 재개 예정: {timeAgo(resumeAt)} ({new Date(resumeAt.endsWith('Z') ? resumeAt : resumeAt.replace(' ', 'T') + 'Z').toLocaleTimeString()})
+                    ⏳ 한도 초과 — 위 배너에서 계속하기 버튼으로 재개하세요
                   </div>
                 )}
                 <div style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.4 }}>{t.prompt}</div>
@@ -1401,7 +1404,7 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
             else if (e.type === 'task:complete')     { text = `\n✅ 완료 — ${e.round} 라운드`; color = 'var(--green)' }
             else if (e.type === 'task:failed')       { text = `\n❌ 실패: ${e.error||''}`;     color = 'var(--red)' }
             else if (e.type === 'task:paused')       { text = `\n⏸ 일시정지: ${e.reason||''}`; color = 'var(--orange)' }
-            else if (e.type === 'task:rate_limited') { text = `\n⏳ 토큰 리미트 — 재개 예정: ${e.scheduledResumeAt||''}`.trim(); color = '#f97316' }
+            else if (e.type === 'task:rate_limited') { text = `\n⏳ 토큰 리미트 도달 — 배너에서 계속하기 버튼으로 재개하세요`; color = '#f97316' }
             else if (e.type === 'task:resuming')     { text = `\n▶ 작업 재개 중...`;             color = 'var(--accent2)' }
             return text ? (
               <div key={i} style={{ color, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{text}</div>
@@ -2305,61 +2308,37 @@ function LoginScreen({ onLogin }) {
 // ── 메인 콘텐츠 (인증 후 렌더링) ──────────────────────────
 const _AUTH_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
-// ── 카운트다운 타이머 훅 ───────────────────────────────────
-function useCountdown(targetDateStr) {
-  const [timeLeft, setTimeLeft] = useState(null)
-
-  useEffect(() => {
-    if (!targetDateStr) { setTimeLeft(null); return }
-    const target = new Date(
-      targetDateStr.endsWith('Z') ? targetDateStr : targetDateStr.replace(' ', 'T') + 'Z'
-    ).getTime()
-
-    function calc() {
-      const diff = target - Date.now()
-      if (diff <= 0) { setTimeLeft(null); return }
-      const h = Math.floor(diff / 3600000)
-      const m = Math.floor((diff % 3600000) / 60000)
-      const s = Math.floor((diff % 60000) / 1000)
-      setTimeLeft({ h, m, s, diff })
-    }
-    calc()
-    const id = setInterval(calc, 1000)
-    return () => clearInterval(id)
-  }, [targetDateStr])
-
-  return timeLeft
-}
-
 // ── 한도 초과 배너 컴포넌트 ───────────────────────────────
-function LimitBanner({ event, onContinue, onDismiss }) {
-  const countdown = useCountdown(event?.resume_available_at)
+function LimitBanner({ event, onResume, onDismiss }) {
   const [resuming, setResuming] = useState(false)
-  const [checkpointData, setCheckpointData] = useState(null)
-
-  const canResume = !countdown || countdown.diff <= 0
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState(null)
 
   const handleContinue = async () => {
+    if (resuming || done) return
     setResuming(true)
+    setError(null)
     try {
-      const result = await apiFetchRaw('/checkpoint/restore', {
+      // 1) 작업 재개
+      if (event?.task_id) {
+        await apiFetchRaw(`/tasks/${event.task_id}/resume-now`, { method: 'POST' })
+      }
+      // 2) limit_event에 resumed_at 기록
+      await apiFetchRaw('/checkpoint/restore', {
         method: 'POST',
         body: JSON.stringify({ eventId: event?.id }),
       })
-      setCheckpointData(result)
-      if (onContinue) onContinue(result)
+      setDone(true)
+      if (onResume) onResume()
     } catch (err) {
-      console.error('[LimitBanner] 복원 실패:', err)
+      console.error('[LimitBanner] 재개 실패:', err)
+      setError(err.message || '재개 실패')
     } finally {
       setResuming(false)
     }
   }
 
   if (!event) return null
-
-  const countdownStr = countdown
-    ? `${countdown.h > 0 ? `${countdown.h}시간 ` : ''}${countdown.m}분 ${countdown.s}초`
-    : null
 
   return (
     <div style={{
@@ -2385,49 +2364,30 @@ function LimitBanner({ event, onContinue, onDismiss }) {
         )}
       </div>
 
-      {countdown ? (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '8px 10px', background: 'rgba(249,115,22,0.12)', borderRadius: 8,
-          marginBottom: 8,
-        }}>
-          <span style={{ fontSize: 12, color: '#f97316', fontWeight: 600 }}>⏰ 재개 가능까지</span>
-          <span style={{
-            fontSize: 15, fontWeight: 700, color: '#fb923c',
-            fontFamily: 'var(--mono)', letterSpacing: '0.05em',
-          }}>{countdownStr}</span>
-        </div>
-      ) : (
-        <div style={{
-          padding: '6px 10px', background: 'rgba(61,214,140,0.1)', borderRadius: 8,
-          marginBottom: 8, fontSize: 12, color: '#3dd68c', fontWeight: 600,
-        }}>✅ 지금 재개 가능합니다!</div>
-      )}
-
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           onClick={handleContinue}
-          disabled={resuming || (!canResume && !!countdown)}
+          disabled={resuming || done}
           style={{
             flex: 1, padding: '10px', borderRadius: 9, fontSize: 13, fontWeight: 700,
-            background: canResume ? '#f97316' : 'rgba(249,115,22,0.2)',
-            color: canResume ? 'white' : 'rgba(249,115,22,0.6)',
-            border: canResume ? 'none' : '1px solid rgba(249,115,22,0.3)',
-            cursor: canResume ? 'pointer' : 'default',
+            background: done ? 'rgba(61,214,140,0.15)' : '#f97316',
+            color: done ? '#3dd68c' : 'white',
+            border: done ? '1px solid rgba(61,214,140,0.4)' : 'none',
+            cursor: resuming || done ? 'default' : 'pointer',
             WebkitTapHighlightColor: 'transparent',
             opacity: resuming ? 0.6 : 1,
           }}
         >
-          {resuming ? '복원 중…' : '계속하기 ▶'}
+          {resuming ? '재개 중…' : done ? '✓ 재개됨' : '계속하기 ▶'}
         </button>
       </div>
 
-      {checkpointData?.hasCheckpoint && (
+      {error && (
         <div style={{
-          marginTop: 8, padding: '8px 10px', background: 'rgba(107,94,248,0.08)',
-          borderRadius: 8, fontSize: 11, color: 'var(--accent2)',
+          marginTop: 8, padding: '6px 10px', background: 'rgba(239,68,68,0.08)',
+          borderRadius: 8, fontSize: 11, color: '#ef4444',
         }}>
-          ✓ 체크포인트 복원됨 — 새 세션에서 작업을 재개하세요
+          ⚠ {error}
         </div>
       )}
     </div>
@@ -2544,9 +2504,7 @@ function AppContent({ onLogout }) {
           {activeLimit && !limitDismissed && (
             <LimitBanner
               event={activeLimit}
-              onContinue={(result) => {
-                console.log('[LimitBanner] 체크포인트 복원됨:', result)
-              }}
+              onResume={() => { refresh(); setTimeout(() => setActiveLimit(null), 1500) }}
               onDismiss={() => setLimitDismissed(true)}
             />
           )}

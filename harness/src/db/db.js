@@ -351,8 +351,13 @@ export const limitEventQueries = {
   },
 
   async getLatestActive() {
+    // task가 여전히 rate_limited 상태인 이벤트만 반환
     return dbGet(
-      'SELECT * FROM harness.limit_events WHERE resumed_at IS NULL ORDER BY created_at DESC LIMIT 1'
+      `SELECT le.* FROM harness.limit_events le
+       LEFT JOIN harness.tasks t ON le.task_id = t.id
+       WHERE le.resumed_at IS NULL
+         AND (le.task_id IS NULL OR t.status = 'rate_limited')
+       ORDER BY le.created_at DESC LIMIT 1`
     );
   },
 

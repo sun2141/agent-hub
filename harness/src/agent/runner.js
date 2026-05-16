@@ -10,9 +10,6 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
 
-// 토큰 리미트 해제까지 대기 시간 (기본 5시간)
-const RATE_LIMIT_RESET_HOURS = parseFloat(process.env.RATE_LIMIT_RESET_HOURS || '5');
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
@@ -294,24 +291,21 @@ export class AgentRunner extends EventEmitter {
       if (this._deleted.has(taskId)) {
         console.log(`[pipeline] taskId=${taskId} 삭제 진행 중 — catch 블록 스킵`);
       } else if (err.message === 'RATE_LIMIT') {
-        // 토큰 리미트 감지: 즉시 중단 + 5시간 후 재개 예약
-        const resetAt = new Date(Date.now() + RATE_LIMIT_RESET_HOURS * 60 * 60 * 1000);
-        const resetAtIso = resetAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-        console.log(`[pipeline] Claude 토큰 리미트 감지 → 즉시 중단, 재개 예정: ${resetAtIso}`);
+        // 토큰 리미트 감지: 즉시 중단 (수동 재개 방식으로 변경 — 시간 예약 없음)
+        console.log(`[pipeline] Claude 토큰 리미트 감지 → 즉시 중단. 대시보드에서 수동으로 재개하세요.`);
         await taskQueries.updateStatus(taskId, 'rate_limited');
-        await taskQueries.updateScheduledResumeAt(taskId, resetAtIso);
         await logQueries.append({ task_id: taskId, phase: 'system', round: 0, level: 'warn',
-          content: `[rate_limited] 토큰 리미트 도달. ${RATE_LIMIT_RESET_HOURS}시간 후 재개 예정: ${resetAtIso}` });
+          content: `[rate_limited] 토큰 리미트 도달. 대시보드에서 계속하기 버튼으로 수동 재개하세요.` });
 
         // 체크포인트 자동 저장
-        const checkpointInfo = await this._saveRateLimitCheckpoint(taskId, task, resetAtIso);
+        const checkpointInfo = await this._saveRateLimitCheckpoint(taskId, task, null);
 
-        // limit_events 이력 기록 (SQLite)
+        // limit_events 이력 기록
         try {
           await limitEventQueries.insert({
             task_id: taskId,
             project_id: task?.project_id,
-            resume_available_at: resetAtIso,
+            resume_available_at: null,
             checkpoint_path: checkpointInfo?.checkpointPath || null,
             checkpoint_summary: checkpointInfo?.summary || null,
           });
@@ -320,18 +314,7 @@ export class AgentRunner extends EventEmitter {
           console.error(`[pipeline] limit_event DB 저장 실패: ${dbErr.message}`);
         }
 
-        // Supabase 이중 저장 (비동기, 실패해도 무시)
-        this._saveToSupabase({
-          task_id: taskId,
-          project_id: task?.project_id,
-          resume_available_at: resetAt.toISOString(),
-          checkpoint_path: checkpointInfo?.checkpointPath || null,
-          checkpoint_summary: checkpointInfo?.summary || null,
-          completed_todos: checkpointInfo?.completedTodos || [],
-          remaining_todos: checkpointInfo?.remainingTodos || [],
-        }).catch(e => console.error(`[pipeline] Supabase 저장 실패: ${e.message}`));
-
-        this.emit('task:rate_limited', { taskId, projectId: task?.project_id, scheduledResumeAt: resetAtIso });
+        this.emit('task:rate_limited', { taskId, projectId: task?.project_id });
       } else {
         const safeError = err.message.replace(/\/Users\/[^\s]+/g, '[path]');
         await taskQueries.updateStatus(taskId, PHASE.FAILED, { error: safeError });
@@ -749,7 +732,6 @@ export class AgentRunner extends EventEmitter {
         project_id: task?.project_id,
         round,
         maxRounds,
-        reset_at: resetAtIso,
         trigger: 'rate_limit',
         prompt: task?.prompt?.slice(0, 200) || '',
       }).replace(/'/g, "'\\''");
