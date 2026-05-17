@@ -65,7 +65,13 @@ def format_checkpoint(checkpoint: dict) -> str:
     """체크포인트를 사람이 읽기 쉬운 형식으로 포맷합니다."""
     lines = []
     auto_saved = checkpoint.get("auto_saved", False)
-    save_type = "자동 저장 (토큰 리미트 감지)" if auto_saved else "수동 저장"
+    trigger = checkpoint.get("context", {}).get("trigger", "")
+    if trigger == "rate_limited":
+        save_type = "자동 저장 (Claude 사용량 초과)"
+    elif auto_saved:
+        save_type = "자동 저장 (컨텍스트 한도 감지)"
+    else:
+        save_type = "수동 저장"
 
     lines.append("=" * 60)
     lines.append(f"  중단된 작업 감지됨 [{save_type}]")
@@ -118,6 +124,8 @@ def format_checkpoint(checkpoint: dict) -> str:
             lines.append(f"  {key}: {value}")
 
     lines.append("=" * 60)
+    if trigger == "rate_limited":
+        lines.append("💡 Claude 사용량 한도 초과로 중단됨. 한도 리셋 후 재개 가능합니다.")
     lines.append("재개하려면: python execution/restore_checkpoint.py --resume")
     lines.append("완료 후 삭제: python execution/restore_checkpoint.py --clear")
     lines.append("=" * 60)
