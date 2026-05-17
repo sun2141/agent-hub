@@ -1062,11 +1062,8 @@ function _findDeployScript(cwd, harnessAbsPath) {
       } catch { /* 읽기 실패 시 무시 */ }
     }
 
-    const ecosystemPath = path.join(dir, 'ecosystem.config.js');
-    const ecosystem2Path = path.join(dir, 'ecosystem.config.cjs');
-    if (fs.existsSync(ecosystemPath) || fs.existsSync(ecosystem2Path)) {
-      return { cmd: 'pm2 reload ecosystem.config.js --update-env', cwd: dir };
-    }
+    // ecosystem.config.js는 VPS 전용 설정이므로 배포 트리거로 사용하지 않음
+    // (pm2가 없는 로컬 환경에서 non-zero exit code로 실패하는 원인)
 
     const pkgPath = path.join(dir, 'package.json');
     if (fs.existsSync(pkgPath)) {
