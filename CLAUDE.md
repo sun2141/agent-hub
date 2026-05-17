@@ -210,6 +210,7 @@ save_checkpoint(
 | `execution/restore_checkpoint.py` | 체크포인트 읽기 및 재개 안내 출력 |
 | `execution/restore_checkpoint.py --resume` | TodoWrite 자동 복원용 JSON 출력 (completed+remaining todos) |
 | `execution/auto_checkpoint.py` | 컨텍스트 CRITICAL 시 hook에서 자동 호출 |
+| `execution/rate_limit_checkpoint.py` | Claude 사용량 초과(rate_limited) 시 Stop hook에서 자동 호출 |
 
 ---
 
