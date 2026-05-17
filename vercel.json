@@ -1,6 +1,6 @@
 {
   "framework": null,
   "installCommand": "echo 'skip root install'",
-  "buildCommand": "cd harness-dashboard/dashboard && npm install && npm run build",
-  "outputDirectory": "harness-dashboard/dashboard/dist"
+  "buildCommand": "cd harness/dashboard && npm install && npm run build",
+  "outputDirectory": "harness/dashboard/dist"
 }
