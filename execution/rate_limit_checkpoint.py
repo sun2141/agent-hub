@@ -28,6 +28,7 @@ import argparse
 import glob
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Dict, Any
 
 
 TODOS_DIR = Path.home() / ".claude" / "todos"
@@ -57,7 +58,7 @@ def get_checkpoint_path(cwd: str = "") -> Path:
     return _DEFAULT_CHECKPOINT_PATH
 
 
-def find_session_todos(session_id: str) -> list[dict]:
+def find_session_todos(session_id: str) -> List[Dict[str, Any]]:
     """
     세션 ID에 해당하는 TodoWrite 파일을 찾아 todo 목록을 반환합니다.
     session_id가 없으면 가장 최근 파일을 사용합니다.
@@ -91,8 +92,9 @@ def find_session_todos(session_id: str) -> list[dict]:
 def save_rate_limit_checkpoint(
     session_id: str,
     cwd: str,
-    todos: list[dict],
+    todos: List[Dict[str, Any]],
     force: bool = False,
+    reset_time: str = "",
 ) -> bool:
     """
     rate_limited trigger로 체크포인트를 저장합니다.
@@ -134,11 +136,19 @@ def save_rate_limit_checkpoint(
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 요약 문자열: 리셋 시각 포함 시 명시
+    reset_note = f" (리셋 예정: {reset_time})" if reset_time else ""
+    summary = (
+        f"Claude 사용량 초과로 세션 중단됨 — 자동 저장"
+        f"{reset_note}"
+        f" (작업 디렉토리: {cwd or '알 수 없음'})"
+    )
+
     checkpoint = {
         "version": "1.1",
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "task_id": f"rate_limited_{session_id[:8] if session_id else 'manual'}_{int(datetime.now().timestamp())}",
-        "summary": f"Claude 사용량 초과로 세션 중단됨 — 자동 저장 (작업 디렉토리: {cwd or '알 수 없음'})",
+        "summary": summary,
         "last_completed_step": last_step,
         "completed_todos": completed_todos,
         "remaining_todos": remaining_todos,
@@ -148,15 +158,17 @@ def save_rate_limit_checkpoint(
             "session_id": session_id,
             "cwd": cwd,
             "trigger": "rate_limited",
+            "reset_time": reset_time,
         },
         "auto_saved": True,
         "status": "interrupted",
     }
 
     checkpoint_path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2))
+    reset_note = f" | 리셋 예정: {reset_time}" if reset_time else ""
     print(
         f"[rate_limit 체크포인트] 저장 완료 — 남은 작업 {len(remaining_todos)}개 | "
-        f"trigger: rate_limited | 경로: {checkpoint_path}",
+        f"trigger: rate_limited{reset_note} | 경로: {checkpoint_path}",
         file=sys.stderr,
     )
     return True
@@ -168,6 +180,7 @@ def main():
     )
     parser.add_argument("--session-id", default="", help="Claude Code 세션 ID")
     parser.add_argument("--cwd", default="", help="현재 작업 디렉토리")
+    parser.add_argument("--reset-time", default="", help="한도 리셋 예정 시각 (예: 2am Asia/Seoul)")
     parser.add_argument(
         "--force", action="store_true",
         help="기존 체크포인트가 있어도 덮어쓰기"
@@ -187,6 +200,7 @@ def main():
         cwd=cwd,
         todos=todos,
         force=args.force,
+        reset_time=args.reset_time,
     )
     sys.exit(0 if success else 1)
 

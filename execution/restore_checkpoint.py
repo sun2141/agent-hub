@@ -22,6 +22,7 @@ import sys
 import argparse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 # 체크포인트 만료 기한 (이 시간보다 오래된 체크포인트는 경고 표시)
 STALE_HOURS = 24
@@ -30,7 +31,7 @@ STALE_HOURS = 24
 CHECKPOINT_PATH = Path(__file__).parent.parent / ".tmp" / "interrupted_task.json"
 
 
-def load_checkpoint() -> dict | None:
+def load_checkpoint() -> Optional[Dict[str, Any]]:
     """
     체크포인트 파일을 로드합니다.
 
@@ -125,7 +126,11 @@ def format_checkpoint(checkpoint: dict) -> str:
 
     lines.append("=" * 60)
     if trigger == "rate_limited":
-        lines.append("💡 Claude 사용량 한도 초과로 중단됨. 한도 리셋 후 재개 가능합니다.")
+        reset_time = checkpoint.get("context", {}).get("reset_time", "")
+        if reset_time:
+            lines.append(f"💡 Claude 사용량 한도 초과로 중단됨. 한도 리셋 예정: {reset_time}")
+        else:
+            lines.append("💡 Claude 사용량 한도 초과로 중단됨. 한도 리셋 후 재개 가능합니다.")
     lines.append("재개하려면: python execution/restore_checkpoint.py --resume")
     lines.append("완료 후 삭제: python execution/restore_checkpoint.py --clear")
     lines.append("=" * 60)
@@ -242,7 +247,7 @@ def format_resume(checkpoint: dict) -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-def check_and_prompt() -> dict | None:
+def check_and_prompt() -> Optional[Dict[str, Any]]:
     """
     체크포인트를 확인하고 재개 여부를 표시합니다.
     Claude가 세션 시작 시 이 함수를 호출하여 중단 작업 존재를 확인합니다.
