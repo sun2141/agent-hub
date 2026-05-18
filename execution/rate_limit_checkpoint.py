@@ -191,9 +191,19 @@ def main():
     cwd = args.cwd or os.getcwd()
     todos = find_session_todos(args.session_id)
 
+    # todos가 없어도 rate limit 체크포인트는 저장 (한도 리셋 후 재개 안내용)
+    # 단, force가 아니고 이미 수동 체크포인트가 있으면 스킵
     if not todos:
-        print("[rate_limit 저장 스킵] Todo 항목 없음", file=sys.stderr)
-        sys.exit(0)
+        checkpoint_path = get_checkpoint_path(cwd)
+        if not args.force and checkpoint_path.exists():
+            try:
+                existing = json.loads(checkpoint_path.read_text())
+                if not existing.get("auto_saved"):
+                    print("[rate_limit 저장 스킵] 기존 수동 체크포인트 보존", file=sys.stderr)
+                    sys.exit(0)
+            except (json.JSONDecodeError, OSError):
+                pass
+        print("[rate_limit 저장] Todo 없음 — 최소 체크포인트 저장", file=sys.stderr)
 
     success = save_rate_limit_checkpoint(
         session_id=args.session_id,
