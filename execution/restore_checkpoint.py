@@ -5,11 +5,16 @@ restore_checkpoint.py - 작업 체크포인트 복원 스크립트
 .tmp/interrupted_task.json을 읽어 중단된 작업 상태를 출력합니다.
 세션 시작 시 호출하여 이전에 중단된 작업이 있는지 확인합니다.
 
+멀티 프로젝트 지원:
+  --cwd 옵션으로 프로젝트 디렉토리를 지정하면 해당 프로젝트의 .tmp/interrupted_task.json을 사용합니다.
+  지정하지 않으면 현재 작업 디렉토리(os.getcwd()) 기준으로 탐색합니다.
+
 사용법:
-  python execution/restore_checkpoint.py          # 체크포인트 조회
-  python execution/restore_checkpoint.py --json   # JSON 형식으로 출력
-  python execution/restore_checkpoint.py --resume # TodoWrite용 JSON 출력 (에이전트 자동 복원)
-  python execution/restore_checkpoint.py --clear  # 체크포인트 삭제
+  python execution/restore_checkpoint.py                    # 체크포인트 조회 (cwd 기준)
+  python execution/restore_checkpoint.py --cwd /path/to/project  # 프로젝트 지정
+  python execution/restore_checkpoint.py --json             # JSON 형식으로 출력
+  python execution/restore_checkpoint.py --resume           # TodoWrite용 JSON 출력 (에이전트 자동 복원)
+  python execution/restore_checkpoint.py --clear            # 체크포인트 삭제
 
 종료 코드:
   0 - 체크포인트 없음 (정상, 새 작업 시작)
@@ -18,6 +23,7 @@ restore_checkpoint.py - 작업 체크포인트 복원 스크립트
 """
 
 import json
+import os
 import sys
 import argparse
 from datetime import datetime, timezone, timedelta
@@ -27,22 +33,56 @@ from typing import Optional, Dict, Any
 # 체크포인트 만료 기한 (이 시간보다 오래된 체크포인트는 경고 표시)
 STALE_HOURS = 24
 
+# 스크립트 위치 기준 기본 경로 (agent-hub 전용 fallback)
+_SCRIPT_DIR_CHECKPOINT = Path(__file__).parent.parent / ".tmp" / "interrupted_task.json"
 
-CHECKPOINT_PATH = Path(__file__).parent.parent / ".tmp" / "interrupted_task.json"
+
+def get_checkpoint_path(cwd: str = "") -> Path:
+    """
+    체크포인트 파일 경로를 결정합니다.
+
+    우선순위:
+      1. 환경변수 CHECKPOINT_PATH (절대경로)
+      2. --cwd 인수로 주어진 경로 기준 cwd/.tmp/interrupted_task.json
+      3. os.getcwd() 기준 .tmp/interrupted_task.json
+      4. 스크립트 위치 기준 상대경로 (agent-hub fallback)
+    """
+    env_path = os.environ.get("CHECKPOINT_PATH", "").strip()
+    if env_path:
+        return Path(env_path)
+
+    if cwd and Path(cwd).is_dir():
+        return Path(cwd) / ".tmp" / "interrupted_task.json"
+
+    # os.getcwd() 기준 탐색
+    cwd_path = Path(os.getcwd()) / ".tmp" / "interrupted_task.json"
+    if cwd_path.exists():
+        return cwd_path
+
+    return _SCRIPT_DIR_CHECKPOINT
 
 
-def load_checkpoint() -> Optional[Dict[str, Any]]:
+# 하위 호환성: 인수 없이 import할 때 기본 경로를 제공하지만,
+# 실제 경로는 main()에서 --cwd 인수를 파싱한 후 결정됩니다.
+CHECKPOINT_PATH = _SCRIPT_DIR_CHECKPOINT
+
+
+def load_checkpoint(checkpoint_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     """
     체크포인트 파일을 로드합니다.
+
+    Args:
+        checkpoint_path: 체크포인트 파일 경로. None이면 전역 CHECKPOINT_PATH 사용.
 
     Returns:
         체크포인트 데이터 딕셔너리, 파일이 없으면 None
     """
-    if not CHECKPOINT_PATH.exists():
+    path = checkpoint_path or CHECKPOINT_PATH
+    if not path.exists():
         return None
 
     try:
-        data = json.loads(CHECKPOINT_PATH.read_text())
+        data = json.loads(path.read_text())
         return data
     except (json.JSONDecodeError, OSError) as e:
         print(f"[오류] 체크포인트 파일 읽기 실패: {e}", file=sys.stderr)
@@ -270,6 +310,10 @@ def main():
         description="중단된 작업 체크포인트를 복원합니다."
     )
     parser.add_argument(
+        "--cwd", default="",
+        help="프로젝트 디렉토리 경로. 지정 시 해당 프로젝트의 .tmp/interrupted_task.json 사용."
+    )
+    parser.add_argument(
         "--json", action="store_true", dest="as_json",
         help="JSON 형식으로 출력 (스크립트 간 연동용)"
     )
@@ -288,23 +332,26 @@ def main():
 
     args = parser.parse_args()
 
+    # cwd 기반으로 체크포인트 경로 결정
+    checkpoint_path = get_checkpoint_path(args.cwd)
+
     if args.clear:
-        if CHECKPOINT_PATH.exists():
-            CHECKPOINT_PATH.unlink()
-            print(f"[삭제 완료] {CHECKPOINT_PATH}")
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+            print(f"[삭제 완료] {checkpoint_path}")
         else:
             print("[없음] 삭제할 체크포인트가 없습니다.")
         return
 
     if args.exists:
-        if CHECKPOINT_PATH.exists():
+        if checkpoint_path.exists():
             print("체크포인트 있음")
             sys.exit(0)
         else:
             print("체크포인트 없음")
             sys.exit(1)
 
-    checkpoint = load_checkpoint()
+    checkpoint = load_checkpoint(checkpoint_path)
 
     if checkpoint is None:
         print("[체크포인트 없음] 중단된 작업이 없습니다.")
