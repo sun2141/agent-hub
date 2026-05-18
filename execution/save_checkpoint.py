@@ -79,6 +79,11 @@ def save_checkpoint(
     completed_contents, completed_entries = _normalize_todos(completed_todos)
     remaining_contents, remaining_entries = _normalize_todos(remaining_todos)
 
+    # 완료 및 남은 todos가 모두 비어있으면 저장 불필요
+    if not completed_contents and not remaining_contents:
+        print("[체크포인트 저장 스킵] todos가 비어있어 저장하지 않습니다.")
+        return CHECKPOINT_PATH
+
     checkpoint = {
         "version": "1.1",
         "saved_at": datetime.now(timezone.utc).isoformat(),

@@ -115,7 +115,8 @@ def format_checkpoint(checkpoint: dict) -> str:
         for i, todo in enumerate(remaining, 1):
             lines.append(f"  [ ]    {i}. {todo}")
     else:
-        lines.append("남은 작업: 없음 (모두 완료)")
+        lines.append("남은 작업: 없음")
+        lines.append("⚠️  재개할 작업이 없습니다. 체크포인트를 삭제하는 것을 권장합니다.")
 
     context = checkpoint.get("context", {})
     if context:
