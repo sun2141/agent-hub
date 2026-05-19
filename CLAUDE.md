@@ -267,12 +267,16 @@ ssh $HETZNER_USER@$HETZNER_IP
 
 ### 연결된 프로젝트 (Project Registry)
 
-| ID | 프로젝트 | 로컬 경로 | GitHub | 배포 |
-|----|---------|----------|--------|------|
-| pray-crawling | Pray-crawling | `/Users/sun/pray-crawling` | https://github.com/sun2141/pray-crawling | 개발중 |
-| palmoni | Palmoni 기도앱 | `/Users/sun/palmoni/` | sun2141/palmoni | palmoni.vercel.app |
-| facepick | FacePick | `/Users/sun/facepick/` | - | 개발중 |
-| reddit-insight | Reddit Insight | `/Users/sun/reddit-insight/` | - | 개발중 |
+| ID | 프로젝트 | 로컬 경로 | GitHub | 배포 | DB 타입 | DB 상태 |
+|----|---------|----------|--------|------|---------|---------|
+| pray-crawling | Pray-crawling | `/Users/sun/pray-crawling` | https://github.com/sun2141/pray-crawling | 개발중 | none | - |
+| palmoni | Palmoni 기도앱 | `/Users/sun/palmoni/` | sun2141/palmoni | palmoni.vercel.app | supabase | active |
+| facepick | FacePick | `/Users/sun/facepick/` | - | 개발중 | neon | pending |
+| reddit-insight | Reddit Insight | `/Users/sun/reddit-insight/` | - | 개발중 | neon | pending |
+
+**DB 타입 값**: `supabase` | `neon` | `none` | `unknown`
+**DB 상태 값**: `active` (운영중) | `pending` (설정 필요) | `-` (해당없음)
+**표준**: 신규/DB 미설정 프로젝트는 Neon Postgres 사용 (`directives/core/database_standards.md` 참조)
 
 ### 프로젝트 자동 연결 규칙
 
