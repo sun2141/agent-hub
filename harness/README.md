@@ -9,7 +9,7 @@ harness/
 ├── src/
 │   ├── index.js          ← 진입점
 │   ├── projects.js       ← 프로젝트 목록 정의
-│   ├── db/db.js          ← SQLite 스키마 + 쿼리
+│   ├── db/db.js          ← Neon DB 스키마 + 쿼리
 │   ├── agent/runner.js   ← 파이프라인 엔진 (Plan→Build→Eval)
 │   ├── api/server.js     ← Express REST + WebSocket
 │   ├── telegram/bot.js       ← 텔레그램 봇
@@ -37,6 +37,7 @@ nano .env
 `.env` 필수 항목:
 ```
 API_KEY=임의의_긴_문자열
+NEON_DATABASE_URL=postgresql://...-pooler.../neondb?sslmode=require
 TELEGRAM_BOT_TOKEN=텔레그램_봇_토큰
 TELEGRAM_CHAT_ID=텔레그램_채팅_ID
 ```
@@ -50,6 +51,7 @@ npm run start:bg     # 백그라운드 실행 (nohup, harness.pid 생성)
 npm run status       # 실행 여부 확인
 npm run stop         # 하네스 종료
 npm run dev          # 개발 모드 (파일 변경 시 자동 재시작)
+PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH npm run db:health  # Neon DB 운영 점검
 ```
 
 백그라운드 실행 스크립트 직접 사용:
@@ -171,6 +173,8 @@ DEPLOY_METHOD=push
 ## 주의사항
 
 - `harness/data/` 와 `harness/.env` 는 git에 올라가지 않음
+- 운영 데이터는 Neon Postgres의 `harness` 스키마에 저장됨
+- VPS에서는 Node 22가 먼저 잡히도록 `PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH`를 붙여 실행
 - 맥북과 아이맥 각각 `.env` 파일을 별도로 설정해야 함
 - Telegram 봇 토큰은 한 곳에서만 polling해야 충돌 없음
   - 현재 VPS 봇이 있다면, 하네스용 봇은 별도 토큰 사용 권장

@@ -28,12 +28,38 @@
 
 | 프로젝트 | DB 타입 | 상태 | 비고 |
 |---------|---------|------|------|
+| agent-hub harness | neon | active | 하네스 운영 DB. `harness/.env`의 `NEON_DATABASE_URL` 사용. Neon 프로젝트 `agent-hub`, `harness` 스키마 |
 | palmoni | supabase | active | Auth + DB 모두 사용 중. 마이그레이션 금지 |
 | pray-crawling | none | - | 크롤링 전용, DB 불필요 |
 | facepick | neon | pending | Neon 연동 설정 필요 (setup_neon_db.py 실행) |
 | reddit-insight | neon | pending | Neon 연동 설정 필요 (setup_neon_db.py 실행) |
 
 ---
+
+## Agent Hub Harness DB
+
+Agent Hub의 하네스 시스템은 `harness/.env`의 `NEON_DATABASE_URL`을 사용합니다.
+이 DB는 프로젝트 관리, 작업 이력, 로그, rate-limit 재개 이벤트를 저장하는 운영 DB이므로
+신규 프로젝트용 `execution/setup_neon_db.py`로 재생성하지 않습니다.
+
+운영 점검:
+
+```bash
+cd /Users/sun/agent-hub/harness
+PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH npm run db:health
+```
+
+스키마/인덱스 보정:
+
+```bash
+cd /Users/sun/agent-hub/harness
+PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH npm run migrate:neon:schema
+```
+
+주의:
+- `NEON_DATABASE_URL`은 pooled connection string (`-pooler` 호스트)을 사용합니다.
+- 오래된 `planning`, `building`, `evaluating` 작업은 새 작업을 막을 수 있으므로 `db:health`로 감지합니다.
+- VPS에서는 Node 22 경로가 먼저 오도록 `PATH`를 설정합니다.
 
 ## Neon Postgres 표준 (신규/DB 미설정 프로젝트)
 

@@ -13,6 +13,7 @@
     "tunnel": "bash scripts/tunnel.sh",
     "tunnel:quick": "bash scripts/tunnel.sh --quick",
     "watchdog": "node src/watchdog.js",
+    "db:health": "node src/db/healthcheck.js",
     "migrate:neon": "node src/db/migrate_to_neon.js",
     "migrate:neon:schema": "node src/db/migrate_to_neon.js --schema-only",
     "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify"

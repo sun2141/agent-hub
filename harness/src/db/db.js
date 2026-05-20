@@ -36,6 +36,43 @@ async function dbAll(query, params = []) {
   return rows || [];
 }
 
+async function ensureOperationalIndexes() {
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_projects_active_hidden_created_at
+    ON harness.projects (active, hidden, created_at DESC)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_project_created_at
+    ON harness.tasks (project_id, created_at DESC)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_status_resume
+    ON harness.tasks (status, scheduled_resume_at)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_status_created_at
+    ON harness.tasks (status, created_at DESC)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_logs_task_created_at
+    ON harness.logs (task_id, created_at DESC)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_limit_events_notification
+    ON harness.limit_events (notified, resumed_at, resume_available_at)
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_limit_events_task_created_at
+    ON harness.limit_events (task_id, created_at DESC)
+  `);
+}
+
 // ── DB 초기화 (harness 스키마 생성 + 테이블) ──────────────────
 export async function initDb() {
   // harness 전용 스키마 생성
@@ -128,6 +165,8 @@ export async function initDb() {
     END;
     $$
   `);
+
+  await ensureOperationalIndexes();
 
   console.log('[DB] Neon DB (harness 스키마) 초기화 완료');
   return true;

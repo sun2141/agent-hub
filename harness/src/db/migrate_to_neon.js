@@ -161,6 +161,36 @@ async function createSchema() {
   `;
   console.log('  ✓ harness_tasks_updated_at 트리거');
 
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_projects_active_hidden_created_at
+    ON harness.projects (active, hidden, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_project_created_at
+    ON harness.tasks (project_id, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_status_resume
+    ON harness.tasks (status, scheduled_resume_at)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_tasks_status_created_at
+    ON harness.tasks (status, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_logs_task_created_at
+    ON harness.logs (task_id, created_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_limit_events_notification
+    ON harness.limit_events (notified, resumed_at, resume_available_at)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_harness_limit_events_task_created_at
+    ON harness.limit_events (task_id, created_at DESC)
+  `;
+  console.log('  ✓ 운영 조회 인덱스');
+
   console.log('✅ 스키마 생성 완료\n');
 }
 

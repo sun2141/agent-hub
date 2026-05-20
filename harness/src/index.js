@@ -63,6 +63,7 @@ function checkPortAvailable(port) {
 
 function validateEnv() {
   const required = {
+    NEON_DATABASE_URL:   'Neon pooled PostgreSQL URL (-pooler 호스트 권장)',
     API_KEY:            '최소 32자 랜덤 문자열 (openssl rand -hex 32)',
     TELEGRAM_BOT_TOKEN: '텔레그램 봇 토큰 (BotFather에서 발급)',
     TELEGRAM_CHAT_ID:   '텔레그램 채팅 ID (숫자)',
