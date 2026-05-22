@@ -19,6 +19,7 @@ credentials.json
 token.json
 
 # 하네스 데이터 (DB, 민감 정보)
+harness.pid
 harness/data/
 harness/.env
 
