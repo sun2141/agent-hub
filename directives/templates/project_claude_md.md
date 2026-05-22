@@ -8,6 +8,7 @@
 
 - **Tech Stack**: {TECH_STACK}
 - **Deployment**: {DEPLOYMENT_INFO}
+- **Path**: `{PROJECT_LOCAL_PATH}`
 
 ## Project Structure
 
@@ -42,22 +43,22 @@ npm run test
 ### 금지 사항
 
 - 이 프로젝트에서 자동화/인프라 작업 하지 말 것
-- agent-hub 전용 작업은 `/Users/sun/agent-hub/`에서 수행
+- agent-hub 전용 작업은 `{AGENT_HUB_ROOT}/`에서 수행
 
 ---
 
 ## Central Hub Connection
 
-이 프로젝트는 **agent-hub** (`/Users/sun/agent-hub/`)와 연결됩니다.
+이 프로젝트는 **agent-hub** (`{AGENT_HUB_ROOT}/`)와 연결됩니다.
 
 **연결 방식**:
 - agent-hub가 이 프로젝트를 모니터링
 - 오류 발생 시 자동 감지 및 알림
-- 프로젝트별 directive: `/Users/sun/agent-hub/directives/projects/{PROJECT_ID}.md`
+- 프로젝트별 directive: `{AGENT_HUB_ROOT}/directives/projects/{PROJECT_ID}.md`
 
 **참조 문서**:
-- 전체 인프라: `/Users/sun/agent-hub/CLAUDE.md`
-- 자동화 레지스트리: `/Users/sun/agent-hub/directives/automation_registry.md`
+- 전체 인프라: `{AGENT_HUB_ROOT}/CLAUDE.md`
+- 자동화 레지스트리: `{AGENT_HUB_ROOT}/directives/automation_registry.md`
 
 ---
 

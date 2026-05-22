@@ -2,7 +2,7 @@
   "_comment": "GitHub 저장소 → Google Drive 폴더 매핑 설정",
   "_instructions": "drive_folder_id는 Drive URL에서 folders/ 뒤의 값. sync_paths가 비어있으면 전체 동기화.",
   "repositories": {
-    "sun2141/grace-ai": {
+    "sun2141/agent-hub": {
       "drive_folder_id": "${GOOGLE_DRIVE_FOLDER_ID}",
       "sync_paths": [
         "execution/",

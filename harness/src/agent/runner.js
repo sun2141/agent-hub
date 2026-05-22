@@ -11,16 +11,37 @@ import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+const DEFAULT_PROJECTS_ROOT = path.dirname(AGENT_HUB_ROOT);
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
-const CODEX_CLI    = process.env.CODEX_CLI_PATH || '/Users/sun/.nvm/versions/node/v22.22.2/bin/codex';
+const CODEX_CLI    = process.env.CODEX_CLI_PATH || 'codex';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
 const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
 
-const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || '/Users/sun')
+const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || DEFAULT_PROJECTS_ROOT)
   .split(',')
-  .map(p => p.trim());
+  .map(p => p.trim())
+  .filter(Boolean);
+
+function prependCliNodePath(env = process.env) {
+  const dirs = [];
+  const addNodeDir = (nodePath) => {
+    if (!nodePath) return;
+    try {
+      if (fs.existsSync(nodePath)) dirs.push(path.dirname(fs.realpathSync(nodePath)));
+    } catch { /* ignore invalid paths */ }
+  };
+
+  addNodeDir(process.env.NODE_BIN);
+  addNodeDir(process.execPath);
+
+  return {
+    ...env,
+    PATH: [...new Set([...dirs, env.PATH].filter(Boolean))].join(path.delimiter),
+  };
+}
 
 const PHASE = {
   PLAN:   'planning',
@@ -76,9 +97,10 @@ export class AgentRunner extends EventEmitter {
 
   _validateProjectPath(projectPath) {
     const resolved = path.resolve(projectPath);
-    const allowed  = ALLOWED_PROJECT_ROOTS.some(root =>
-      resolved.startsWith(path.resolve(root))
-    );
+    const allowed  = ALLOWED_PROJECT_ROOTS.some(root => {
+      const relative = path.relative(path.resolve(root), resolved);
+      return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+    });
     if (!allowed) throw new Error(`허용되지 않은 프로젝트 경로: ${projectPath}`);
     return resolved;
   }
@@ -164,9 +186,11 @@ export class AgentRunner extends EventEmitter {
     if (task.status !== PHASE.PAUSED && task.status !== 'rate_limited') {
       throw new Error(`재개 불가 상태: ${task.status}`);
     }
-    // rate_limited 상태면 scheduled_resume_at 초기화
+    // rate_limited 상태면 scheduled_resume_at 초기화하고 building 상태로 전환
     if (task.status === 'rate_limited') {
       await taskQueries.updateScheduledResumeAt(taskId, null);
+      // 반드시 상태를 BUILD로 전환해야 _startPipeline 루프가 정상 동작
+      await taskQueries.updateStatus(taskId, PHASE.BUILD);
     }
     this.emit('task:resuming', { taskId });
     this._startPipeline(taskId);
@@ -239,8 +263,8 @@ export class AgentRunner extends EventEmitter {
         const currentTask = await taskQueries.get(taskId);
         if (!currentTask) break; // 삭제된 경우
 
-        // 외부에서 상태가 변경된 경우(manual stop, delete 등) 중단
-        if (currentTask.status === PHASE.PAUSED || currentTask.status === PHASE.FAILED || currentTask.status === PHASE.DONE) {
+        // 외부에서 상태가 변경된 경우(manual stop, delete, rate_limit 등) 중단
+        if (currentTask.status === PHASE.PAUSED || currentTask.status === PHASE.FAILED || currentTask.status === PHASE.DONE || currentTask.status === 'rate_limited') {
           console.log(`[pipeline] 외부 상태 변경 감지 (${currentTask.status}) → 루프 중단`);
           break;
         }
@@ -787,7 +811,7 @@ export class AgentRunner extends EventEmitter {
 
   _isCodexAvailable() {
     try {
-      const res = spawnSync(CODEX_CLI, ['--version'], { timeout: 3000, stdio: 'pipe' });
+      const res = spawnSync(CODEX_CLI, ['--version'], { timeout: 3000, stdio: 'pipe', env: prependCliNodePath() });
       return res.status === 0;
     } catch {
       return false;
@@ -859,7 +883,7 @@ export class AgentRunner extends EventEmitter {
 
   _codexRun({ taskId, phase, round, cwd, prompt }) {
     return new Promise((resolve, reject) => {
-      const proc = spawn(CODEX_CLI, ['exec', prompt], { cwd, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const proc = spawn(CODEX_CLI, ['exec', prompt], { cwd, env: prependCliNodePath(), stdio: ['ignore', 'pipe', 'pipe'] });
       const entry = this._running.get(taskId) || { process: null, phase, round };
       entry.process = proc;
       this._running.set(taskId, entry);
@@ -907,10 +931,10 @@ export class AgentRunner extends EventEmitter {
       this._running.set(taskId, entry);
 
       // CLAUDE_CONFIG_DIR을 명시적으로 env에 포함하여 harness 전용 설정 사용
-      const spawnEnv = {
+      const spawnEnv = prependCliNodePath({
         ...process.env,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-      };
+      });
 
       const proc = spawn(CLAUDE_CLI, args, {
         cwd,
@@ -933,6 +957,25 @@ export class AgentRunner extends EventEmitter {
           try {
             const msg = JSON.parse(line);
             if (msg.type !== 'system') console.log(`[CLI msg:${phase}] type=${msg.type} ${msg.error||''}`);
+
+            // stream-json msg.error 필드 직접 감지 (Claude CLI v2+ 형식)
+            // 예: {"type":"assistant","error":"rate_limit",...}
+            if (!rejected && msg.error && (
+                msg.error === 'rate_limit' ||
+                msg.error === 'overloaded_error' ||
+                msg.error === 'usage_limit' ||
+                String(msg.error).toLowerCase().includes('rate_limit') ||
+                String(msg.error).toLowerCase().includes('usage_limit') ||
+                String(msg.error).toLowerCase().includes('usage limit') ||
+                String(msg.error).toLowerCase().includes('rate limit')
+            )) {
+              console.warn(`[CLI:${phase}] rate_limit 감지 (msg.error=${msg.error})`);
+              rejected = true;
+              proc.kill('SIGTERM');
+              reject(new Error('RATE_LIMIT'));
+              break;
+            }
+
             // stream-json result 메시지에서 rate limit 감지
             if (!rejected && msg.type === 'result' && msg.is_error) {
               const errText = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result || '');
@@ -998,6 +1041,13 @@ export class AgentRunner extends EventEmitter {
         if (rejected) return;
         if (this._deleted.has(taskId)) {
           resolve(output.trim());
+          return;
+        }
+        // 안전망: 비정상 종료 + 짧은 출력에 rate-limit 흔적 → RATE_LIMIT 처리
+        // (상위 msg.error 감지가 놓친 경우를 위한 다중 안전망)
+        if (code !== 0 && output.length < 500 && /rate.?limit|usage.?limit|hit.?the.?limit/i.test(output)) {
+          console.warn(`[CLI close:${phase}] code=${code} + 출력에 rate-limit 흔적 → RATE_LIMIT 처리 (safety net)`);
+          reject(new Error('RATE_LIMIT'));
           return;
         }
         if (code !== 0 && !output) reject(new Error(`Claude CLI 비정상 종료 (code: ${code})`));

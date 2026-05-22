@@ -257,6 +257,6 @@ def get_sync_logger() -> SyncLogger:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     sl = get_sync_logger()
-    sl.log_event("test", "sun2141/grace-ai", {"file": "test.py"})
+    sl.log_event("test", "sun2141/agent-hub", {"file": "test.py"})
     print("Stats:", sl.get_stats())
     print("Recent logs:", sl.get_recent_logs(5))

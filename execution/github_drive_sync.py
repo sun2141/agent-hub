@@ -467,7 +467,7 @@ if __name__ == "__main__":
 
     # 테스트용 더미 payload
     test_payload = {
-        "repository": {"full_name": "sun2141/grace-ai"},
+        "repository": {"full_name": "sun2141/agent-hub"},
         "ref": "refs/heads/main",
         "after": "abc123def456",
         "pusher": {"name": "sun2141"},
@@ -483,6 +483,6 @@ if __name__ == "__main__":
     }
 
     syncer = GitHubDriveSync()
-    config = syncer.get_repo_config("sun2141/grace-ai")
+    config = syncer.get_repo_config("sun2141/agent-hub")
     print("저장소 설정:", config)
     print("매핑 로드 성공")

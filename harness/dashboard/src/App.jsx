@@ -1152,11 +1152,17 @@ function ProjectDetail({ project, tasks, status, wsEvents, onRun, onStop, onResu
       const attachments = attachedFiles.length > 0
         ? attachedFiles.map(f => ({ type: 'text', name: f.name, text: f.text }))
         : undefined
-      await onRun(project.id, prompt.trim(), attachments)
+      const result = await onRun(project.id, prompt.trim(), attachments)
+      if (result?.error) {
+        setAttachErr(result.error)
+        return
+      }
       setPrompt('')
       setAttachedFiles([])
       setAttachErr('')
       setTab('logs')
+    } catch (err) {
+      setAttachErr(err?.message || '작업 실행 실패')
     } finally {
       setSending(false)
     }
@@ -2438,9 +2444,13 @@ function AppContent({ onLogout }) {
   const running = status?.running || []
 
   const handleRun = async (projectId, prompt, attachments) => {
-    const result = await runTask(projectId, prompt, 10, attachments)
-    if (result?.taskId) setTimeout(refresh, 500)
-    return result
+    try {
+      const result = await runTask(projectId, prompt, 10, attachments)
+      if (result?.taskId) setTimeout(refresh, 500)
+      return result
+    } catch (err) {
+      return { error: err?.message || '작업 실행 실패' }
+    }
   }
 
   const handleRegisterClose = () => {

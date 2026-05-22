@@ -8,7 +8,6 @@ Vercel 프로젝트에 DATABASE_URL 환경변수를 자동 설정합니다.
 사용법:
   python execution/setup_neon_db.py --project <project_id>
   python execution/setup_neon_db.py --project facepick
-  python execution/setup_neon_db.py --project reddit-insight
 
 필요한 환경변수 (.env):
   NEON_API_KEY       - Neon API 키 (https://console.neon.tech/app/settings/api-keys)
@@ -42,12 +41,11 @@ VERCEL_API_BASE = "https://api.vercel.com"
 # Vercel에 배포된 프로젝트가 있는 경우 슬러그(프로젝트명)를 기재
 PROJECT_VERCEL_MAP = {
     "facepick": "facepick",
-    "reddit-insight": "reddit-insight",
     "palmoni": "palmoni",   # supabase 사용 중 — 이 스크립트 대상 아님
 }
 
 # 지원 대상 프로젝트 (neon DB 설정 대상)
-NEON_TARGET_PROJECTS = {"facepick", "reddit-insight"}
+NEON_TARGET_PROJECTS = {"facepick"}
 
 
 def get_headers_neon() -> dict:
@@ -476,12 +474,6 @@ def audit_db_status() -> None:
             "status": "pending",
             "note": "Neon 연동 설정 필요. 이 스크립트로 설정 가능.",
         },
-        {
-            "id": "reddit-insight",
-            "db_type": "neon",
-            "status": "pending",
-            "note": "Neon 연동 설정 필요. 이 스크립트로 설정 가능.",
-        },
     ]
 
     for p in audit_data:
@@ -503,12 +495,11 @@ def main():
         epilog="""
 예시:
   python execution/setup_neon_db.py --project facepick
-  python execution/setup_neon_db.py --project reddit-insight
   python execution/setup_neon_db.py --audit           # DB 현황 감사만
   python execution/setup_neon_db.py --dry-run --project facepick  # 실제 API 호출 없이 플로우 확인
         """,
     )
-    parser.add_argument("--project", help="프로젝트 ID (예: facepick, reddit-insight)")
+    parser.add_argument("--project", help="프로젝트 ID (예: facepick)")
     parser.add_argument("--audit", action="store_true", help="프로젝트 DB 현황 감사 출력")
     parser.add_argument("--dry-run", action="store_true", help="실제 API 호출 없이 플로우만 확인")
     parser.add_argument(

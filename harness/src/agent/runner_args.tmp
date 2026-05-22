@@ -1,3 +1,0 @@
-      const args = printMode
-        ? ['--print', '--verbose', '--output-format', 'stream-json', ...baseArgs, prompt]
-        : ['--print', '--verbose', '--output-format', 'stream-json', ...baseArgs, prompt];

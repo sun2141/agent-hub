@@ -654,7 +654,7 @@ class TestSyncEnd2End(unittest.TestCase):
 
         # 테스트 payload
         payload = {
-            "repository": {"full_name": "sun2141/grace-ai", "default_branch": "main"},
+            "repository": {"full_name": "sun2141/agent-hub", "default_branch": "main"},
             "ref": "refs/heads/main",
             "after": "commit_sha_abc123",
             "pusher": {"name": "testuser"},
@@ -670,8 +670,8 @@ class TestSyncEnd2End(unittest.TestCase):
         from github_drive_sync import GitHubDriveSync
         syncer = GitHubDriveSync()
 
-        # sun2141/grace-ai 매핑이 있어야 함
-        config = syncer.get_repo_config("sun2141/grace-ai")
+        # sun2141/agent-hub 매핑이 있어야 함
+        config = syncer.get_repo_config("sun2141/agent-hub")
         if not config or not config.get("drive_folder_id"):
             self.skipTest("GOOGLE_DRIVE_FOLDER_ID 환경 변수 미설정 — E2E 테스트 스킵")
 
@@ -714,7 +714,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
     DriveWatchManager.renew_expiring_channels() 메서드의 동작 검증:
     - 만료 임박 채널 자동 갱신 (stop → re-register)
     - TTL 충분한 채널은 갱신 건너뜀
-    - palmoni / grace-ai 양쪽 저장소 채널 처리
+    - palmoni / agent-hub 양쪽 저장소 채널 처리
     - 갱신 후 채널 상태 파일 저장 확인
     """
 
@@ -757,7 +757,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
             manager = self._make_watch_manager()
 
         ch = self._make_channel(
-            "ch-grace-001", "sun2141/grace-ai", "folder-grace", 30 * 60 * 1000
+            "ch-grace-001", "sun2141/agent-hub", "folder-grace", 30 * 60 * 1000
         )
         manager._channels[ch.channel_id] = ch
 
@@ -792,7 +792,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         self.assertIn("ch-grace-001", stopped, "만료 임박 채널이 해제되어야 함")
         self.assertEqual(len(renewed), 1, "새 채널이 등록되어야 함")
-        self.assertEqual(renewed[0], ("folder-grace", "sun2141/grace-ai"))
+        self.assertEqual(renewed[0], ("folder-grace", "sun2141/agent-hub"))
 
     def test_healthy_channel_is_not_renewed(self):
         """TTL 충분(20시간) 채널은 갱신하지 않음."""
@@ -815,13 +815,13 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
         self.assertEqual(len(renewed), 0, "TTL 충분한 채널은 갱신하지 않아야 함")
 
     def test_multiple_repos_renewal(self):
-        """grace-ai + palmoni 두 저장소 채널 동시 갱신."""
+        """agent-hub + palmoni 두 저장소 채널 동시 갱신."""
         with patch("drive_github_sync.WATCH_STATE_FILE", self.watch_state_file):
             manager = self._make_watch_manager()
 
-        # grace-ai: 만료 임박 (45분)
+        # agent-hub: 만료 임박 (45분)
         ch_grace = self._make_channel(
-            "ch-grace", "sun2141/grace-ai", "folder-grace", 45 * 60 * 1000
+            "ch-grace", "sun2141/agent-hub", "folder-grace", 45 * 60 * 1000
         )
         # palmoni: 만료 임박 (20분)
         ch_palmoni = self._make_channel(
@@ -861,7 +861,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         self.assertIn("ch-grace", stopped)
         self.assertIn("ch-palmoni", stopped)
-        self.assertIn("sun2141/grace-ai", renewed_repos)
+        self.assertIn("sun2141/agent-hub", renewed_repos)
         self.assertIn("sun2141/palmoni", renewed_repos)
 
     def test_mixed_channels_partial_renewal(self):
@@ -871,7 +871,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         # 만료 임박
         ch_expiring = self._make_channel(
-            "ch-exp", "sun2141/grace-ai", "folder-grace", 10 * 60 * 1000
+            "ch-exp", "sun2141/agent-hub", "folder-grace", 10 * 60 * 1000
         )
         # 건강한 채널
         ch_healthy = self._make_channel(
@@ -911,7 +911,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         self.assertIn("ch-exp", stopped, "만료 임박 채널은 갱신되어야 함")
         self.assertNotIn("ch-ok", stopped, "건강한 채널은 유지되어야 함")
-        self.assertEqual(renewed, ["sun2141/grace-ai"])
+        self.assertEqual(renewed, ["sun2141/agent-hub"])
 
     def test_get_watch_status_shows_remaining_time(self):
         """get_watch_status()가 남은 TTL(초)를 정확히 반환."""
@@ -920,7 +920,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         remaining_hours = 12
         ch = self._make_channel(
-            "ch-status-test", "sun2141/grace-ai", "folder-grace",
+            "ch-status-test", "sun2141/agent-hub", "folder-grace",
             remaining_hours * 3600 * 1000
         )
         manager._channels[ch.channel_id] = ch
@@ -930,7 +930,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
         self.assertEqual(len(status["channels"]), 1)
 
         ch_info = status["channels"][0]
-        self.assertEqual(ch_info["repo"], "sun2141/grace-ai")
+        self.assertEqual(ch_info["repo"], "sun2141/agent-hub")
         # 남은 시간이 대략 맞는지 확인 (5초 오차 허용)
         expected_remaining = remaining_hours * 3600
         self.assertAlmostEqual(
@@ -944,7 +944,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
             manager = self._make_watch_manager()
 
         ch = self._make_channel(
-            "ch-save-test", "sun2141/grace-ai", "folder-grace", 10 * 60 * 1000
+            "ch-save-test", "sun2141/agent-hub", "folder-grace", 10 * 60 * 1000
         )
         manager._channels[ch.channel_id] = ch
 
@@ -983,7 +983,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
             self.assertNotIn("ch-save-test", channel_ids, "기존 채널은 파일에서 제거되어야 함")
 
     def test_sync_state_tracks_both_repos(self):
-        """sync_state.json에 grace-ai와 palmoni 양쪽 추적 키 존재."""
+        """sync_state.json에 agent-hub와 palmoni 양쪽 추적 키 존재."""
         import sync_logger as sl_module
         sl_module.TMP_DIR = Path(self.tmp_dir)
         sl_module.STATE_FILE = Path(self.tmp_dir) / "sync_state.json"
@@ -993,9 +993,9 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
         from sync_logger import SyncLogger
         sl = SyncLogger()
 
-        # grace-ai 상태 추가
+        # agent-hub 상태 추가
         sl.update_file_state(
-            "sun2141/grace-ai", "execution/test.py", "sha001", "drive_id_001"
+            "sun2141/agent-hub", "execution/test.py", "sha001", "drive_id_001"
         )
         # palmoni 상태 추가
         sl.update_file_state(
@@ -1007,8 +1007,8 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
             "2026-05-05T00:00:00Z", "sha003"
         )
 
-        # grace-ai 확인
-        grace_summary = sl.get_repo_summary("sun2141/grace-ai")
+        # agent-hub 확인
+        grace_summary = sl.get_repo_summary("sun2141/agent-hub")
         self.assertEqual(grace_summary["total_files"], 1)
 
         # palmoni 확인
@@ -1023,7 +1023,7 @@ class TestDriveWatchTTLRenewal(unittest.TestCase):
 
         # 전체 통계
         stats = sl.get_stats()
-        self.assertIn("sun2141/grace-ai", stats["tracked_repos"])
+        self.assertIn("sun2141/agent-hub", stats["tracked_repos"])
         self.assertIn("sun2141/palmoni", stats["tracked_repos"])
 
         sl_module._sync_logger_instance = None

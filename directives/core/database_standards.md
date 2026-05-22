@@ -32,7 +32,6 @@
 | palmoni | supabase | active | Auth + DB 모두 사용 중. 마이그레이션 금지 |
 | pray-crawling | none | - | 크롤링 전용, DB 불필요 |
 | facepick | neon | pending | Neon 연동 설정 필요 (setup_neon_db.py 실행) |
-| reddit-insight | neon | pending | Neon 연동 설정 필요 (setup_neon_db.py 실행) |
 
 ---
 
@@ -59,7 +58,8 @@ PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH npm run migrate:neon:schem
 주의:
 - `NEON_DATABASE_URL`은 pooled connection string (`-pooler` 호스트)을 사용합니다.
 - 오래된 `planning`, `building`, `evaluating` 작업은 새 작업을 막을 수 있으므로 `db:health`로 감지합니다.
-- VPS에서는 Node 22 경로가 먼저 오도록 `PATH`를 설정합니다.
+- VPS/로컬 모두 하네스와 하네스가 실행하는 CLI 자식 프로세스가 Node 22를 쓰도록 `NODE_BIN`의 디렉토리를 `PATH` 맨 앞에 둡니다.
+- `Claude CLI 비정상 종료 (code: 1)`와 함께 `Unexpected token '??='`가 나오면 `/usr/bin/env node`가 오래된 Node를 잡은 것입니다. `harness/scripts/start.sh`로 재시작하고 `NODE_BIN` 값과 `PATH` 순서를 먼저 확인합니다.
 
 ## Neon Postgres 표준 (신규/DB 미설정 프로젝트)
 
@@ -101,7 +101,6 @@ python execution/setup_neon_db.py --project <project_id>
 
 # 예시
 python execution/setup_neon_db.py --project facepick
-python execution/setup_neon_db.py --project reddit-insight
 ```
 
 **스크립트가 수행하는 작업**:

@@ -28,13 +28,6 @@ PROJECTS = {
         "github": None,
         "deploy_url": None,
         "active": False
-    },
-    "reddit-insight": {
-        "name": "Reddit Insight",
-        "path": "/Users/sun/reddit-insight",
-        "github": None,
-        "deploy_url": None,
-        "active": False
     }
 }
 

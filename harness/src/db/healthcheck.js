@@ -77,7 +77,7 @@ for (const row of countRows) ok(`${row.name}: ${row.count}`);
 const projectRows = await sql`
   SELECT id, path
   FROM harness.projects
-  WHERE active = 1 AND (hidden IS NULL OR hidden = 0)
+  WHERE active = 1
   ORDER BY id
 `;
 const missingPaths = projectRows

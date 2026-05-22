@@ -49,7 +49,7 @@ execution/drive_github_sync.py  ← Drive→GitHub 동기화 엔진
 - **환경 변수** (`.env`):
   - `GITHUB_WEBHOOK_SECRET` — Webhook HMAC 서명 검증
   - `GITHUB_TOKEN` — GitHub API 토큰 (Drive→GitHub 동기화에 필수)
-  - `GOOGLE_DRIVE_FOLDER_ID` — grace-ai 저장소 Drive 폴더
+  - `GOOGLE_DRIVE_FOLDER_ID` — agent-hub 저장소 Drive 폴더
   - `GOOGLE_DRIVE_FOLDER_ID_PALMONI` — palmoni 저장소 Drive 폴더
   - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — 알림
   - `WEBHOOK_PORT` — 서버 포트 (기본 8080)

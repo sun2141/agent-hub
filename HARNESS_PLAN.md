@@ -42,7 +42,6 @@
 |----------|------|------|------|
 | palmoni | 276MB | 활성 | React + Vite |
 | facepick | 572MB | 활성 | Next.js |
-| reddit-insight | 115MB | 비활성 | Node.js |
 | grace-ai.bak | 288MB | 백업 | - |
 | prayer-app.bak | 968MB | 백업 | - |
 

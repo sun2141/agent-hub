@@ -67,13 +67,57 @@ function validateEnv() {
     API_KEY:            '최소 32자 랜덤 문자열 (openssl rand -hex 32)',
     TELEGRAM_BOT_TOKEN: '텔레그램 봇 토큰 (BotFather에서 발급)',
     TELEGRAM_CHAT_ID:   '텔레그램 채팅 ID (숫자)',
+    DASHBOARD_PASSWORD: '대시보드 로그인 비밀번호 (없으면 /api/* 가 503 반환)',
   };
   const errors = [];
+  const warnings = [];
+
   for (const [key, desc] of Object.entries(required)) {
     if (!process.env[key]?.trim()) errors.push(`  • ${key}: ${desc}`);
   }
   if (process.env.API_KEY?.length < 32) {
     errors.push(`  • API_KEY: 최소 32자 이상 (현재 ${process.env.API_KEY.length}자)`);
+  }
+
+  // CLAUDE_CLI_PATH: 절대경로면 파일 존재/실행 권한 검증
+  const claudeCli = process.env.CLAUDE_CLI_PATH?.trim();
+  if (!claudeCli) {
+    warnings.push(`  • CLAUDE_CLI_PATH 미설정 → PATH의 'claude' 사용 (절대경로 권장)`);
+  } else if (path.isAbsolute(claudeCli)) {
+    if (!fs.existsSync(claudeCli)) {
+      warnings.push(`  • CLAUDE_CLI_PATH=${claudeCli} 파일이 존재하지 않습니다`);
+    } else {
+      try {
+        fs.accessSync(claudeCli, fs.constants.X_OK);
+      } catch {
+        warnings.push(`  • CLAUDE_CLI_PATH=${claudeCli} 실행 권한 없음`);
+      }
+    }
+  }
+
+  // CLAUDE_CONFIG_DIR: 디렉토리 존재 검증 (없으면 전역 ~/.claude/ hooks가 지연 유발)
+  const claudeCfg = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (!claudeCfg) {
+    warnings.push(`  • CLAUDE_CONFIG_DIR 미설정 → 기본 ~/.claude/ 사용 (전역 hooks/MCP가 큰 지연 유발 가능)`);
+  } else if (!fs.existsSync(claudeCfg)) {
+    warnings.push(`  • CLAUDE_CONFIG_DIR=${claudeCfg} 디렉토리가 존재하지 않습니다`);
+  }
+
+  // PROJECTS_ROOT: 쉼표로 구분된 모든 경로 존재 검증
+  const projRoot = process.env.PROJECTS_ROOT?.trim();
+  if (!projRoot) {
+    warnings.push(`  • PROJECTS_ROOT 미설정 → 기본 폴백 사용`);
+  } else {
+    const roots = projRoot.split(',').map(r => r.trim()).filter(Boolean);
+    for (const root of roots) {
+      if (!fs.existsSync(root)) warnings.push(`  • PROJECTS_ROOT 경로 없음: ${root}`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    console.warn('\n[Boot] ⚠️  환경변수 경고:\n');
+    warnings.forEach(w => console.warn(w));
+    console.warn('');
   }
   if (errors.length > 0) {
     console.error('\n[Boot] ❌ 필수 환경변수 누락:\n');
@@ -123,9 +167,9 @@ async function main() {
     console.log(`[Boot] WebSocket ws://${BIND_HOST}:${PORT}/ws`);
     console.log(`[Boot] 헬스체크: http://${BIND_HOST}:${PORT}/health`);
     console.log('');
-    console.log('  대시보드 외부 접근을 위해 SSH 터널을 시작하세요:');
-    console.log('    npm run tunnel');
-    console.log('  접속 주소: http://91.99.58.70:9091');
+    console.log('  대시보드 외부 접근:');
+    console.log('    Vercel rewrite -> http://91.99.58.70/{health,auth,api,ws}');
+    console.log('    로컬/임시 터널 사용 시 VITE_API_BASE_URL을 터널 URL로 설정');
     console.log('');
   });
 

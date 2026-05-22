@@ -28,11 +28,11 @@ agent-hub/
 
 ```
 [프론트엔드]                    [백엔드]
-sun2141/harness-dashboard  →  agent-hub/harness/
-(Vercel 배포)                  (Mac 로컬 실행, port 3000)
+agent-hub/harness/dashboard →  agent-hub/harness/
+(Vercel 프로젝트: harness-dashboard) (Mac 로컬 실행 또는 VPS 실행, port 3000)
         ↕ REST API + WebSocket
 [외부 접근]
-VPS (91.99.58.70) nginx → SSH 터널 (9091→3000) → Mac
+VPS (91.99.58.70) nginx/프록시 → harness API
 ```
 
 ---
@@ -51,14 +51,14 @@ npm run build
 
 ---
 
-## 프론트엔드 (별도 레포)
+## 프론트엔드
 
-대시보드 프론트엔드는 별도 레포에서 관리됩니다:
-👉 https://github.com/sun2141/harness-dashboard
+대시보드 프론트엔드의 현재 소스는 이 레포의 `harness/dashboard/`입니다.
+기존 `sun2141/harness-dashboard` 레포는 과거 독립 배포용 레거시로 보고, 새 변경은 `agent-hub` 안에서 관리합니다.
 
 **Vercel 환경변수 필수:**
-- `VITE_API_KEY` — harness/.env의 API_KEY와 동일값
-- `VITE_API_BASE` — `http://91.99.58.70` (VPS IP)
+- `VITE_API_BASE_URL` — 비워두면 Vercel rewrite(`/api`, `/auth`, `/ws`)를 사용
+- 세션 로그인 방식 사용. `VITE_API_KEY`를 브라우저 번들에 넣지 않음
 
 ---
 

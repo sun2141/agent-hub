@@ -263,7 +263,7 @@ ssh $HETZNER_USER@$HETZNER_IP
 
 **경로**: `/Users/sun/agent-hub/`
 **역할**: 모든 프로젝트를 관리하는 중앙 허브
-**GitHub**: sun2141/grace-ai
+**GitHub**: sun2141/agent-hub
 
 ### 연결된 프로젝트 (Project Registry)
 
@@ -272,7 +272,6 @@ ssh $HETZNER_USER@$HETZNER_IP
 | pray-crawling | Pray-crawling | `/Users/sun/pray-crawling` | https://github.com/sun2141/pray-crawling | 개발중 | none | - |
 | palmoni | Palmoni 기도앱 | `/Users/sun/palmoni/` | sun2141/palmoni | palmoni.vercel.app | supabase | active |
 | facepick | FacePick | `/Users/sun/facepick/` | - | 개발중 | neon | pending |
-| reddit-insight | Reddit Insight | `/Users/sun/reddit-insight/` | - | 개발중 | neon | pending |
 
 **DB 타입 값**: `supabase` | `neon` | `none` | `unknown`
 **DB 상태 값**: `active` (운영중) | `pending` (설정 필요) | `-` (해당없음)
@@ -312,7 +311,6 @@ ssh $HETZNER_USER@$HETZNER_IP
 ├── CLAUDE.md              ← 글로벌 Agent 규칙
 ├── shared-skills/         ← 공유 스킬
 ├── facepick/              ← FacePick 프로젝트
-├── reddit-insight/        ← Reddit Insight 프로젝트
 └── prayer-app/            ← Palmoni 연동
 ```
 
@@ -331,13 +329,13 @@ ssh $HETZNER_USER@$HETZNER_IP
                     │  - 스케줄 작업               │
                     └──────────────┬───────────────┘
                                    │
-        ┌──────────────────────────┼──────────────────────────┐
-        │                          │                          │
-        ▼                          ▼                          ▼
-┌───────────────┐      ┌───────────────┐      ┌───────────────┐
-│ Palmoni       │      │ FacePick      │      │ Reddit Insight│
-│ (Vercel)      │      │ (개발중)       │      │ (개발중)       │
-└───────┬───────┘      └───────────────┘      └───────────────┘
+        ┌──────────────────────────┐
+        │                          │
+        ▼                          ▼
+┌───────────────┐      ┌───────────────┐
+│ Palmoni       │      │ FacePick      │
+│ (Vercel)      │      │ (개발중)       │
+└───────┬───────┘      └───────────────┘
         │
         ▼
 ┌───────────────┐

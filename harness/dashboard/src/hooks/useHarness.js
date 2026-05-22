@@ -5,9 +5,29 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 // 대시보드 인증은 세션 쿠키(로그인 후 자동 첲부)  방식으로만 처리
 const _API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
 const API_BASE = _API_BASE_URL ? `${_API_BASE_URL}/api` : '/api'
+const DEBUG_WS = import.meta.env.DEV && import.meta.env.VITE_DEBUG_WS === 'true'
+const POLL_INTERVAL_MS = 30_000
+const WS_CONNECTED_REFRESH_MS = 120_000
+const RATE_LIMIT_BACKOFF_MS = 30_000
+
+const inFlightGets = new Map()
+let readBackoffUntil = 0
 
 function apiFetch(path, options = {}) {
-  return fetch(`${API_BASE}${path}`, {
+  const method = (options.method || 'GET').toUpperCase()
+  const isRead = method === 'GET'
+  const now = Date.now()
+
+  if (isRead && now < readBackoffUntil) {
+    return Promise.reject(new Error('rate_limited_backoff'))
+  }
+
+  const cacheKey = isRead ? path : null
+  if (cacheKey && inFlightGets.has(cacheKey)) {
+    return inFlightGets.get(cacheKey)
+  }
+
+  const request = fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: 'include', // 세션 쿠키 자동 첲부
     headers: {
@@ -16,9 +36,15 @@ function apiFetch(path, options = {}) {
     },
   }).then(async r => {
     const data = await r.json()
+    if (r.status === 429) readBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS
     if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`)
     return data
+  }).finally(() => {
+    if (cacheKey) inFlightGets.delete(cacheKey)
   })
+
+  if (cacheKey) inFlightGets.set(cacheKey, request)
+  return request
 }
 
 // 실행 중으로 간주하는 상태 목록 — DB 폴링이 이 상태의 작업을 덮어쓰지 않음
@@ -31,6 +57,7 @@ export function useHarness() {
   const [wsEvents, setWsEvents]   = useState([])
   const [connected, setConnected] = useState(false)
   const wsRef = useRef(null)
+  const connectedRef = useRef(false)
   // 현재 tasks 상태를 ref로 유지 — loadTasks 클로저에서 최신 값 참조용
   const tasksRef = useRef([])
 
@@ -47,7 +74,9 @@ export function useHarness() {
     try {
       const data = await apiFetch('/projects?includeHidden=true')
       if (Array.isArray(data)) setProjects(data)
-    } catch (e) { console.error('projects:', e) }
+    } catch (e) {
+      if (e.message !== 'rate_limited_backoff') console.error('projects:', e)
+    }
   }, [])
 
   const loadTasks = useCallback(async () => {
@@ -71,15 +100,23 @@ export function useHarness() {
           return dbTask
         })
       })
-    } catch (e) { console.error('tasks:', e) }
+    } catch (e) {
+      if (e.message !== 'rate_limited_backoff') console.error('tasks:', e)
+    }
   }, [setTasksSafe])
 
   const loadStatus = useCallback(async () => {
     try {
       const data = await apiFetch('/status')
       if (data?.ok) setStatus(data.harness)
-    } catch (e) { console.error('status:', e) }
+    } catch (e) {
+      if (e.message !== 'rate_limited_backoff') console.error('status:', e)
+    }
   }, [])
+
+  useEffect(() => {
+    connectedRef.current = connected
+  }, [connected])
 
   // WebSocket — Vite 프록시(로컬) 또는 VPS 직접 연결(배포)
   useEffect(() => {
@@ -96,7 +133,7 @@ export function useHarness() {
 
     // HTTPS 페이지에서 ws:// 연결은 Mixed Content로 차단됨 → polling fallback
     if (location.protocol === 'https:' && wsUrl.startsWith('ws://')) {
-      console.log('[WS] HTTPS 환경에서 ws:// 불가 → polling 모드 사용')
+      if (DEBUG_WS) console.log('[WS] HTTPS 환경에서 ws:// 불가 → polling 모드 사용')
       return
     }
 
@@ -111,7 +148,7 @@ export function useHarness() {
       ws.onopen = async () => {
         setConnected(true)
         reconnectCount = 0
-        console.log('[WS] 연결됨')
+        if (DEBUG_WS) console.log('[WS] 연결됨')
         // WS 재연결 시 최신 task 목록을 즉시 갱신 (연결 끊김 동안의 상태 손실 복구)
         loadTasks()
         loadStatus()
@@ -135,7 +172,7 @@ export function useHarness() {
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data)
-          console.log('[WS msg]', msg.type)
+          if (DEBUG_WS) console.log('[WS msg]', msg.type)
           setWsEvents(prev => [...prev.slice(-200), msg])
 
           // phase:start — 로컬 상태를 즉시 업데이트하여 폴링 덮어쓰기 방지
@@ -180,10 +217,10 @@ export function useHarness() {
         // 최대 10회 재시도 후 포기 (무한 루프 방지)
         if (reconnectCount <= 10) {
           const delay = Math.min(3000 * reconnectCount, 30000)
-          console.log(`[WS] 연결 끊김, ${delay / 1000}초 후 재연결 (${reconnectCount}/10)`)
+          if (DEBUG_WS) console.log(`[WS] 연결 끊김, ${delay / 1000}초 후 재연결 (${reconnectCount}/10)`)
           reconnectTimer = setTimeout(connect, delay)
         } else {
-          console.log('[WS] 재연결 한도 초과 → polling 모드 전환')
+          if (DEBUG_WS) console.log('[WS] 재연결 한도 초과 → polling 모드 전환')
         }
       }
 
@@ -205,12 +242,17 @@ export function useHarness() {
     loadProjects()
     loadTasks()
     loadStatus()
-    // HTTPS 배포 환경에서는 WS 연결이 불가하므로 polling 간격을 10초로 단축
-    const isPollingOnly = location.protocol === 'https:'
+    let lastConnectedRefreshAt = 0
     const timer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      if (connectedRef.current) {
+        const now = Date.now()
+        if (now - lastConnectedRefreshAt < WS_CONNECTED_REFRESH_MS) return
+        lastConnectedRefreshAt = now
+      }
       loadStatus()
       loadTasks()
-    }, isPollingOnly ? 10000 : 30000)
+    }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [])
 

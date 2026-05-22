@@ -133,7 +133,7 @@ def check_environment(result: VerifyResult, base_url: str) -> bool:
         result.add(
             "Drive 폴더 ID 설정",
             VerifyResult.PASS,
-            f"grace-ai: {'설정됨' if folder_id else '미설정'}, palmoni: {'설정됨' if palmoni_folder_id else '미설정'}",
+            f"agent-hub: {'설정됨' if folder_id else '미설정'}, palmoni: {'설정됨' if palmoni_folder_id else '미설정'}",
         )
     else:
         result.add(
@@ -311,7 +311,7 @@ def check_webhook_drive_endpoint(result: VerifyResult, base_url: str) -> bool:
         "X-Goog-Channel-ID": test_channel_id,
         "X-Goog-Resource-State": "change",
         "X-Goog-Resource-ID": "test-resource-id-12345",
-        "X-Goog-Channel-Token": "repo=sun2141/grace-ai",
+        "X-Goog-Channel-Token": "repo=sun2141/agent-hub",
         "X-Goog-Channel-Expiration": (
             datetime.now(timezone.utc) + timedelta(hours=23)
         ).strftime("%a, %d %b %Y %H:%M:%S GMT"),
@@ -387,7 +387,7 @@ def check_watch_register_endpoint(result: VerifyResult, base_url: str) -> bool:
     try:
         resp = requests.post(
             f"{url}/watch/register",
-            json={"repo": "sun2141/grace-ai"},
+            json={"repo": "sun2141/agent-hub"},
             timeout=30,
             verify=False,
         )
@@ -399,7 +399,7 @@ def check_watch_register_endpoint(result: VerifyResult, base_url: str) -> bool:
                 result.add(
                     "Watch 채널 등록",
                     VerifyResult.PASS,
-                    f"채널 ID: {channel_id[:8]}... (sun2141/grace-ai)",
+                    f"채널 ID: {channel_id[:8]}... (sun2141/agent-hub)",
                 )
                 return True
             else:
@@ -458,7 +458,7 @@ def check_watch_renew_logic(result: VerifyResult):
             channel_id="test-channel-001",
             resource_id="test-resource-001",
             folder_id="test-folder-001",
-            repo="sun2141/grace-ai",
+            repo="sun2141/agent-hub",
             expiration_ms=now_ms + 30 * 60 * 1000,  # 30분 후 만료
             page_token="test-page-token",
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -552,7 +552,7 @@ def check_watch_renew_logic(result: VerifyResult):
 
 def check_sync_state_repos(result: VerifyResult):
     """
-    sync_state.json에 양쪽 저장소(grace-ai, palmoni)가 모두 추적되는지 확인.
+    sync_state.json에 양쪽 저장소(agent-hub, palmoni)가 모두 추적되는지 확인.
     """
     print("\n[7] sync_state.json 저장소 추적 상태 확인")
 
@@ -575,19 +575,19 @@ def check_sync_state_repos(result: VerifyResult):
 
     result.add("sync_state.json 존재", VerifyResult.PASS)
 
-    # grace-ai 추적
-    if "sun2141/grace-ai" in state:
-        files = [k for k in state["sun2141/grace-ai"].keys() if not k.startswith("_")]
+    # agent-hub 추적
+    if "sun2141/agent-hub" in state:
+        files = [k for k in state["sun2141/agent-hub"].keys() if not k.startswith("_")]
         result.add(
-            "grace-ai 저장소 추적",
+            "agent-hub 저장소 추적",
             VerifyResult.PASS,
             f"추적 파일 {len(files)}개",
         )
     else:
         result.add(
-            "grace-ai 저장소 추적",
+            "agent-hub 저장소 추적",
             VerifyResult.FAIL,
-            "sun2141/grace-ai 키 없음",
+            "sun2141/agent-hub 키 없음",
         )
 
     # palmoni 추적
@@ -639,10 +639,10 @@ def check_mappings_endpoint(result: VerifyResult, base_url: str):
             data = resp.json()
             repos = [m.get("repo") for m in data.get("mappings", [])]
 
-            if "sun2141/grace-ai" in repos:
-                result.add("grace-ai 매핑", VerifyResult.PASS)
+            if "sun2141/agent-hub" in repos:
+                result.add("agent-hub 매핑", VerifyResult.PASS)
             else:
-                result.add("grace-ai 매핑", VerifyResult.FAIL, "매핑 없음")
+                result.add("agent-hub 매핑", VerifyResult.FAIL, "매핑 없음")
 
             if "sun2141/palmoni" in repos:
                 result.add("palmoni 매핑", VerifyResult.PASS)

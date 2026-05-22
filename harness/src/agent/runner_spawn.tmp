@@ -1,5 +1,0 @@
-      const proc = spawn(CLAUDE_CLI, args, {
-        cwd,
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe'], // stdin 닫기 → 인터랙티브 모드 방지
-      });

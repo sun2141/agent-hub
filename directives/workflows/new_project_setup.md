@@ -12,7 +12,7 @@
 - `project_id`: 프로젝트 ID (소문자, 하이픈 허용. 예: my-app)
 - `project_name`: 프로젝트 이름 (표시용. 예: My App)
 - `needs_auth`: Auth 기능 필요 여부 (true → Supabase, false → Neon, 기본값: false)
-- `local_path`: 로컬 경로 (기본값: `/Users/sun/{project_id}`)
+- `local_path`: VPS 경로 (기본값: `/home/agent/workspace/{project_id}`)
 - `vercel_slug`: Vercel 프로젝트 슬러그 (기본값: project_id와 동일)
 
 ---
@@ -34,9 +34,9 @@ Step 7: 기본 구조 검증
 ## Step 1: 프로젝트 디렉토리 & Git 초기화
 
 ```bash
-# 로컬 경로 생성
-mkdir -p /Users/sun/{project_id}
-cd /Users/sun/{project_id}
+# VPS 프로젝트 경로 생성
+mkdir -p /home/agent/workspace/{project_id}
+cd /home/agent/workspace/{project_id}
 
 # Git 초기화
 git init
@@ -54,7 +54,7 @@ mkdir -p src db/migrations
 
 ```bash
 # agent-hub에서
-cp directives/templates/project_claude_md.md /Users/sun/{project_id}/CLAUDE.md
+cp directives/templates/project_claude_md.md /home/agent/workspace/{project_id}/CLAUDE.md
 # project_id, project_name 등 플레이스홀더 치환
 ```
 
@@ -68,7 +68,7 @@ cp directives/templates/project_claude_md.md /Users/sun/{project_id}/CLAUDE.md
 
 ```bash
 # agent-hub에서 실행
-cd /Users/sun/agent-hub
+cd /home/agent/workspace/agent-hub
 python execution/setup_neon_db.py --project {project_id}
 ```
 
@@ -88,7 +88,7 @@ DATABASE_URL_UNPOOLED=<agent-hub .env의 {PROJECT_ID}_DATABASE_URL_UNPOOLED 값 
 
 **클라이언트 설치**:
 ```bash
-cd /Users/sun/{project_id}
+cd /home/agent/workspace/{project_id}
 npm install @neondatabase/serverless
 # ORM 사용 시:
 npm install drizzle-orm && npm install -D drizzle-kit
@@ -122,7 +122,7 @@ supabase link --project-ref {supabase_project_ref}
 CLAUDE.md, AGENTS.md, GEMINI.md의 Project Registry 테이블에 추가:
 
 ```markdown
-| {project_id} | {project_name} | `/Users/sun/{project_id}/` | {github_url 또는 -} | {배포 URL 또는 개발중} | {neon 또는 supabase} | pending |
+| {project_id} | {project_name} | `/home/agent/workspace/{project_id}/` | {github_url 또는 -} | {배포 URL 또는 개발중} | {neon 또는 supabase} | pending |
 ```
 
 **DB 상태 설명**:
@@ -152,7 +152,7 @@ cp directives/templates/project_claude_md.md directives/projects/{project_id}.md
 배포가 예정된 경우:
 
 ```bash
-cd /Users/sun/{project_id}
+cd /home/agent/workspace/{project_id}
 
 # Vercel CLI로 프로젝트 연결
 vercel link
@@ -177,7 +177,7 @@ vercel env ls
 python execution/setup_neon_db.py --audit
 
 # 2. 로컬 개발 서버 기동 확인
-cd /Users/sun/{project_id}
+cd /home/agent/workspace/{project_id}
 npm run dev  # 또는 해당 시작 명령
 
 # 3. 기본 DB 쿼리 테스트

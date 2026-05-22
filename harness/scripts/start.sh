@@ -14,21 +14,44 @@ HARNESS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$HARNESS_ROOT/.." && pwd)"
 PID_FILE="$REPO_ROOT/harness.pid"
 LOG_DIR="$HARNESS_ROOT/logs"
-NODE_BIN="/Users/sun/.nvm/versions/node/v22.14.0/bin/node"
 
-# node 바이너리 확인
-if [ ! -x "$NODE_BIN" ]; then
-  NODE_BIN="$(which node 2>/dev/null || echo "")"
-  if [ -z "$NODE_BIN" ]; then
-    echo "[start] ❌ node 바이너리를 찾을 수 없습니다" >&2
-    exit 1
-  fi
+# .env에서 NODE_BIN 등 환경변수 로드
+if [ -f "$HARNESS_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$HARNESS_ROOT/.env"
+  set +a
 fi
+
+# NODE_BIN 우선순위: 1) .env의 NODE_BIN  2) PATH의 node  3) 에러
+if [ -z "${NODE_BIN:-}" ] || [ ! -x "$NODE_BIN" ]; then
+  NODE_BIN="$(command -v node 2>/dev/null || echo "")"
+fi
+if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+  echo "[start] ❌ node 바이너리를 찾을 수 없습니다 (.env의 NODE_BIN 또는 PATH 확인)" >&2
+  exit 1
+fi
+
+# Claude/Codex 같은 CLI shim은 `#!/usr/bin/env node`를 사용한다.
+# 하네스가 Node 22로 떠도 자식 프로세스가 PATH의 오래된 node를 잡으면 실행이 깨진다.
+NODE_DIR="$(cd "$(dirname "$NODE_BIN")" && pwd)"
+export PATH="$NODE_DIR:$PATH"
+
+PM2_BIN="$(command -v pm2 2>/dev/null || true)"
+PM2_APP_NAME="${PM2_APP_NAME:-harness}"
+
+pm2_has_app() {
+  [ -n "$PM2_BIN" ] && "$PM2_BIN" describe "$PM2_APP_NAME" >/dev/null 2>&1
+}
 
 CMD="${1:-start}"
 
 case "$CMD" in
   status)
+    if pm2_has_app; then
+      "$PM2_BIN" status "$PM2_APP_NAME"
+      exit 0
+    fi
     if [ -f "$PID_FILE" ]; then
       PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
       if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
@@ -45,6 +68,11 @@ case "$CMD" in
     ;;
 
   stop)
+    if pm2_has_app; then
+      "$PM2_BIN" stop "$PM2_APP_NAME"
+      rm -f "$PID_FILE"
+      exit 0
+    fi
     if [ -f "$PID_FILE" ]; then
       PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
       if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
@@ -66,6 +94,11 @@ case "$CMD" in
     ;;
 
   start)
+    if pm2_has_app; then
+      "$PM2_BIN" restart "$PM2_APP_NAME" --update-env
+      exit $?
+    fi
+
     # 이미 실행 중인지 확인
     if [ -f "$PID_FILE" ]; then
       PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
@@ -86,13 +119,40 @@ case "$CMD" in
     echo "[start] harness 시작: $NODE_BIN $HARNESS_ROOT/src/index.js"
     echo "[start] 로그: $RESTART_LOG"
 
-    # nohup으로 백그라운드 기동
-    nohup "$NODE_BIN" "$HARNESS_ROOT/src/index.js" \
-      > "$RESTART_LOG" 2>&1 &
-    NEW_PID=$!
+    # 비대화형 실행 환경(Codex 등)에서는 단순 nohup 백그라운드 프로세스가
+    # 부모 프로세스 종료 시 함께 정리될 수 있으므로 새 세션으로 분리한다.
+    if command -v python3 >/dev/null 2>&1; then
+      NEW_PID=$(
+        NODE_BIN="$NODE_BIN" HARNESS_ROOT="$HARNESS_ROOT" RESTART_LOG="$RESTART_LOG" python3 - <<'PY'
+import os
+import subprocess
 
-    # PID 저장 (index.js가 자체적으로도 저장하지만 여기서도 저장)
-    echo "$NEW_PID" > "$PID_FILE"
+node_bin = os.environ["NODE_BIN"]
+harness_root = os.environ["HARNESS_ROOT"]
+restart_log = os.environ["RESTART_LOG"]
+env = os.environ.copy()
+node_dir = os.path.dirname(os.path.realpath(node_bin))
+env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+
+log = open(restart_log, "ab", buffering=0)
+proc = subprocess.Popen(
+    [node_bin, os.path.join(harness_root, "src/index.js")],
+    cwd=harness_root,
+    env=env,
+    stdin=subprocess.DEVNULL,
+    stdout=log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+    close_fds=True,
+)
+print(proc.pid)
+PY
+      )
+    else
+      nohup "$NODE_BIN" "$HARNESS_ROOT/src/index.js" \
+        > "$RESTART_LOG" 2>&1 &
+      NEW_PID=$!
+    fi
 
     sleep 2
 

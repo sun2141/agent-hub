@@ -54,7 +54,7 @@ fi
 if [ "$QUICK_MODE" = true ]; then
   echo ""
   echo "[tunnel] 빠른 터널 시작 (URL 고정 안됨)"
-  echo "[tunnel] ※ URL이 출력되면 Vercel 환경변수 VITE_API_BASE에 설정하세요"
+  echo "[tunnel] ※ URL이 출력되면 Vercel 환경변수 VITE_API_BASE_URL에 설정하세요"
   echo ""
   cloudflared tunnel --url http://localhost:${LOCAL_PORT}
 else

@@ -18,13 +18,46 @@ const DASHBOARD_DIST = path.join(__dirname, '../../dashboard/dist');
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_USER = process.env.GITHUB_USER || 'sun2141';
 
+const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
+const PROJECT_ROOTS = (process.env.PROJECTS_ROOT || path.dirname(AGENT_HUB_ROOT))
+  .split(',')
+  .map(root => root.trim())
+  .filter(Boolean)
+  .map(root => path.resolve(root))
+  .filter(Boolean);
+const PRIMARY_PROJECTS_ROOT = PROJECT_ROOTS[0] || path.dirname(AGENT_HUB_ROOT);
+
 // CLAUDE.md 위치 (agent-hub 루트)
-const CLAUDE_MD_PATH = path.resolve(__dirname, '../../../CLAUDE.md');
+const CLAUDE_MD_PATH = path.join(AGENT_HUB_ROOT, 'CLAUDE.md');
+
+function slugifyProjectName(name) {
+  return name.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24) || 'project';
+}
+
+function isPathInsideRoot(candidate, root) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function resolveProjectPath(inputPath, fallbackSlug) {
+  const trimmed = typeof inputPath === 'string' ? inputPath.trim() : '';
+  const resolved = trimmed
+    ? path.resolve(trimmed)
+    : path.join(PRIMARY_PROJECTS_ROOT, fallbackSlug);
+  const allowed = PROJECT_ROOTS.some(root => isPathInsideRoot(resolved, root));
+  if (!allowed) {
+    throw new Error(`경로는 PROJECTS_ROOT 하위여야 합니다: ${PROJECT_ROOTS.join(', ')}`);
+  }
+  return resolved;
+}
 
 // ── directives/projects/{id}.md 자동 생성 ─────────────────
 function createDirectiveFile({ id, name, localPath, github, deploy, stack, description }) {
   try {
-    const directivesDir = path.resolve(__dirname, '../../../directives/projects');
+    const directivesDir = path.join(AGENT_HUB_ROOT, 'directives/projects');
     fs.mkdirSync(directivesDir, { recursive: true });
 
     const filePath = path.join(directivesDir, `${id}.md`);
@@ -89,13 +122,15 @@ function createProjectClaudeMd({ id, name, localPath, github, deploy, stack, des
     const claudeMdPath = path.join(localPath, 'CLAUDE.md');
     if (fs.existsSync(claudeMdPath)) return { ok: true, reason: '이미 존재함 (스킵)' };
 
-    const templatePath = path.resolve(__dirname, '../../../directives/templates/project_claude_md.md');
+    const templatePath = path.join(AGENT_HUB_ROOT, 'directives/templates/project_claude_md.md');
     let content;
 
     if (fs.existsSync(templatePath)) {
       content = fs.readFileSync(templatePath, 'utf8')
         .replace(/\{PROJECT_NAME\}/g, name)
         .replace(/\{PROJECT_ID\}/g, id)
+        .replace(/\{PROJECT_LOCAL_PATH\}/g, localPath)
+        .replace(/\{AGENT_HUB_ROOT\}/g, AGENT_HUB_ROOT)
         .replace(/\{PROJECT_DESCRIPTION\}/g, description || '프로젝트 설명을 추가하세요')
         .replace(/\{TECH_STACK\}/g, stack || '스택 정보를 추가하세요')
         .replace(/\{DEPLOYMENT_INFO\}/g, deploy || '배포 정보를 추가하세요')
@@ -125,16 +160,16 @@ function createProjectClaudeMd({ id, name, localPath, github, deploy, stack, des
 ### 금지 사항
 
 - 이 프로젝트에서 자동화/인프라 작업 하지 말 것
-- agent-hub 전용 작업은 \`/Users/sun/agent-hub/\`에서 수행
+- agent-hub 전용 작업은 \`${AGENT_HUB_ROOT}/\`에서 수행
 
 ---
 
 ## Central Hub Connection
 
-이 프로젝트는 **agent-hub** (\`/Users/sun/agent-hub/\`)와 연결됩니다.
+이 프로젝트는 **agent-hub** (\`${AGENT_HUB_ROOT}/\`)와 연결됩니다.
 
-- 프로젝트별 directive: \`/Users/sun/agent-hub/directives/projects/${id}.md\`
-- 전체 인프라: \`/Users/sun/agent-hub/CLAUDE.md\`
+- 프로젝트별 directive: \`${AGENT_HUB_ROOT}/directives/projects/${id}.md\`
+- 전체 인프라: \`${AGENT_HUB_ROOT}/CLAUDE.md\`
 `;
     }
 
@@ -227,8 +262,15 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '')
 const rateLimitMap = new Map();
 const RATE_LIMIT_MAX = 60;
 const RATE_LIMIT_WINDOW = 60_000;
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/auth/status', '/auth/ws-token']);
+const RATE_LIMIT_EXEMPT_READ_PATHS = new Set(['/api/projects', '/api/tasks', '/api/status']);
 
 function rateLimit(req, res, next) {
+  if (
+    req.method === 'OPTIONS' ||
+    RATE_LIMIT_EXEMPT_PATHS.has(req.path) ||
+    (req.method === 'GET' && RATE_LIMIT_EXEMPT_READ_PATHS.has(req.path))
+  ) return next();
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const entry = rateLimitMap.get(ip);
@@ -236,7 +278,10 @@ function rateLimit(req, res, next) {
     rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
     return next();
   }
-  if (entry.count >= RATE_LIMIT_MAX) return res.status(429).json({ error: 'Too Many Requests' });
+  if (entry.count >= RATE_LIMIT_MAX) {
+    res.setHeader('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
+    return res.status(429).json({ error: 'Too Many Requests' });
+  }
   entry.count++;
   next();
 }
@@ -375,7 +420,15 @@ export function createApiServer(agentRunner) {
   app.use('/api', authMiddleware);
 
   if (fs.existsSync(DASHBOARD_DIST)) {
-    app.use(express.static(DASHBOARD_DIST));
+    app.use(express.static(DASHBOARD_DIST, {
+      setHeaders(res, filePath) {
+        if (path.basename(filePath) === 'index.html') {
+          res.setHeader('Cache-Control', 'no-store');
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }));
   }
 
   // ── 프로젝트 생성 ─────────────────────────────────────────
@@ -383,20 +436,30 @@ export function createApiServer(agentRunner) {
     const { name, path: projectPath, stack, description, githubRepo, githubPrivate } = req.body;
 
     if (!validateString(name, 100)) return res.status(400).json({ error: 'name: 1~100자 필수' });
-    if (!validateString(projectPath, 500)) return res.status(400).json({ error: 'path: 1~500자 필수' });
-
-    const resolvedPath = path.resolve(projectPath);
-    if (!resolvedPath.startsWith('/Users/sun/')) {
-      return res.status(400).json({ error: '경로는 /Users/sun/ 하위여야 합니다' });
+    if (projectPath !== undefined && projectPath !== null && projectPath !== '' && !validateString(projectPath, 500)) {
+      return res.status(400).json({ error: 'path: 500자 이하 문자열' });
     }
 
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
+    const slug = slugifyProjectName(name);
+    let resolvedPath;
+    try {
+      resolvedPath = resolveProjectPath(projectPath, slug);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
     const suffix = crypto.randomBytes(3).toString('hex');
     const id = `${slug}-${suffix}`;
 
     const results = { id, folderCreated: false, gitInit: false, githubRepo: null, dbInserted: false };
 
     try {
+      if (fs.existsSync(resolvedPath) && fs.readdirSync(resolvedPath).length > 0) {
+        return res.status(409).json({
+          error: '이미 파일이 있는 경로입니다. 기존 등록을 사용하거나 빈 폴더를 지정하세요.',
+          path: resolvedPath,
+        });
+      }
+
       fs.mkdirSync(resolvedPath, { recursive: true });
       results.folderCreated = true;
 
@@ -530,7 +593,18 @@ export function createApiServer(agentRunner) {
     try {
       const existing = await projectQueries.get(req.params.id);
       if (!existing) return res.status(404).json({ error: '프로젝트 없음' });
-      const updated = await projectQueries.update(req.params.id, { name, path: projectPath, stack, description, github, deploy });
+      let resolvedPath = projectPath;
+      if (projectPath !== undefined) {
+        try {
+          resolvedPath = resolveProjectPath(projectPath, req.params.id);
+        } catch (err) {
+          return res.status(400).json({ error: err.message });
+        }
+        if (!fs.existsSync(resolvedPath)) {
+          return res.status(400).json({ error: '수정하려는 경로가 VPS에 없습니다', path: resolvedPath });
+        }
+      }
+      const updated = await projectQueries.update(req.params.id, { name, path: resolvedPath, stack, description, github, deploy });
       res.json(updated);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -618,15 +692,22 @@ export function createApiServer(agentRunner) {
     if (customId && /^[a-z0-9-]{1,50}$/.test(customId)) {
       id = customId;
     } else {
-      const slug = name.toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 24) || 'project';
+      const slug = slugifyProjectName(name);
       const suffix = crypto.randomBytes(3).toString('hex');
       id = `${slug}-${suffix}`;
     }
 
     try {
+      let resolvedPath;
+      try {
+        resolvedPath = resolveProjectPath(projectPath, id);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+      if (!fs.existsSync(resolvedPath)) {
+        return res.status(400).json({ error: '기존 등록 경로가 VPS에 없습니다', path: resolvedPath });
+      }
+
       const existing = await projectQueries.get(id);
       if (existing) {
         if (existing.hidden === 1) {
@@ -640,13 +721,13 @@ export function createApiServer(agentRunner) {
         }
         return res.status(409).json({ error: '이미 존재하는 프로젝트 ID' });
       }
-      const project = await projectQueries.insert({ id, name, path: projectPath, stack, description, github, deploy });
+      const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description, github, deploy });
 
       // CLAUDE.md 레지스트리 자동 업데이트
       const claudeResult = updateClaudeMdRegistry({
         id,
         name,
-        localPath: projectPath,
+        localPath: resolvedPath,
         github: github || null,
         deploy: deploy || null,
       });
@@ -655,7 +736,7 @@ export function createApiServer(agentRunner) {
       const directiveResult = createDirectiveFile({
         id,
         name,
-        localPath: projectPath,
+        localPath: resolvedPath,
         github: github || null,
         deploy: deploy || null,
         stack,
@@ -666,7 +747,7 @@ export function createApiServer(agentRunner) {
       const projectClaudeMdResult = createProjectClaudeMd({
         id,
         name,
-        localPath: projectPath,
+        localPath: resolvedPath,
         github: github || null,
         deploy: deploy || null,
         stack,
@@ -1389,6 +1470,15 @@ export function createApiServer(agentRunner) {
         return res.status(409).json({ error: `재개 불가 상태: ${task.status}` });
       }
       await agentRunner.resume(taskId);
+      // limit_event에 resumed_at 자동 기록 (대시보드가 별도 호출 없이도 처리)
+      try {
+        const activeEvent = await limitEventQueries.getLatestActive();
+        if (activeEvent && activeEvent.task_id === taskId) {
+          await limitEventQueries.markResumed(activeEvent.id);
+        }
+      } catch (dbErr) {
+        console.error(`[resume-now] limit_event markResumed 실패: ${dbErr.message}`);
+      }
       res.json({ taskId, status: 'resuming' });
     } catch (err) {
       res.status(400).json({ error: err.message });
@@ -1587,7 +1677,11 @@ export function createApiServer(agentRunner) {
   });
 
   if (fs.existsSync(DASHBOARD_DIST)) {
+    app.get('/assets/*', (req, res) => {
+      res.status(404).json({ error: 'Asset Not Found' });
+    });
     app.get(/^(?!\/api|\/ws).*/, (req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(path.join(DASHBOARD_DIST, 'index.html'));
     });
   }

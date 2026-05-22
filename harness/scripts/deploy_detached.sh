@@ -61,12 +61,15 @@ if [ -f "$HARNESS_PID_FILE" ]; then
 fi
 
 # ── 4. harness 재시작 ────────────────────────────────────────
-NODE_BIN="${NODE_BIN:-node}"
+NODE_BIN="${NODE_BIN:-}"
 
-# nvm 경로 우선 사용
-NVM_NODE="/Users/sun/.nvm/versions/node/v22.14.0/bin/node"
-if [ -x "$NVM_NODE" ]; then
-  NODE_BIN="$NVM_NODE"
+# .env의 NODE_BIN이 우선, 없으면 PATH의 node로 폴백
+if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+  NODE_BIN="$(command -v node 2>/dev/null || echo "node")"
+fi
+if [ -x "$NODE_BIN" ]; then
+  NODE_DIR="$(cd "$(dirname "$NODE_BIN")" && pwd)"
+  export PATH="$NODE_DIR:$PATH"
 fi
 
 # PM2가 있으면 pm2 reload, 없으면 node 직접 재시작
