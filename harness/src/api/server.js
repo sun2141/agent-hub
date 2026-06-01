@@ -27,6 +27,9 @@ const PROJECT_ROOTS = (process.env.PROJECTS_ROOT || path.dirname(AGENT_HUB_ROOT)
   .filter(Boolean);
 const PRIMARY_PROJECTS_ROOT = PROJECT_ROOTS[0] || path.dirname(AGENT_HUB_ROOT);
 
+// 외부 경로 허용 여부 (환경변수로 전역 설정)
+const ALLOW_EXTERNAL_PROJECTS = process.env.ALLOW_EXTERNAL_PROJECTS === 'true';
+
 // CLAUDE.md 위치 (agent-hub 루트)
 const CLAUDE_MD_PATH = path.join(AGENT_HUB_ROOT, 'CLAUDE.md');
 
@@ -42,14 +45,30 @@ function isPathInsideRoot(candidate, root) {
   return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function resolveProjectPath(inputPath, fallbackSlug) {
+function resolveProjectPath(inputPath, fallbackSlug, { allowExternal = false } = {}) {
   const trimmed = typeof inputPath === 'string' ? inputPath.trim() : '';
   const resolved = trimmed
     ? path.resolve(trimmed)
     : path.join(PRIMARY_PROJECTS_ROOT, fallbackSlug);
-  const allowed = PROJECT_ROOTS.some(root => isPathInsideRoot(resolved, root));
-  if (!allowed) {
-    throw new Error(`경로는 PROJECTS_ROOT 하위여야 합니다: ${PROJECT_ROOTS.join(', ')}`);
+
+  // path traversal 방지: resolve된 경로가 절대경로인지 확인
+  if (!path.isAbsolute(resolved)) {
+    throw new Error('유효하지 않은 경로입니다.');
+  }
+
+  const insideRoot = PROJECT_ROOTS.some(root => isPathInsideRoot(resolved, root));
+  if (!insideRoot) {
+    // 외부 경로 허용 조건: 환경변수 or 요청 파라미터
+    if (ALLOW_EXTERNAL_PROJECTS || allowExternal) {
+      console.warn(`[projects] 외부 경로 등록 허용 (PROJECTS_ROOT 외부): ${resolved}`);
+      return resolved;
+    }
+    throw new Error(
+      `경로는 PROJECTS_ROOT 하위여야 합니다: ${PROJECT_ROOTS.join(', ')}\n` +
+      `외부 경로를 등록하려면:\n` +
+      `  1) 요청에 "allow_external_path": true 파라미터 추가\n` +
+      `  2) 또는 서버에 ALLOW_EXTERNAL_PROJECTS=true 환경변수 설정`
+    );
   }
   return resolved;
 }
@@ -433,17 +452,19 @@ export function createApiServer(agentRunner) {
 
   // ── 프로젝트 생성 ─────────────────────────────────────────
   app.post('/api/projects/create', async (req, res) => {
-    const { name, path: projectPath, stack, description, githubRepo, githubPrivate } = req.body;
+    const { name, path: projectPath, stack, description, githubRepo, githubPrivate, allow_external_path } = req.body;
 
     if (!validateString(name, 100)) return res.status(400).json({ error: 'name: 1~100자 필수' });
     if (projectPath !== undefined && projectPath !== null && projectPath !== '' && !validateString(projectPath, 500)) {
       return res.status(400).json({ error: 'path: 500자 이하 문자열' });
     }
 
+    const allowExternal = allow_external_path === true || allow_external_path === 'true';
+
     const slug = slugifyProjectName(name);
     let resolvedPath;
     try {
-      resolvedPath = resolveProjectPath(projectPath, slug);
+      resolvedPath = resolveProjectPath(projectPath, slug, { allowExternal });
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -460,47 +481,65 @@ export function createApiServer(agentRunner) {
         });
       }
 
-      fs.mkdirSync(resolvedPath, { recursive: true });
-      results.folderCreated = true;
-
-      const gitInit = spawnSync('git', ['init'], { cwd: resolvedPath, stdio: 'pipe' });
-      spawnSync('git', ['checkout', '-b', 'main'], { cwd: resolvedPath, stdio: 'pipe' });
-      results.gitInit = gitInit.status === 0;
-
-      if (githubRepo && GITHUB_TOKEN) {
-        const repoName = (githubRepo === true || githubRepo === 'auto')
-          ? slug
-          : String(githubRepo).toLowerCase().replace(/[^a-z0-9-_]/g, '-');
-
-        const ghRes = await fetch('https://api.github.com/user/repos', {
-          method: 'POST',
-          headers: {
-            Authorization: `token ${GITHUB_TOKEN}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'agent-harness',
-          },
-          body: JSON.stringify({
-            name: repoName,
-            description: description || '',
-            private: githubPrivate !== false,
-            auto_init: false,
-          }),
-        });
-
-        const ghData = await ghRes.json();
-
-        if (ghRes.ok) {
-          results.githubRepo = { name: repoName, url: ghData.html_url, sshUrl: ghData.ssh_url, cloneUrl: ghData.clone_url };
-          spawnSync('git', ['remote', 'add', 'origin', ghData.ssh_url], { cwd: resolvedPath, stdio: 'pipe' });
-        } else {
-          results.githubError = ghData.message || 'GitHub 레포 생성 실패';
+      if (allowExternal) {
+        // 외부 경로(예: macOS 로컬)는 VPS에서 폴더 생성 불가 — 경고 후 건너뜀
+        try {
+          fs.mkdirSync(resolvedPath, { recursive: true });
+          results.folderCreated = true;
+        } catch (mkdirErr) {
+          console.warn(`[create-project] 외부 경로 폴더 생성 스킵 (${resolvedPath}):`, mkdirErr.message);
+          results.folderCreated = false;
+          results.folderSkipped = true;
         }
+      } else {
+        fs.mkdirSync(resolvedPath, { recursive: true });
+        results.folderCreated = true;
       }
 
-      const readmeContent = `# ${name}\n\n${description || ''}\n`;
-      fs.writeFileSync(path.join(resolvedPath, 'README.md'), readmeContent);
-      spawnSync('git', ['add', 'README.md'], { cwd: resolvedPath, stdio: 'pipe' });
-      spawnSync('git', ['commit', '-m', 'Initial commit'], { cwd: resolvedPath, stdio: 'pipe' });
+      // 외부 경로로 폴더 생성을 건너뛴 경우 git/파일 작업도 스킵
+      if (!results.folderSkipped) {
+        const gitInit = spawnSync('git', ['init'], { cwd: resolvedPath, stdio: 'pipe' });
+        spawnSync('git', ['checkout', '-b', 'main'], { cwd: resolvedPath, stdio: 'pipe' });
+        results.gitInit = gitInit.status === 0;
+
+        if (githubRepo && GITHUB_TOKEN) {
+          const repoName = (githubRepo === true || githubRepo === 'auto')
+            ? slug
+            : String(githubRepo).toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+
+          const ghRes = await fetch('https://api.github.com/user/repos', {
+            method: 'POST',
+            headers: {
+              Authorization: `token ${GITHUB_TOKEN}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'agent-harness',
+            },
+            body: JSON.stringify({
+              name: repoName,
+              description: description || '',
+              private: githubPrivate !== false,
+              auto_init: false,
+            }),
+          });
+
+          const ghData = await ghRes.json();
+
+          if (ghRes.ok) {
+            results.githubRepo = { name: repoName, url: ghData.html_url, sshUrl: ghData.ssh_url, cloneUrl: ghData.clone_url };
+            spawnSync('git', ['remote', 'add', 'origin', ghData.ssh_url], { cwd: resolvedPath, stdio: 'pipe' });
+          } else {
+            results.githubError = ghData.message || 'GitHub 레포 생성 실패';
+          }
+        }
+
+        const readmeContent = `# ${name}\n\n${description || ''}\n`;
+        fs.writeFileSync(path.join(resolvedPath, 'README.md'), readmeContent);
+        spawnSync('git', ['add', 'README.md'], { cwd: resolvedPath, stdio: 'pipe' });
+        spawnSync('git', ['commit', '-m', 'Initial commit'], { cwd: resolvedPath, stdio: 'pipe' });
+      } else {
+        results.gitInit = false;
+        results.gitSkipped = true;
+      }
 
       const project = await projectQueries.insert({ id, name, path: resolvedPath, stack, description });
       results.dbInserted = true;
@@ -577,7 +616,7 @@ export function createApiServer(agentRunner) {
     if (!/^[a-z0-9-]{1,50}$/.test(req.params.id)) {
       return res.status(400).json({ error: '잘못된 프로젝트 ID' });
     }
-    const { name, path: projectPath, stack, description, github, deploy } = req.body;
+    const { name, path: projectPath, stack, description, github, deploy, allow_external_path } = req.body;
     if (name !== undefined && !validateString(name, 100)) {
       return res.status(400).json({ error: 'name: 1~100자 문자열' });
     }
@@ -590,13 +629,14 @@ export function createApiServer(agentRunner) {
     if (description !== undefined && description !== null && description !== '' && !validateString(description, 500)) {
       return res.status(400).json({ error: 'description: 500자 이하 문자열' });
     }
+    const allowExternal = allow_external_path === true || allow_external_path === 'true';
     try {
       const existing = await projectQueries.get(req.params.id);
       if (!existing) return res.status(404).json({ error: '프로젝트 없음' });
       let resolvedPath = projectPath;
       if (projectPath !== undefined) {
         try {
-          resolvedPath = resolveProjectPath(projectPath, req.params.id);
+          resolvedPath = resolveProjectPath(projectPath, req.params.id, { allowExternal });
         } catch (err) {
           return res.status(400).json({ error: err.message });
         }
@@ -674,7 +714,7 @@ export function createApiServer(agentRunner) {
   });
 
   app.post('/api/projects', async (req, res) => {
-    const { name, path: projectPath, stack, description, github, deploy, id: customId } = req.body;
+    const { name, path: projectPath, stack, description, github, deploy, id: customId, allow_external_path } = req.body;
     if (!validateString(name, 100)) {
       return res.status(400).json({ error: 'name: 1~100자 문자열 필수' });
     }
@@ -688,6 +728,8 @@ export function createApiServer(agentRunner) {
       return res.status(400).json({ error: 'description: 500자 이하 문자열' });
     }
 
+    const allowExternal = allow_external_path === true || allow_external_path === 'true';
+
     let id;
     if (customId && /^[a-z0-9-]{1,50}$/.test(customId)) {
       id = customId;
@@ -700,12 +742,21 @@ export function createApiServer(agentRunner) {
     try {
       let resolvedPath;
       try {
-        resolvedPath = resolveProjectPath(projectPath, id);
+        resolvedPath = resolveProjectPath(projectPath, id, { allowExternal });
       } catch (err) {
         return res.status(400).json({ error: err.message });
       }
-      if (!fs.existsSync(resolvedPath)) {
-        return res.status(400).json({ error: '기존 등록 경로가 VPS에 없습니다', path: resolvedPath });
+      if (!allowExternal && !fs.existsSync(resolvedPath)) {
+        return res.status(400).json({
+          error: '기존 등록 경로가 VPS에 없습니다',
+          path: resolvedPath,
+          hint: '외부(로컬 macOS 등) 경로를 등록하려면 allow_external_path: true 를 함께 전송하세요.',
+        });
+      }
+      const pathExistsOnVps = fs.existsSync(resolvedPath);
+      if (allowExternal && !pathExistsOnVps) {
+        // 외부 경로: 경고만 남기고 진행
+        console.warn(`[projects] 외부 경로 등록 (VPS에 없음): ${resolvedPath}`);
       }
 
       const existing = await projectQueries.get(id);

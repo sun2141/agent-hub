@@ -324,9 +324,6 @@ export const taskQueries = {
   async updateProvider(id, provider) {
     await dbRun('UPDATE harness.tasks SET provider = $1 WHERE id = $2', [provider, id]);
   },
-  async updateModel(id, model) {
-    await dbRun('UPDATE harness.tasks SET model = $1 WHERE id = $2', [model, id]);
-  },
 
   async updateScheduledResumeAt(id, scheduledResumeAt) {
     await dbRun('UPDATE harness.tasks SET scheduled_resume_at = $1 WHERE id = $2', [scheduledResumeAt, id]);

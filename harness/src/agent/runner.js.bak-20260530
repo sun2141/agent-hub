@@ -16,7 +16,6 @@ const DEFAULT_PROJECTS_ROOT = path.dirname(AGENT_HUB_ROOT);
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
-const PLAN_MODEL = process.env.PLAN_MODEL || CLAUDE_MODEL;
 const CODEX_CLI    = process.env.CODEX_CLI_PATH || 'codex';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
 const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
@@ -25,9 +24,6 @@ const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || DEFAULT_PROJECTS_ROO
   .split(',')
   .map(p => p.trim())
   .filter(Boolean);
-
-// 외부 경로 허용 여부 (환경변수로 전역 설정)
-const ALLOW_EXTERNAL_PROJECTS = process.env.ALLOW_EXTERNAL_PROJECTS === 'true';
 
 function prependCliNodePath(env = process.env) {
   const dirs = [];
@@ -105,16 +101,7 @@ export class AgentRunner extends EventEmitter {
       const relative = path.relative(path.resolve(root), resolved);
       return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
     });
-    if (!allowed) {
-      if (ALLOW_EXTERNAL_PROJECTS) {
-        console.warn(`[runner] 외부 경로에서 실행 (PROJECTS_ROOT 외부): ${resolved}`);
-        return resolved;
-      }
-      throw new Error(
-        `허용되지 않은 프로젝트 경로: ${projectPath}\n` +
-        `외부 경로를 허용하려면 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 설정하세요.`
-      );
-    }
+    if (!allowed) throw new Error(`허용되지 않은 프로젝트 경로: ${projectPath}`);
     return resolved;
   }
 
@@ -259,7 +246,6 @@ export class AgentRunner extends EventEmitter {
     console.log(`[pipeline] 시작: taskId=${taskId}, project=${project.name}(${project.path}), attachments=${attachmentPaths.length}`);
 
     try {
-      await taskQueries.updateModel(taskId, `${PLAN_MODEL}/${CLAUDE_MODEL}`);
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd, attachmentPaths);
       if (this._deleted.has(taskId)) return;
@@ -603,7 +589,7 @@ export class AgentRunner extends EventEmitter {
       const deployArgs = deployScript.cmd.split(/\s+/);
       const deployCli = deployArgs[0];
       const deployCliArgs = deployArgs.slice(1);
-      const deployRes = spawnSync(deployCli, deployCliArgs, { cwd: deployScript.cwd, encoding: 'utf8', timeout: 300_000, stdio: 'pipe', env: { ...process.env, PATH: `${process.env.HOME}/.npm-global/bin:${process.env.PATH || ''}` } });
+      const deployRes = spawnSync(deployCli, deployCliArgs, { cwd: deployScript.cwd, encoding: 'utf8', timeout: 120_000, stdio: 'pipe' });
       const deployStdout = (deployRes.stdout || '').trim();
       const deployStderr = (deployRes.stderr || '').trim();
       if (deployRes.error || deployRes.status !== 0) {
@@ -928,13 +914,13 @@ export class AgentRunner extends EventEmitter {
         '--print',
         '--verbose',
         '--output-format', 'stream-json',
-        '--model', (phase === 'plan' ? PLAN_MODEL : CLAUDE_MODEL),
+        '--model', CLAUDE_MODEL,
         '--dangerously-skip-permissions',
         // '--setting-sources user' 제거 — CLAUDE_CONFIG_DIR의 harness 전용 설정 사용
         prompt,
       ];
 
-      console.log(`[CLI spawn:${phase}] model=${phase === 'plan' ? PLAN_MODEL : CLAUDE_MODEL} round=${round} cwd=${cwd}`);
+      console.log(`[CLI spawn:${phase}] round=${round} cwd=${cwd}`);
 
       if (this._deleted.has(taskId)) {
         resolve('');
