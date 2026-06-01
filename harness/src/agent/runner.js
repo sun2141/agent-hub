@@ -271,7 +271,8 @@ export class AgentRunner extends EventEmitter {
   async _startPipeline(taskId) {
     let task      = await taskQueries.get(taskId);
     const project = await projectQueries.get(task.project_id);
-    const safeCwd = this._validateProjectPath(project.path);
+    // DB에 저장된 경로는 등록 시 이미 server.js resolveProjectPath를 통과한 신뢰 경로이므로 외부 경로 허용
+    const safeCwd = this._validateProjectPath(project.path, { allowExternal: true });
     const attachmentPaths = this._attachments?.get(taskId) || [];
 
     if (!this._running.has(taskId)) {
@@ -857,7 +858,8 @@ export class AgentRunner extends EventEmitter {
   async _runCodexFallback(taskId) {
     const task    = await taskQueries.get(taskId);
     const project = await projectQueries.get(task.project_id);
-    const safeCwd = this._validateProjectPath(project.path);
+    // DB에 저장된 경로는 등록 시 이미 server.js resolveProjectPath를 통과한 신뢰 경로이므로 외부 경로 허용
+    const safeCwd = this._validateProjectPath(project.path, { allowExternal: true });
     const plan    = task.plan
       ? JSON.parse(task.plan)
       : { title: task.prompt.slice(0, 60), features: [], acceptance_criteria: [] };

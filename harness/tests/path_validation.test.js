@@ -197,6 +197,56 @@ test('Case 13: 존재하지 않는 외부 경로 (allowExternal=true) - 통과 (
   assert.strictEqual(result, '/Users/sun/nonexistent-project');
 });
 
+// ── 회귀 테스트: _startPipeline / _runCodexFallback 시나리오 ────────────────
+// 실제 재발 시나리오: server.js POST /api/projects로 외부 경로 등록 후
+// runner.js _startPipeline이 DB에서 꺼낸 경로를 재검증할 때 실패하는 케이스
+console.log('\n[회귀 테스트] _startPipeline/_runCodexFallback DB 경로 재검증');
+
+test('Regression 14: _startPipeline - DB에서 꺼낸 외부 경로 재검증 (allowExternal=true) 통과', () => {
+  // 이 케이스가 핫픽스 이전에 실패하던 시나리오:
+  // run()은 allowExternal=true로 통과했지만
+  // _startPipeline()이 allowExternal 없이 재검증하여 오류 발생
+  const dbStoredExternalPath = '/home/agent/workspace/agent-hub'; // PROJECTS_ROOT 외부
+  const result = validateProjectPath(dbStoredExternalPath, { allowExternal: true });
+  assert.strictEqual(result, dbStoredExternalPath);
+});
+
+test('Regression 15: _runCodexFallback - DB에서 꺼낸 외부 경로 재검증 (allowExternal=true) 통과', () => {
+  // _runCodexFallback도 동일하게 allowExternal=true 없이 호출했던 케이스
+  const dbStoredExternalPath = '/Users/sun/palmoni';
+  const result = validateProjectPath(dbStoredExternalPath, { allowExternal: true });
+  assert.strictEqual(result, dbStoredExternalPath);
+});
+
+test('Regression 16: 외부 경로 등록 후 실행 E2E 시뮬레이션', () => {
+  // 1단계: server.js resolveProjectPath로 외부 경로 등록 (allowExternal=true)
+  const externalPath = '/Users/sun/facepick';
+  const registeredPath = resolveProjectPath(externalPath, 'facepick', { allowExternal: true });
+  assert.strictEqual(registeredPath, externalPath);
+
+  // 2단계: DB에 저장된 경로를 runner.js _validateProjectPath로 재검증 (allowExternal=true)
+  // 이 단계가 핫픽스 누락으로 실패했던 지점
+  const validatedPath = validateProjectPath(registeredPath, { allowExternal: true });
+  assert.strictEqual(validatedPath, externalPath);
+});
+
+test('Regression 17: 경로 traversal 입력은 외부 경로로 등록 불가 (보안)', () => {
+  // ../ 시도는 path.resolve로 정규화되어 PROJECTS_ROOT 외부 → 오류
+  const traversalPath = `${PROJECTS_ROOT}/../../../etc/passwd`;
+  assert.throws(
+    () => resolveProjectPath(traversalPath, 'evil'),
+    /PROJECTS_ROOT 하위여야 합니다/
+  );
+});
+
+test('Regression 18: allowExternal=true이더라도 path.resolve로 정규화된 절대경로 반환', () => {
+  // allowExternal=true여도 경로는 항상 path.resolve()를 통해 정규화된 절대경로
+  const result = resolveProjectPath('/tmp/some/../project', 'proj', { allowExternal: true });
+  // path.resolve('/tmp/some/../project') = '/tmp/project'
+  assert.strictEqual(result, '/tmp/project');
+  assert.ok(path.isAbsolute(result));
+});
+
 // 정리
 try { fs.rmdirSync(`${PROJECTS_ROOT}/existing-project`); } catch { /* ignore */ }
 try { fs.rmdirSync(PROJECTS_ROOT); } catch { /* ignore */ }

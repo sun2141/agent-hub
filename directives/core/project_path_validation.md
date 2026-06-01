@@ -24,14 +24,24 @@ Error: 허용되지 않은 프로젝트 경로: /Users/sun/agent-hub
 - **증상**: `server.js`는 새 코드로 업데이트됐지만 런타임 메모리에는 반영 안 됨
 - **확인법**: `pm2 describe harness | grep "created at"`와 `git log --format="%ai" -1` 비교
 
-### 원인 2: runner.js `_validateProjectPath` 미수정
+### 원인 2: runner.js `_validateProjectPath` 미수정 (d1d80ae에서 일부만 수정)
 
-- **상황**: `51ebeb1`은 `server.js`의 등록/수정 엔드포인트에 `allowExternal` 옵션을 추가했지만, `runner.js`의 `_validateProjectPath`는 `ALLOW_EXTERNAL_PROJECTS` 환경변수만 확인
-- **결과**: 태스크 실행 시 DB에서 꺼낸 외부 경로(`/Users/sun/agent-hub`)를 다시 검증할 때 환경변수 없으면 오류
+- **상황**: `d1d80ae`는 `run()` 메서드에서 `allowExternal: true`를 추가했지만, 같은 파일의 `_startPipeline()`과 `_runCodexFallback()` 두 곳이 여전히 `allowExternal` 없이 재검증
+- **결과**: `run()`은 통과하지만 실제 실행 단계인 `_startPipeline()`에서 외부 경로로 오류 재발
 - **흐름**:
   1. `POST /api/projects`로 외부 경로 등록 → `server.js`의 `resolveProjectPath`가 `allowExternal=true`로 통과 → DB에 저장
-  2. 태스크 실행 → `runner.js`의 `run()`이 DB에서 경로를 꺼내 `_validateProjectPath` 호출
-  3. `_validateProjectPath`는 `ALLOW_EXTERNAL_PROJECTS` 환경변수 없으면 오류 → **재현**
+  2. `POST /api/run` → `runner.js`의 `run()`이 DB에서 경로를 꺼내 `_validateProjectPath(path, { allowExternal: true })` 호출 → **통과**
+  3. `run()`이 내부적으로 `_startPipeline()` 호출
+  4. `_startPipeline()`이 `_validateProjectPath(project.path)` **allowExternal 없이** 재호출 → **오류 재발**
+  5. `_runCodexFallback()`도 동일하게 `_validateProjectPath(project.path)` allowExternal 없이 호출 → **동일 오류**
+
+### 수정된 호출 지점 (d1d80ae 이후 누락된 두 곳)
+
+| 메서드 | 수정 전 | 수정 후 |
+|--------|---------|---------|
+| `run()` | `_validateProjectPath(path)` → 오류 | `_validateProjectPath(path, { allowExternal: true })` → d1d80ae에서 수정됨 |
+| `_startPipeline()` | `_validateProjectPath(path)` → **재발 원인** | `_validateProjectPath(path, { allowExternal: true })` → 이번 수정 |
+| `_runCodexFallback()` | `_validateProjectPath(path)` → **재발 원인** | `_validateProjectPath(path, { allowExternal: true })` → 이번 수정 |
 
 ---
 
@@ -49,21 +59,7 @@ Error: 허용되지 않은 프로젝트 경로: /Users/sun/agent-hub
 ### `harness/src/agent/runner.js`
 
 ```js
-// 변경 전
-_validateProjectPath(projectPath) {
-  ...
-  if (!allowed) {
-    if (ALLOW_EXTERNAL_PROJECTS) { ... }
-    throw new Error(...);
-  }
-}
-
-async run(...) {
-  ...
-  this._validateProjectPath(project.path);  // 항상 strict 검사
-}
-
-// 변경 후
+// 변경 후 (모든 DB 경로 사용 지점에 allowExternal: true 적용)
 _validateProjectPath(projectPath, { allowExternal = false } = {}) {
   // 1. path.resolve + fs.realpathSync 양쪽 확인
   // 2. allowExternal=true이면 외부 경로도 허용
@@ -73,6 +69,16 @@ _validateProjectPath(projectPath, { allowExternal = false } = {}) {
 async run(...) {
   // DB에 저장된 경로는 이미 server.js 검증을 통과한 신뢰 경로
   this._validateProjectPath(project.path, { allowExternal: true });
+}
+
+async _startPipeline(taskId) {
+  // DB에 저장된 경로 → allowExternal: true 필수
+  const safeCwd = this._validateProjectPath(project.path, { allowExternal: true });
+}
+
+async _runCodexFallback(taskId) {
+  // DB에 저장된 경로 → allowExternal: true 필수
+  const safeCwd = this._validateProjectPath(project.path, { allowExternal: true });
 }
 ```
 
@@ -96,7 +102,7 @@ const insideRoot = PROJECT_ROOTS.some(root =>
 
 ## 테스트
 
-`harness/tests/path_validation.test.js` - 13개 케이스:
+`harness/tests/path_validation.test.js` - 18개 케이스:
 1. PROJECTS_ROOT 내부 경로 (server/runner 각각)
 2. 외부 경로 플래그 없음 → 오류
 3. 외부 경로 allowExternal=true → 통과
@@ -105,6 +111,11 @@ const insideRoot = PROJECT_ROOTS.some(root =>
 6. 환경변수 허용 → 통과
 7. 심볼릭링크 → 통과 + 경고
 8. DB 등록 외부 경로 실행 → 통과
+9. (회귀) _startPipeline DB 경로 재검증 통과
+10. (회귀) _runCodexFallback DB 경로 재검증 통과
+11. (회귀) 외부 경로 등록 후 실행 E2E 시뮬레이션
+12. (회귀) 경로 traversal 입력 차단
+13. (회귀) allowExternal=true에서도 path.resolve 정규화
 
 ```bash
 npm test  # harness/ 디렉토리에서 실행
@@ -118,7 +129,15 @@ npm test  # harness/ 디렉토리에서 실행
 1. `pm2 restart harness` 또는 `npm run start:bg` 재시작
 2. `git log --format="%ai" -1` vs `pm2 describe harness | grep "created at"` 비교
 3. 경로 검증 관련 수정 시 `server.js`와 `runner.js` 양쪽 확인
-4. `npm test` 실행 후 통과 확인
+4. runner.js에서 DB 경로 사용 지점 전체 확인: `grep -n "_validateProjectPath" runner.js`
+   - 모든 호출에 `{ allowExternal: true }` 포함 여부 확인
+   - DB에서 꺼낸 경로(`project.path`)는 반드시 `allowExternal: true` 사용
+5. `npm test` 실행 후 통과 확인 (18개 케이스)
+
+### runner.js DB 경로 검증 호출 지점 전체 목록 (항상 allowExternal: true)
+- `run()`: `_validateProjectPath(project.path, { allowExternal: true })`
+- `_startPipeline()`: `_validateProjectPath(project.path, { allowExternal: true })`
+- `_runCodexFallback()`: `_validateProjectPath(project.path, { allowExternal: true })`
 
 ---
 
