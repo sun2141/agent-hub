@@ -99,15 +99,29 @@ export class AgentRunner extends EventEmitter {
     this._deleted = new Set();
   }
 
-  _validateProjectPath(projectPath) {
+  _validateProjectPath(projectPath, { allowExternal = false } = {}) {
     const resolved = path.resolve(projectPath);
-    const allowed  = ALLOWED_PROJECT_ROOTS.some(root => {
-      const relative = path.relative(path.resolve(root), resolved);
+
+    // 심볼릭링크를 따라 실제 경로도 확인
+    let realResolved = resolved;
+    try {
+      realResolved = fs.realpathSync(resolved);
+    } catch {
+      // 경로가 존재하지 않으면 resolve된 경로 그대로 사용 (외부 로컬 경로 등)
+      realResolved = resolved;
+    }
+
+    const isInsideRoot = (candidate) => ALLOWED_PROJECT_ROOTS.some(root => {
+      const relative = path.relative(path.resolve(root), candidate);
       return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
     });
+
+    const allowed = isInsideRoot(resolved) || isInsideRoot(realResolved);
+
     if (!allowed) {
-      if (ALLOW_EXTERNAL_PROJECTS) {
-        console.warn(`[runner] 외부 경로에서 실행 (PROJECTS_ROOT 외부): ${resolved}`);
+      // 허용 조건: 환경변수 전역 설정 OR 호출자가 명시적으로 허용 OR DB에 이미 등록된 외부 경로
+      if (ALLOW_EXTERNAL_PROJECTS || allowExternal) {
+        console.warn(`[runner] 외부 경로에서 실행 허용 (PROJECTS_ROOT 외부): ${resolved}`);
         return resolved;
       }
       throw new Error(
@@ -115,13 +129,21 @@ export class AgentRunner extends EventEmitter {
         `외부 경로를 허용하려면 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 설정하세요.`
       );
     }
+
+    // 심볼릭링크가 PROJECTS_ROOT 외부를 가리키는 경우 경고
+    if (allowed && realResolved !== resolved && !isInsideRoot(realResolved)) {
+      console.warn(`[runner] 심볼릭링크가 PROJECTS_ROOT 외부를 가리킴: ${resolved} -> ${realResolved}`);
+    }
+
     return resolved;
   }
 
   async run({ projectId, prompt, maxRounds, attachments }) {
     const project = await projectQueries.get(projectId);
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
-    this._validateProjectPath(project.path);
+    // DB에 등록된 경로는 server.js resolveProjectPath를 이미 통과했으므로 외부 경로도 허용
+    const allowExternalForDbProject = true;
+    this._validateProjectPath(project.path, { allowExternal: allowExternalForDbProject });
 
     const activeTask = await taskQueries.getActiveForProject(projectId);
     if (activeTask) {

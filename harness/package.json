@@ -16,7 +16,8 @@
     "db:health": "node src/db/healthcheck.js",
     "migrate:neon": "node src/db/migrate_to_neon.js",
     "migrate:neon:schema": "node src/db/migrate_to_neon.js --schema-only",
-    "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify"
+    "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify",
+    "test": "node tests/path_validation.test.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

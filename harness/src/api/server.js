@@ -56,7 +56,18 @@ function resolveProjectPath(inputPath, fallbackSlug, { allowExternal = false } =
     throw new Error('유효하지 않은 경로입니다.');
   }
 
-  const insideRoot = PROJECT_ROOTS.some(root => isPathInsideRoot(resolved, root));
+  // 심볼릭링크를 따라 실제 경로도 확인 (존재하지 않는 경로면 resolved 그대로)
+  let realResolved = resolved;
+  try {
+    realResolved = fs.realpathSync(resolved);
+  } catch {
+    realResolved = resolved;
+  }
+
+  const insideRoot = PROJECT_ROOTS.some(root =>
+    isPathInsideRoot(resolved, root) || isPathInsideRoot(realResolved, root)
+  );
+
   if (!insideRoot) {
     // 외부 경로 허용 조건: 환경변수 or 요청 파라미터
     if (ALLOW_EXTERNAL_PROJECTS || allowExternal) {
@@ -70,6 +81,15 @@ function resolveProjectPath(inputPath, fallbackSlug, { allowExternal = false } =
       `  2) 또는 서버에 ALLOW_EXTERNAL_PROJECTS=true 환경변수 설정`
     );
   }
+
+  // 심볼릭링크가 PROJECTS_ROOT 내부를 가리키지만 실제 경로는 외부인 경우 경고
+  if (realResolved !== resolved) {
+    const realInsideRoot = PROJECT_ROOTS.some(root => isPathInsideRoot(realResolved, root));
+    if (!realInsideRoot) {
+      console.warn(`[projects] 심볼릭링크가 PROJECTS_ROOT 외부를 가리킴: ${resolved} -> ${realResolved}`);
+    }
+  }
+
   return resolved;
 }
 
