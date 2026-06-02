@@ -313,6 +313,81 @@ test('Regression 22: 외부 경로 E2E - 등록 후 수정 플로우 (existsSync
   assert.strictEqual(validated, externalPath);
 });
 
+// ── 실제 요청 시나리오: /Users/sun/Documents/shooting-like ──────────────
+console.log('\n[시나리오] /Users/sun/Documents/shooting-like 외부 경로 등록');
+
+test('Scenario 23: shooting-like 외부 경로 - 플래그 없으면 거부', () => {
+  assert.throws(
+    () => resolveProjectPath('/Users/sun/Documents/shooting-like', 'shooting-like'),
+    /PROJECTS_ROOT 하위여야 합니다/
+  );
+});
+
+test('Scenario 24: shooting-like 외부 경로 - allow_external_path:true 시 등록 성공', () => {
+  const result = resolveProjectPath(
+    '/Users/sun/Documents/shooting-like',
+    'shooting-like',
+    { allowExternal: true }
+  );
+  assert.strictEqual(result, '/Users/sun/Documents/shooting-like');
+  assert.ok(path.isAbsolute(result));
+});
+
+test('Scenario 25: shooting-like 외부 경로 - ALLOW_EXTERNAL_PROJECTS 전역 허용 시 등록 성공', () => {
+  // allowExternalEnv=true는 서버에서 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 시뮬레이션
+  const result = resolveProjectPath(
+    '/Users/sun/Documents/shooting-like',
+    'shooting-like',
+    { allowExternalEnv: true }
+  );
+  assert.strictEqual(result, '/Users/sun/Documents/shooting-like');
+});
+
+test('Scenario 26: shooting-like 거부 에러 메시지에 해결 방법 포함', () => {
+  try {
+    resolveProjectPath('/Users/sun/Documents/shooting-like', 'shooting-like');
+    assert.fail('오류가 발생해야 합니다');
+  } catch (err) {
+    // 에러 메시지에 해결 방법이 포함되어야 함
+    assert.ok(
+      err.message.includes('allow_external_path'),
+      `에러에 allow_external_path 해결책 포함 필요:\n${err.message}`
+    );
+    assert.ok(
+      err.message.includes('ALLOW_EXTERNAL_PROJECTS'),
+      `에러에 ALLOW_EXTERNAL_PROJECTS 해결책 포함 필요:\n${err.message}`
+    );
+    // 입력 경로가 에러 메시지에 포함되어야 함
+    assert.ok(
+      err.message.includes('/Users/sun/Documents/shooting-like'),
+      `에러에 실제 경로 포함 필요:\n${err.message}`
+    );
+  }
+});
+
+test('Scenario 27: shooting-like DB 등록 후 runner에서 재검증 통과 (E2E)', () => {
+  // 1단계: server.js에서 외부 경로 등록 (allow_external_path: true)
+  const shootingLikePath = '/Users/sun/Documents/shooting-like';
+  const registered = resolveProjectPath(shootingLikePath, 'shooting-like', { allowExternal: true });
+  assert.strictEqual(registered, shootingLikePath);
+
+  // 2단계: DB에 저장된 경로를 runner.js에서 재검증 (allowExternal: true)
+  const validated = validateProjectPath(registered, { allowExternal: true });
+  assert.strictEqual(validated, shootingLikePath);
+
+  // 3단계: 경로 수정 요청도 통과 (PUT /api/projects/:id)
+  const updated = resolveProjectPath(registered, 'shooting-like', { allowExternal: true });
+  assert.strictEqual(updated, shootingLikePath);
+});
+
+test('Scenario 28: PROJECTS_ROOT 내부 경로는 allow_external_path 없이도 정상 등록', () => {
+  // 기존 동작 유지: 내부 경로는 영향 없음
+  const internalPath = `${PROJECTS_ROOT}/shooting-like`;
+  const result = resolveProjectPath(internalPath, 'shooting-like');
+  assert.strictEqual(result, internalPath);
+  assert.ok(path.isAbsolute(result));
+});
+
 // 정리
 try { fs.rmdirSync(`${PROJECTS_ROOT}/existing-project`); } catch { /* ignore */ }
 try { fs.rmdirSync(PROJECTS_ROOT); } catch { /* ignore */ }

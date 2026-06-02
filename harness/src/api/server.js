@@ -475,7 +475,7 @@ export function createApiServer(agentRunner) {
 
   // ── 프로젝트 생성 ─────────────────────────────────────────
   app.post('/api/projects/create', async (req, res) => {
-    const { name, path: projectPath, stack, description, githubRepo, githubPrivate, allow_external_path } = req.body;
+    const { name, path: projectPath, stack, description, githubRepo, githubPrivate, allow_external_path, dry_run } = req.body;
 
     if (!validateString(name, 100)) return res.status(400).json({ error: 'name: 1~100자 필수' });
     if (projectPath !== undefined && projectPath !== null && projectPath !== '' && !validateString(projectPath, 500)) {
@@ -483,6 +483,7 @@ export function createApiServer(agentRunner) {
     }
 
     const allowExternal = allow_external_path === true || allow_external_path === 'true';
+    const isDryRun = dry_run === true || dry_run === 'true';
 
     const slug = slugifyProjectName(name);
     let resolvedPath;
@@ -493,6 +494,44 @@ export function createApiServer(agentRunner) {
     }
     const suffix = crypto.randomBytes(3).toString('hex');
     const id = `${slug}-${suffix}`;
+
+    // ── dry_run 모드: 실제 DB 삽입/폴더 생성 없이 검증만 수행 ────
+    if (isDryRun) {
+      const checks = { nameValid: true, pathResolved: resolvedPath, idPreview: id };
+
+      // 경로 중복(비어있지 않은 폴더) 체크
+      if (fs.existsSync(resolvedPath) && fs.readdirSync(resolvedPath).length > 0) {
+        checks.pathConflict = true;
+        checks.pathConflictReason = '이미 파일이 있는 경로입니다.';
+      } else {
+        checks.pathConflict = false;
+      }
+
+      // DB 내 경로 중복 체크
+      try {
+        const allProjects = await projectQueries.list({ includeHidden: true });
+        const duplicatePath = allProjects.find(p => p.path === resolvedPath);
+        checks.dbPathConflict = duplicatePath ? { id: duplicatePath.id, name: duplicatePath.name } : null;
+      } catch (dbErr) {
+        checks.dbCheckError = dbErr.message;
+      }
+
+      // PROJECT_ROOTS 범위 체크
+      const insideRoot = PROJECT_ROOTS.some(root => isPathInsideRoot(resolvedPath, root));
+      checks.insideProjectRoot = insideRoot;
+      checks.allowExternal = allowExternal;
+      checks.projectRoots = PROJECT_ROOTS;
+
+      const canRegister = !checks.pathConflict && !checks.dbPathConflict;
+      return res.status(200).json({
+        dry_run: true,
+        canRegister,
+        checks,
+        message: canRegister
+          ? '등록 가능: 경로 검증 통과, 중복 없음'
+          : '등록 불가: ' + (checks.pathConflict ? checks.pathConflictReason : 'DB에 동일 경로 존재'),
+      });
+    }
 
     const results = { id, folderCreated: false, gitInit: false, githubRepo: null, dbInserted: false };
 
