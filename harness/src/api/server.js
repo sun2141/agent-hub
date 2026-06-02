@@ -75,7 +75,10 @@ function resolveProjectPath(inputPath, fallbackSlug, { allowExternal = false } =
       return resolved;
     }
     throw new Error(
-      `경로는 PROJECTS_ROOT 하위여야 합니다: ${PROJECT_ROOTS.join(', ')}\n` +
+      `경로는 PROJECTS_ROOT 하위여야 합니다.\n` +
+      `  입력값: ${inputPath}\n` +
+      `  정규화 결과: ${resolved}\n` +
+      `  허용 범위: ${PROJECT_ROOTS.join(', ')}\n` +
       `외부 경로를 등록하려면:\n` +
       `  1) 요청에 "allow_external_path": true 파라미터 추가\n` +
       `  2) 또는 서버에 ALLOW_EXTERNAL_PROJECTS=true 환경변수 설정`
@@ -660,7 +663,7 @@ export function createApiServer(agentRunner) {
         } catch (err) {
           return res.status(400).json({ error: err.message });
         }
-        if (!fs.existsSync(resolvedPath)) {
+        if (!allowExternal && !fs.existsSync(resolvedPath)) {
           return res.status(400).json({ error: '수정하려는 경로가 VPS에 없습니다', path: resolvedPath });
         }
       }

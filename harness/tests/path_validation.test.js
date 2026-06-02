@@ -46,7 +46,13 @@ function resolveProjectPath(inputPath, fallbackSlug, { allowExternal = false, al
       return resolved;
     }
     throw new Error(
-      `경로는 PROJECTS_ROOT 하위여야 합니다: ${PROJECT_ROOTS.join(', ')}`
+      `경로는 PROJECTS_ROOT 하위여야 합니다.\n` +
+      `  입력값: ${inputPath}\n` +
+      `  정규화 결과: ${resolved}\n` +
+      `  허용 범위: ${PROJECT_ROOTS.join(', ')}\n` +
+      `외부 경로를 등록하려면:\n` +
+      `  1) 요청에 "allow_external_path": true 파라미터 추가\n` +
+      `  2) 또는 서버에 ALLOW_EXTERNAL_PROJECTS=true 환경변수 설정`
     );
   }
   return resolved;
@@ -74,7 +80,13 @@ function validateProjectPath(projectPath, { allowExternal = false, allowExternal
     if (allowExternalEnv || allowExternal) {
       return resolved;
     }
-    throw new Error(`허용되지 않은 프로젝트 경로: ${projectPath}`);
+    throw new Error(
+      `허용되지 않은 프로젝트 경로.\n` +
+      `  입력값: ${projectPath}\n` +
+      `  정규화 결과: ${resolved}\n` +
+      `  허용 범위: ${PROJECT_ROOTS.join(', ')}\n` +
+      `외부 경로를 허용하려면 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 설정하세요.`
+    );
   }
   return resolved;
 }
@@ -245,6 +257,60 @@ test('Regression 18: allowExternal=true이더라도 path.resolve로 정규화된
   // path.resolve('/tmp/some/../project') = '/tmp/project'
   assert.strictEqual(result, '/tmp/project');
   assert.ok(path.isAbsolute(result));
+});
+
+// ── 회귀 테스트: PUT /api/projects/:id 외부 경로 수정 시 existsSync 차단 버그 ──────
+// 버그: PUT 핸들러에서 allowExternal=true일 때도 fs.existsSync 체크가 있었음
+// → VPS에 없는 외부(로컬 macOS) 경로 수정 시 "수정하려는 경로가 VPS에 없습니다" 오류 발생
+// 픽스: allowExternal=true이면 existsSync 체크를 건너뜀
+console.log('\n[회귀 테스트] PUT /api/projects/:id 외부 경로 수정 버그');
+
+test('Regression 19: 외부 경로 resolveProjectPath (allowExternal=true) → 존재하지 않아도 통과', () => {
+  // VPS에 없는 외부 macOS 경로
+  const externalPath = '/Users/sun/facepick';
+  const result = resolveProjectPath(externalPath, 'facepick', { allowExternal: true });
+  assert.strictEqual(result, externalPath);
+  // 이 경로는 VPS에 없지만 allowExternal=true이면 등록/수정 모두 허용되어야 함
+});
+
+test('Regression 20: 에러 메시지에 입력값/정규화 결과/허용 범위 포함 (server.js)', () => {
+  try {
+    resolveProjectPath('/some/external/path', 'external');
+    assert.fail('오류가 발생해야 합니다');
+  } catch (err) {
+    assert.ok(err.message.includes('입력값'), `에러에 입력값 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('정규화 결과'), `에러에 정규화 결과 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('허용 범위'), `에러에 허용 범위 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('/some/external/path'), `에러에 실제 입력 경로 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes(PROJECTS_ROOT), `에러에 PROJECTS_ROOT 경로 포함 필요: ${err.message}`);
+  }
+});
+
+test('Regression 21: 에러 메시지에 입력값/정규화 결과/허용 범위 포함 (runner.js)', () => {
+  try {
+    validateProjectPath('/some/external/path');
+    assert.fail('오류가 발생해야 합니다');
+  } catch (err) {
+    assert.ok(err.message.includes('입력값'), `에러에 입력값 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('정규화 결과'), `에러에 정규화 결과 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('허용 범위'), `에러에 허용 범위 포함 필요: ${err.message}`);
+    assert.ok(err.message.includes('/some/external/path'), `에러에 실제 입력 경로 포함 필요: ${err.message}`);
+  }
+});
+
+test('Regression 22: 외부 경로 E2E - 등록 후 수정 플로우 (existsSync 버그 없음)', () => {
+  // 1단계: 외부 경로 등록 (allowExternal=true)
+  const externalPath = '/Users/sun/palmoni';
+  const registered = resolveProjectPath(externalPath, 'palmoni', { allowExternal: true });
+  assert.strictEqual(registered, externalPath);
+
+  // 2단계: 동일 외부 경로 수정 (allowExternal=true) → existsSync 차단 없이 통과
+  const updated = resolveProjectPath(registered, 'palmoni', { allowExternal: true });
+  assert.strictEqual(updated, externalPath);
+
+  // 3단계: runner.js에서 실행 (allowExternal=true)
+  const validated = validateProjectPath(registered, { allowExternal: true });
+  assert.strictEqual(validated, externalPath);
 });
 
 // 정리

@@ -125,7 +125,10 @@ export class AgentRunner extends EventEmitter {
         return resolved;
       }
       throw new Error(
-        `허용되지 않은 프로젝트 경로: ${projectPath}\n` +
+        `허용되지 않은 프로젝트 경로.\n` +
+        `  입력값: ${projectPath}\n` +
+        `  정규화 결과: ${resolved}\n` +
+        `  허용 범위: ${ALLOWED_PROJECT_ROOTS.join(', ')}\n` +
         `외부 경로를 허용하려면 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 설정하세요.`
       );
     }

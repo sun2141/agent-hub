@@ -1,0 +1,52 @@
+name: Path Validation Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'harness/src/agent/runner.js'
+      - 'harness/src/api/server.js'
+      - 'harness/tests/path_validation.test.js'
+      - 'directives/core/project_path_validation.md'
+      - '.github/workflows/test.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'harness/src/agent/runner.js'
+      - 'harness/src/api/server.js'
+      - 'harness/tests/path_validation.test.js'
+      - 'directives/core/project_path_validation.md'
+      - '.github/workflows/test.yml'
+
+jobs:
+  path-validation:
+    name: Path Validation Regression Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: harness/package-lock.json
+
+      - name: Install dependencies
+        working-directory: harness
+        run: npm ci
+
+      - name: Run path validation tests
+        working-directory: harness
+        run: npm test
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-failure-logs
+          path: |
+            harness/tests/
+          retention-days: 7

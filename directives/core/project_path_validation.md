@@ -100,9 +100,51 @@ const insideRoot = PROJECT_ROOTS.some(root =>
 
 ---
 
+## 추가 발견: PUT /api/projects/:id 외부 경로 수정 버그
+
+### 원인 3: PUT 핸들러의 `fs.existsSync` 무조건 체크
+
+- **상황**: `PUT /api/projects/:id` 핸들러가 `allowExternal=true`인 경우에도 `fs.existsSync(resolvedPath)`로 VPS 경로 존재 여부를 확인
+- **결과**: VPS에 없는 외부(macOS 로컬) 경로로 등록된 프로젝트를 수정할 때 "수정하려는 경로가 VPS에 없습니다" 오류 발생
+- **수정**: `allowExternal=true`이면 `existsSync` 체크를 건너뜀
+
+```js
+// 수정 전
+if (!fs.existsSync(resolvedPath)) { ... }
+
+// 수정 후
+if (!allowExternal && !fs.existsSync(resolvedPath)) { ... }
+```
+
+---
+
+## 에러 메시지 개선
+
+오류 발생 시 디버깅에 필요한 정보를 메시지에 포함:
+
+```
+// server.js resolveProjectPath 에러
+경로는 PROJECTS_ROOT 하위여야 합니다.
+  입력값: /Users/sun/myapp
+  정규화 결과: /Users/sun/myapp
+  허용 범위: /home/agent/workspace
+외부 경로를 등록하려면:
+  1) 요청에 "allow_external_path": true 파라미터 추가
+  2) 또는 서버에 ALLOW_EXTERNAL_PROJECTS=true 환경변수 설정
+
+// runner.js _validateProjectPath 에러
+허용되지 않은 프로젝트 경로.
+  입력값: /Users/sun/myapp
+  정규화 결과: /Users/sun/myapp
+  허용 범위: /home/agent/workspace
+외부 경로를 허용하려면 ALLOW_EXTERNAL_PROJECTS=true 환경변수를 설정하세요.
+```
+
+---
+
 ## 테스트
 
-`harness/tests/path_validation.test.js` - 18개 케이스:
+`harness/tests/path_validation.test.js` - 22개 케이스:
 1. PROJECTS_ROOT 내부 경로 (server/runner 각각)
 2. 외부 경로 플래그 없음 → 오류
 3. 외부 경로 allowExternal=true → 통과
@@ -116,9 +158,14 @@ const insideRoot = PROJECT_ROOTS.some(root =>
 11. (회귀) 외부 경로 등록 후 실행 E2E 시뮬레이션
 12. (회귀) 경로 traversal 입력 차단
 13. (회귀) allowExternal=true에서도 path.resolve 정규화
+14. (회귀) PUT - 외부 경로 수정 시 existsSync 없이 통과
+15. (회귀) 에러 메시지에 입력값/정규화 결과/허용 범위 포함
+16. (회귀) 외부 경로 등록→수정→실행 전체 E2E 플로우
 
 ```bash
 npm test  # harness/ 디렉토리에서 실행
+# 또는
+node harness/tests/path_validation.test.js
 ```
 
 ---
@@ -132,12 +179,18 @@ npm test  # harness/ 디렉토리에서 실행
 4. runner.js에서 DB 경로 사용 지점 전체 확인: `grep -n "_validateProjectPath" runner.js`
    - 모든 호출에 `{ allowExternal: true }` 포함 여부 확인
    - DB에서 꺼낸 경로(`project.path`)는 반드시 `allowExternal: true` 사용
-5. `npm test` 실행 후 통과 확인 (18개 케이스)
+5. server.js PUT 핸들러: 외부 경로 수정 시 `allowExternal` 플래그 확인 후 `existsSync` 체크 건너뜀
+6. `npm test` 실행 후 통과 확인 (22개 케이스)
 
 ### runner.js DB 경로 검증 호출 지점 전체 목록 (항상 allowExternal: true)
 - `run()`: `_validateProjectPath(project.path, { allowExternal: true })`
 - `_startPipeline()`: `_validateProjectPath(project.path, { allowExternal: true })`
 - `_runCodexFallback()`: `_validateProjectPath(project.path, { allowExternal: true })`
+
+### server.js 외부 경로 처리 지점
+- `POST /api/projects/create`: `allowExternal` 플래그 사용
+- `PUT /api/projects/:id`: `allowExternal` 플래그 사용 + `existsSync` 체크 조건 확인
+- `POST /api/projects`: `allowExternal` 플래그 사용
 
 ---
 
