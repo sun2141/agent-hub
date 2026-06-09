@@ -9,6 +9,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
+import { generateReport } from './report_generator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
@@ -296,6 +297,7 @@ export class AgentRunner extends EventEmitter {
 
       let round = task.round || 0;
       let evalResult = null;
+      const evalHistory = [];
       while (true) {
         if (this._deleted.has(taskId)) break;
 
@@ -327,6 +329,7 @@ export class AgentRunner extends EventEmitter {
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
+        evalHistory.push({ round, ...evalResult });
 
         const evalPassed = this._isEvalPassed(evalResult);
         const passedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues : [];
@@ -350,7 +353,24 @@ export class AgentRunner extends EventEmitter {
           const deployFailed = deployResult === 'deploy_failed';
           console.log(`[pipeline] 완료 처리: deployResult=${deployResult}, deployFailed=${deployFailed}`);
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed });
+          let reportInfo = null;
+          try {
+            const freshTask = await taskQueries.get(taskId);
+            reportInfo = generateReport({
+              task: freshTask || currentTask,
+              project,
+              plan,
+              evalResult,
+              evalHistory,
+              rounds: round,
+              maxRoundsReached: false,
+              deployResult,
+              commitSha: freshTask?.commit_sha || null,
+            });
+          } catch (reportErr) {
+            console.error(`[report] 리포트 생성 실패: ${reportErr.message}`);
+          }
+          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed, reportInfo });
           break;
         }
 
@@ -361,7 +381,23 @@ export class AgentRunner extends EventEmitter {
             content: `[eval 불합격] 최대 라운드 도달, unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
           await taskQueries.updateStatus(taskId, PHASE.DONE);
-          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues });
+          let reportInfoMax = null;
+          try {
+            reportInfoMax = generateReport({
+              task: currentTask,
+              project,
+              plan,
+              evalResult,
+              evalHistory,
+              rounds: round,
+              maxRoundsReached: true,
+              deployResult: 'skipped:eval_failed',
+              commitSha: null,
+            });
+          } catch (reportErr) {
+            console.error(`[report] 리포트 생성 실패 (maxRounds): ${reportErr.message}`);
+          }
+          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues, reportInfo: reportInfoMax });
           break;
         }
       }

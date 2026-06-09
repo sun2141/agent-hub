@@ -306,7 +306,7 @@ export function createTelegramBot(agentRunner) {
       }
     });
 
-    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached, projectId }) => {
+    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached, projectId, reportInfo }) => {
       const flag = maxRoundsReached ? ' (최대 라운드 도달)' : '';
       // 작업 완료 시 해당 프로젝트의 연속 실패 카운터 리셋
       const pid = projectId || taskId;
@@ -315,12 +315,16 @@ export function createTelegramBot(agentRunner) {
         entry.failCount = 0;
         saveCooldownData(_lastFailNotify);
       }
-      notify(
-        `✅ <b>완료</b>${flag}\n\n` +
-        `ID: <code>${taskId}</code>\n` +
-        `총 라운드: ${round}\n` +
-        `평가 점수: ${evalResult?.score ?? '-'}/100`
-      );
+      if (reportInfo?.telegramSummary) {
+        notify(`✅ <b>완료</b>${flag}\n\n${reportInfo.telegramSummary}`);
+      } else {
+        notify(
+          `✅ <b>완료</b>${flag}\n\n` +
+          `ID: <code>${taskId}</code>\n` +
+          `총 라운드: ${round}\n` +
+          `평가 점수: ${evalResult?.score ?? '-'}/100`
+        );
+      }
     });
 
     agentRunner.on('task:paused', ({ taskId, reason }) => {
