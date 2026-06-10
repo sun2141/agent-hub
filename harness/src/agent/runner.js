@@ -325,7 +325,7 @@ export class AgentRunner extends EventEmitter {
 
         await taskQueries.updateStatus(taskId, PHASE.EVAL);
         this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
-        evalResult = await this._runEvaluator(currentTask, project, plan, round, safeCwd);
+        evalResult = await this._runGatedEvaluator(currentTask, project, plan, round, safeCwd);
         if (this._deleted.has(taskId)) break;
         this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
         await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
@@ -733,6 +733,98 @@ export class AgentRunner extends EventEmitter {
     ].join('\n\n');
   }
 
+  // ── 검증 게이트 + LLM 평가 통합 실행 ────────────────────────
+  async _runGatedEvaluator(task, project, plan, round, safeCwd) {
+    const verify = await this._runVerifyGate(task.id, round, safeCwd);
+    if (!verify.passed) {
+      return {
+        score: 0,
+        passed: false,
+        issues: [`[검증 게이트 실패: ${verify.label}] 아래 오류를 반드시 해결하세요:\n${verify.output}`],
+        suggestions: `코드가 검증 명령(${verify.label})을 통과하지 못했습니다. 오류 메시지의 파일·라인을 확인하고 수정하세요.`,
+        summary: `verify 실패 (${verify.label})`,
+        verify_failed: true,
+      };
+    }
+    const evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+    if (verify.skipped) evalResult.verify_skipped = true;
+    return evalResult;
+  }
+
+  // ── 객관 검증 게이트 (빌드/린트/타입체크) ──────────────
+  async _runVerifyGate(taskId, round, safeCwd) {
+    const cmds = _detectVerifyCmds(safeCwd);
+    if (cmds.length === 0) {
+      console.log(`[verify] 검증 명령 없음 — 게이트 건너뜀 (cwd=${safeCwd})`);
+      await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info', content: '[verify] 검증 명령 없음 — 게이트 건너뜀' });
+      return { passed: true, skipped: true };
+    }
+
+    const env = prependCliNodePath({
+      ...process.env,
+      NODE_OPTIONS: '--max-old-space-size=3072',
+      PATH: `${process.env.HOME}/.npm-global/bin:${process.env.PATH || ''}`,
+    });
+
+    // node_modules 미설치 시 환경 문제로 인한 무한 실패 방지
+    if (fs.existsSync(path.join(safeCwd, 'package.json')) && !fs.existsSync(path.join(safeCwd, 'node_modules'))) {
+      console.log(`[verify] node_modules 없음 → npm install 실행`);
+      await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info', content: '[verify] node_modules 없음 → npm install 실행' });
+      const inst = await this._execCollect('npm', ['install'], { cwd: safeCwd, env, timeoutMs: 600_000 });
+      if (inst.code !== 0) {
+        const tail = `${inst.stderr}\n${inst.stdout}`.trim().slice(-1500);
+        await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'error', content: `[verify 실패] npm install\n${tail}`.substring(0, 2000) });
+        return { passed: false, label: 'npm install', output: tail };
+      }
+    }
+
+    for (const c of cmds) {
+      console.log(`[verify] 실행: ${c.label} (cwd=${safeCwd})`);
+      await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info', content: `[verify] 실행: ${c.label}` });
+      const res = await this._execCollect(c.cmd, c.args, { cwd: safeCwd, env, timeoutMs: 300_000 });
+      if (res.code !== 0) {
+        const tail = `${res.stderr}\n${res.stdout}`.trim().slice(-1500);
+        console.error(`[verify] 실패: ${c.label} (code=${res.code})`);
+        await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'error', content: `[verify 실패] ${c.label}\n${tail}`.substring(0, 2000) });
+        return { passed: false, label: c.label, output: tail };
+      }
+      await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info', content: `[verify 통과] ${c.label}` });
+    }
+    console.log(`[verify] 전체 통과 (${cmds.length}개 명령)`);
+    return { passed: true, skipped: false };
+  }
+
+  // ── 비동기 외부 명령 실행 (이벤트 루프 비차단 — 대시보드/봇 응답 유지) ──
+  _execCollect(cmd, args, { cwd, env, timeoutMs = 300_000 }) {
+    return new Promise((resolve) => {
+      let proc;
+      try {
+        proc = spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (err) {
+        resolve({ code: 1, stdout: '', stderr: err.message });
+        return;
+      }
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { proc.kill('SIGKILL'); } catch { /* 무시 */ }
+      }, timeoutMs);
+      proc.stdout.on('data', d => { stdout += d.toString(); if (stdout.length > 200_000) stdout = stdout.slice(-100_000); });
+      proc.stderr.on('data', d => { stderr += d.toString(); if (stderr.length > 200_000) stderr = stderr.slice(-100_000); });
+      proc.on('close', code => {
+        clearTimeout(timer);
+        if (timedOut) stderr += `\n[verify] ${Math.round(timeoutMs / 1000)}초 타임아웃으로 강제 종료`;
+        resolve({ code: code ?? 1, stdout, stderr });
+      });
+      proc.on('error', err => {
+        clearTimeout(timer);
+        resolve({ code: 1, stdout, stderr: `${stderr}\n${err.message}` });
+      });
+    });
+  }
+
   async _runEvaluator(task, project, plan, round, safeCwd) {
     const criteria = (plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n');
     const prompt = [
@@ -933,7 +1025,7 @@ export class AgentRunner extends EventEmitter {
       await taskQueries.updateStatus(taskId, PHASE.EVAL);
       await taskQueries.incrementRound(taskId);
       this.emit('phase:start', { taskId, phase: PHASE.EVAL, round });
-      const evalResult = await this._runEvaluator(task, project, plan, round, safeCwd);
+      const evalResult = await this._runGatedEvaluator(task, project, plan, round, safeCwd);
       this.emit('phase:complete', { taskId, phase: PHASE.EVAL, round });
       await taskQueries.updateStatus(taskId, PHASE.EVAL, { eval_result: JSON.stringify(evalResult) });
       if (this._isEvalPassed(evalResult)) {
@@ -1181,6 +1273,29 @@ export class AgentRunner extends EventEmitter {
       this._startPipeline(nextId);
     }
   }
+}
+
+// ── 검증 명령 자동 감지 헬퍼 ────────────────────────────────
+function _detectVerifyCmds(cwd) {
+  // 1순위: 프로젝트 전용 verify.sh
+  if (fs.existsSync(path.join(cwd, 'verify.sh'))) {
+    return [{ label: 'bash verify.sh', cmd: 'bash', args: ['verify.sh'] }];
+  }
+  const pkgPath = path.join(cwd, 'package.json');
+  if (!fs.existsSync(pkgPath)) return [];
+  let pkg;
+  try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch { return []; }
+  const s = pkg.scripts || {};
+  // 2순위: scripts.verify (프로젝트가 명시적으로 정의한 검증)
+  if (s.verify) return [{ label: 'npm run verify', cmd: 'npm', args: ['run', 'verify'] }];
+  // 3순위: typecheck + lint (가벼움 — 우선 선택)
+  const cmds = [];
+  if (s.typecheck) cmds.push({ label: 'npm run typecheck', cmd: 'npm', args: ['run', 'typecheck'] });
+  if (s.lint) cmds.push({ label: 'npm run lint', cmd: 'npm', args: ['run', 'lint'] });
+  if (cmds.length > 0) return cmds;
+  // 4순위: build (무겁지만 확실한 검증)
+  if (s.build) return [{ label: 'npm run build', cmd: 'npm', args: ['run', 'build'] }];
+  return [];
 }
 
 // ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────
