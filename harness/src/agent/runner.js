@@ -447,11 +447,22 @@ export class AgentRunner extends EventEmitter {
 
     const promptParts = [
       '[지시사항]',
-      '당신은 소프트웨어 프로젝트 플래너입니다.',
-      '사용자의 요청을 분석하여 구체적인 구현 계획을 JSON으로 반환하세요.',
+      '당신은 시니어 소프트웨어 아키텍트입니다. 아래 작업 요청의 구현 계획을 수립하세요.',
       `프로젝트: ${project.name} (${project.stack || '미지정'})`,
-      '코드블록 없이 순수 JSON만 반환하세요:',
-      '{"title":"작업 제목","summary":"한 줄 요약","features":["기능1"],"files_to_modify":["파일"],"acceptance_criteria":["완료 기준1"],"tech_notes":"주의사항"}',
+      '',
+      '[필수 절차 — 반드시 코드베이스를 먼저 탐색할 것]',
+      '1. 디렉토리 구조와 기술 스택을 도구로 직접 확인하세요 (ls, Glob).',
+      '2. 작업과 관련된 기존 파일을 직접 읽고(Read) 현재 구현 방식, 코드 스타일, 사용 중인 패턴을 파악하세요.',
+      '3. 수정·생성할 파일을 실제 경로로 특정하세요. 탐색으로 확인하지 않은 추측 경로 금지.',
+      '4. 탐색 결과를 근거로만 계획을 작성하세요.',
+      '',
+      '[계획 품질 기준]',
+      '- acceptance_criteria: 검증 가능한 구체적 기준 (어떤 파일의 어떤 동작이 어떻게 되어야 하는지)',
+      '- "잘 동작한다", "개선된다" 같은 모호한 기준 금지',
+      '- files_to_modify: 탐색으로 존재를 확인한 실제 경로만 (신규 파일은 "신규:" 접두사)',
+      '',
+      '[최종 응답 — 탐색 완료 후 코드블록 없이 순수 JSON만 출력]',
+      '{"title":"작업 제목","summary":"한 줄 요약","context_summary":"탐색으로 파악한 현재 코드 상태 요약 (3-5문장)","features":["기능1"],"files_to_modify":["실제/경로.js"],"acceptance_criteria":["완료 기준1"],"tech_notes":"주의사항","risks":"예상 리스크"}',
       '',
       '[작업 요청]',
       task.prompt,
@@ -479,8 +490,10 @@ export class AgentRunner extends EventEmitter {
       if (!plan.summary) plan.summary = plan.title;
       if (!Array.isArray(plan.features)) plan.features = [];
       if (!Array.isArray(plan.acceptance_criteria)) plan.acceptance_criteria = [];
+      if (!Array.isArray(plan.files_to_modify)) plan.files_to_modify = [];
+      if (typeof plan.context_summary !== 'string') plan.context_summary = '';
     } catch {
-      plan = { title: task.prompt.slice(0, 100), summary: output.slice(0, 200), features: [], acceptance_criteria: [] };
+      plan = { title: task.prompt.slice(0, 100), summary: output.slice(0, 200), features: [], acceptance_criteria: [], files_to_modify: [], context_summary: '' };
     }
 
     await taskQueries.updateStatus(task.id, PHASE.PLAN, { plan: JSON.stringify(plan) });
@@ -688,6 +701,8 @@ export class AgentRunner extends EventEmitter {
   _buildGeneratorPrompt(plan, round, maxRounds) {
     return ['다음 계획에 따라 코드를 구현하세요.',
       `## 작업\n${plan.title || plan.summary || '(제목 없음)'}`, `## 요약\n${plan.summary || plan.title || ''}`,
+      `## 현재 코드 상태 (플래너 탐색 결과)\n${plan.context_summary || '없음'}`,
+      `## 수정 대상 파일\n${(plan.files_to_modify||[]).map(f=>`- ${f}`).join('\n') || '플래너 미지정'}`,
       `## 기능\n${(plan.features||[]).map((f,i)=>`${i+1}. ${f}`).join('\n')}`,
       `## 완료 기준\n${(plan.acceptance_criteria||[]).map((c,i)=>`${i+1}. ${c}`).join('\n')}`,
       `## 주의사항\n${plan.tech_notes||'없음'}`,
@@ -708,6 +723,8 @@ export class AgentRunner extends EventEmitter {
       `## 원래 작업\n${plan.title || plan.summary || '(제목 없음)'}`,
       `## 요약\n${plan.summary || plan.title || ''}`,
       `## 완료 기준\n${(plan.acceptance_criteria || []).map((c, i) => `${i + 1}. ${c}`).join('\n')}`,
+      `## 현재 코드 상태 (플래너 탐색 결과)\n${plan.context_summary || '없음'}`,
+      `## 수정 대상 파일\n${(plan.files_to_modify || []).map(f => `- ${f}`).join('\n') || '플래너 미지정'}`,
       `## 평가 결과 (Round ${round - 1})\n점수: ${prevEval?.score ?? '?'}/100`,
       `## 반드시 해결해야 할 미충족 항목 (${issuesList.length}개)\n${issuesText}`,
       `## 개선 제안\n${prevEval?.suggestions || '없음'}`,
