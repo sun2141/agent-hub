@@ -515,7 +515,27 @@ export class AgentRunner extends EventEmitter {
         }
       }
     }
-    await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt });
+    // 세션 연속성: 2라운드부터 이전 build 세션을 resume (eval/plan은 독립 세션 유지)
+    const resumeSessionId = round > 1 && task.session_id ? task.session_id : null;
+    let capturedSid = null;
+    const onSessionId = (sid) => { capturedSid = sid; };
+    try {
+      await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt, resumeSessionId, onSessionId });
+    } catch (err) {
+      // resume 실패(세션 만료/손상) 시 새 세션으로 1회 재시도 — RATE_LIMIT는 그대로 전파
+      if (resumeSessionId && err.message !== 'RATE_LIMIT') {
+        console.warn(`[build] 세션 resume 실패 → 새 세션으로 재시도: ${err.message.slice(0, 120)}`);
+        await logQueries.append({ task_id: task.id, phase: 'build', round, level: 'warn',
+          content: `[build] 세션 resume 실패 → 새 세션 재시도: ${err.message.slice(0, 200)}` });
+        await this._claudeRun({ taskId: task.id, phase: 'build', round, cwd: safeCwd, prompt, onSessionId });
+      } else {
+        throw err;
+      }
+    }
+    if (capturedSid && capturedSid !== task.session_id) {
+      try { await taskQueries.updateSessionId(task.id, capturedSid); }
+      catch (e) { console.error(`[build] session_id 저장 실패: ${e.message}`); }
+    }
   }
 
   _isEvalPassed(evalResult) {
@@ -1094,7 +1114,7 @@ export class AgentRunner extends EventEmitter {
     });
   }
 
-  _claudeRun({ taskId, phase, round, cwd, prompt }) {
+  _claudeRun({ taskId, phase, round, cwd, prompt, resumeSessionId = null, onSessionId = null }) {
     return new Promise((resolve, reject) => {
       const args = [
         '--print',
@@ -1103,10 +1123,11 @@ export class AgentRunner extends EventEmitter {
         '--model', (phase === 'plan' ? PLAN_MODEL : CLAUDE_MODEL),
         '--dangerously-skip-permissions',
         // '--setting-sources user' 제거 — CLAUDE_CONFIG_DIR의 harness 전용 설정 사용
-        prompt,
       ];
+      if (resumeSessionId) args.push('--resume', resumeSessionId);
+      args.push(prompt);
 
-      console.log(`[CLI spawn:${phase}] model=${phase === 'plan' ? PLAN_MODEL : CLAUDE_MODEL} round=${round} cwd=${cwd}`);
+      console.log(`[CLI spawn:${phase}] model=${phase === 'plan' ? PLAN_MODEL : CLAUDE_MODEL} round=${round} resume=${resumeSessionId || '없음'} cwd=${cwd}`);
 
       if (this._deleted.has(taskId)) {
         resolve('');
@@ -1133,6 +1154,7 @@ export class AgentRunner extends EventEmitter {
       let assistantTexts = [];
       let buffer         = '';
       let rejected       = false;
+      let sessionNotified = false;
 
       proc.stdout.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -1143,6 +1165,12 @@ export class AgentRunner extends EventEmitter {
           try {
             const msg = JSON.parse(line);
             if (msg.type !== 'system') console.log(`[CLI msg:${phase}] type=${msg.type} ${msg.error||''}`);
+
+            // 세션 ID 캡처 (첫 메시지에서 한 번만)
+            if (!sessionNotified && msg.session_id && onSessionId) {
+              sessionNotified = true;
+              try { onSessionId(msg.session_id); } catch { /* 무시 */ }
+            }
 
             // stream-json msg.error 필드 직접 감지 (Claude CLI v2+ 형식)
             // 예: {"type":"assistant","error":"rate_limit",...}

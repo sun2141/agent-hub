@@ -108,11 +108,17 @@ export async function initDb() {
       commit_sha           TEXT,
       deploy_status        TEXT,
       provider             TEXT DEFAULT 'claude',
+      model                TEXT,
+      session_id           TEXT,
       scheduled_resume_at  TEXT,
       created_at           TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
       updated_at           TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
     )
   `);
+
+  // 기존 테이블 마이그레이션 (CREATE TABLE IF NOT EXISTS는 컬럼 추가를 못 하므로)
+  await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS model TEXT`);
+  await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS session_id TEXT`);
 
   await dbRun(`
     CREATE TABLE IF NOT EXISTS harness.logs (
@@ -326,6 +332,10 @@ export const taskQueries = {
   },
   async updateModel(id, model) {
     await dbRun('UPDATE harness.tasks SET model = $1 WHERE id = $2', [model, id]);
+  },
+
+  async updateSessionId(id, sessionId) {
+    await dbRun('UPDATE harness.tasks SET session_id = $1 WHERE id = $2', [sessionId, id]);
   },
 
   async updateScheduledResumeAt(id, scheduledResumeAt) {
