@@ -55,6 +55,7 @@ const PHASE = {
   DONE:   'done',
   FAILED: 'failed',
   PAUSED: 'paused',
+  REVIEW: 'needs_review',
 };
 
 function parseJson(text) {
@@ -376,11 +377,11 @@ export class AgentRunner extends EventEmitter {
 
         if (isLastRound) {
           const unresolvedIssues = Array.isArray(evalResult?.issues) ? evalResult.issues.length : null;
-          console.log(`[pipeline] 최대 라운드(${round}/${currentTask.max_rounds}) 도달 — eval 불합격으로 종료. unresolvedIssues=${unresolvedIssues}`);
+          console.log(`[pipeline] 최대 라운드(${round}/${currentTask.max_rounds}) 도달 — eval 불합격 → needs_review 상태로 종료. unresolvedIssues=${unresolvedIssues}`);
           await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'warn',
-            content: `[eval 불합격] 최대 라운드 도달, unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
+            content: `[eval 불합격] 최대 라운드 도달 → needs_review. unresolvedIssues=${unresolvedIssues}, score=${evalResult?.score ?? '?'}` });
           await taskQueries.updateDeploy(taskId, 'skipped:eval_failed');
-          await taskQueries.updateStatus(taskId, PHASE.DONE);
+          await taskQueries.updateStatus(taskId, PHASE.REVIEW);
           let reportInfoMax = null;
           try {
             reportInfoMax = generateReport({
@@ -397,7 +398,7 @@ export class AgentRunner extends EventEmitter {
           } catch (reportErr) {
             console.error(`[report] 리포트 생성 실패 (maxRounds): ${reportErr.message}`);
           }
-          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: true, unresolvedIssues, reportInfo: reportInfoMax });
+          this.emit('task:needs_review', { taskId, projectId: currentTask.project_id, round, evalResult, unresolvedIssues, reportInfo: reportInfoMax });
           break;
         }
       }
@@ -1328,10 +1329,11 @@ function _detectVerifyCmds(cwd) {
 
 // ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────
 function _findDeployScript(cwd, harnessAbsPath) {
+  // 프로젝트 디렉토리만 탐색 — 하네스 디렉토리 폴백 제거
+  // (이전에는 프로젝트에 스크립트가 없으면 하네스 자신의 deploy.sh를 실행해
+  //  무관한 agent-hub 레포를 push하고 'deploy 성공'으로 오보고하는 버그 있었음.
+  //  Vercel Git 연동 프로젝트는 push 시점에 자동 배포되므로 스크립트 부재 시 skip이 올바름)
   const searchDirs = [cwd];
-  if (harnessAbsPath && harnessAbsPath !== cwd) {
-    searchDirs.push(harnessAbsPath);
-  }
 
   for (const dir of searchDirs) {
     const deployShPath = path.join(dir, 'deploy.sh');
