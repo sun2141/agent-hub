@@ -17,7 +17,10 @@
     "migrate:neon": "node src/db/migrate_to_neon.js",
     "migrate:neon:schema": "node src/db/migrate_to_neon.js --schema-only",
     "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify",
-    "test": "node tests/path_validation.test.js"
+    "test": "node tests/path_validation.test.js",
+    "test:mp": "node tests/multi_provider.test.js",
+    "providers": "node scripts/provider-status.js",
+    "preflight": "bash scripts/preflight.sh"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

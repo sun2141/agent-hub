@@ -10,6 +10,8 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
 import { generateReport } from './report_generator.js';
+import { runPhase } from './phaseDispatch.js';
+import { minutesFromNow } from './providers/base.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
@@ -21,6 +23,9 @@ const PLAN_MODEL = process.env.PLAN_MODEL || CLAUDE_MODEL;
 const CODEX_CLI    = process.env.CODEX_CLI_PATH || 'codex';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
 const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
+
+// 멀티 프로바이더 오케스트레이션 (기본 off — off면 기존 Claude 단독 경로 그대로).
+const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
 
 const ALLOWED_PROJECT_ROOTS = (process.env.PROJECTS_ROOT || DEFAULT_PROJECTS_ROOT)
   .split(',')
@@ -99,6 +104,9 @@ export class AgentRunner extends EventEmitter {
     this._running = new Map();
     this._queue   = [];
     this._deleted = new Set();
+    // 멀티 프로바이더: 프로바이더당 단일 실행 강제 + 프로바이더별 세션(재개용)
+    this._busyProviders = new Set();
+    this._mpSessions = new Map(); // taskId -> { [provider]: sessionId }
   }
 
   _validateProjectPath(projectPath, { allowExternal = false } = {}) {
@@ -226,12 +234,11 @@ export class AgentRunner extends EventEmitter {
     if (task.status !== PHASE.PAUSED && task.status !== 'rate_limited') {
       throw new Error(`재개 불가 상태: ${task.status}`);
     }
-    // rate_limited 상태면 scheduled_resume_at 초기화하고 building 상태로 전환
+    // paused/rate_limited 상태를 실행 상태로 전환해야 _startPipeline 루프가 정상 동작
     if (task.status === 'rate_limited') {
       await taskQueries.updateScheduledResumeAt(taskId, null);
-      // 반드시 상태를 BUILD로 전환해야 _startPipeline 루프가 정상 동작
-      await taskQueries.updateStatus(taskId, PHASE.BUILD);
     }
+    await taskQueries.updateStatus(taskId, PHASE.BUILD);
     this.emit('task:resuming', { taskId });
     this._startPipeline(taskId);
   }
@@ -260,6 +267,7 @@ export class AgentRunner extends EventEmitter {
     if (queueIdx !== -1) this._queue.splice(queueIdx, 1);
 
     await deleteTask(taskId);
+    this._cleanupMpSessions(taskId);
 
     setTimeout(() => this._deleted.delete(taskId), 5000);
     this.emit('task:deleted', { taskId, projectId: task.project_id });
@@ -405,6 +413,24 @@ export class AgentRunner extends EventEmitter {
     } catch (err) {
       if (this._deleted.has(taskId)) {
         console.log(`[pipeline] taskId=${taskId} 삭제 진행 중 — catch 블록 스킵`);
+      } else if (err.message === 'PROVIDER_WAIT') {
+        // 멀티 프로바이더: 셋 다 cooling(또는 핀 고정 프로바이더 대기). 예약 재개 방식.
+        const resumeAt = err.resumeAt || minutesFromNow(5);
+        console.log(`[pipeline] 모든 프로바이더 대기 → ${resumeAt} 예약 재개 (대기 프로바이더=${err.waitProvider || '?'})`);
+        await taskQueries.updateStatus(taskId, 'rate_limited');
+        await taskQueries.updateScheduledResumeAt(taskId, resumeAt);
+        await logQueries.append({ task_id: taskId, phase: 'system', round: 0, level: 'warn',
+          content: `[provider_wait] 모든 프로바이더 쿨다운 → ${resumeAt} 자동 재개 예약 (대기=${err.waitProvider || '?'})` });
+        const cpInfo = await this._saveRateLimitCheckpoint(taskId, task, resumeAt);
+        try {
+          await limitEventQueries.insert({
+            task_id: taskId, project_id: task?.project_id,
+            resume_available_at: resumeAt,
+            checkpoint_path: cpInfo?.checkpointPath || null,
+            checkpoint_summary: cpInfo?.summary || null,
+          });
+        } catch (dbErr) { console.error(`[pipeline] provider_wait limit_event 저장 실패: ${dbErr.message}`); }
+        this.emit('task:rate_limited', { taskId, projectId: task?.project_id, resumeAt });
       } else if (err.message === 'RATE_LIMIT') {
         // 토큰 리미트 감지: 즉시 중단 (수동 재개 방식으로 변경 — 시간 예약 없음)
         console.log(`[pipeline] Claude 토큰 리미트 감지 → 즉시 중단. 대시보드에서 수동으로 재개하세요.`);
@@ -440,6 +466,10 @@ export class AgentRunner extends EventEmitter {
       this._cleanupAttachments(taskId);
       this._drainQueue();
     }
+  }
+
+  _cleanupMpSessions(taskId) {
+    this._mpSessions.delete(taskId);
   }
 
   async _runPlanner(task, project, safeCwd, attachmentPaths = []) {
@@ -482,7 +512,7 @@ export class AgentRunner extends EventEmitter {
     }
 
     const prompt = promptParts.join('\n');
-    const output = await this._claudeRun({ taskId: task.id, phase: 'plan', round: 0, cwd: safeCwd, prompt });
+    const output = await this._dispatchPhase({ task, phase: 'plan', round: 0, cwd: safeCwd, prompt });
 
     let plan;
     try {
@@ -516,6 +546,12 @@ export class AgentRunner extends EventEmitter {
         }
       }
     }
+    // 멀티 프로바이더 경로: build만 페일오버 허용. 같은 프로바이더면 세션 재개.
+    if (MULTI_PROVIDER) {
+      await this._dispatchPhase({ task, phase: 'build', round, cwd: safeCwd, prompt, resume: round > 1 });
+      return;
+    }
+
     // 세션 연속성: 2라운드부터 이전 build 세션을 resume (eval/plan은 독립 세션 유지)
     const resumeSessionId = round > 1 && task.session_id ? task.session_id : null;
     let capturedSid = null;
@@ -878,7 +914,7 @@ export class AgentRunner extends EventEmitter {
       criteria,
     ].join('\n');
 
-    const output = await this._claudeRun({ taskId: task.id, phase: 'eval', round, cwd: safeCwd, prompt });
+    const output = await this._dispatchPhase({ task, phase: 'eval', round, cwd: safeCwd, prompt });
     try { return parseJson(output); }
     catch (e) {
       console.error(`[eval] JSON 파싱 실패: ${e.message}\n출력(500자): ${output.substring(0, 500)}`);
@@ -1022,6 +1058,52 @@ export class AgentRunner extends EventEmitter {
     } catch {
       return false;
     }
+  }
+
+  // ── 멀티 프로바이더 단계 실행 ─────────────────────────────────
+  // MULTI_PROVIDER=off면 기존 _claudeRun을 그대로 호출(동작 불변).
+  // on이면 phaseDispatch(로테이션/대기)로 실행하고 출력 문자열을 반환한다.
+  //   - ok    : 프로바이더/세션 기록 후 output 반환
+  //   - wait  : PROVIDER_WAIT 예외(resumeAt 포함) → _startPipeline catch가 예약 재개 처리
+  //   - error : 예외 전파
+  async _dispatchPhase({ task, phase, round, cwd, prompt, resume = false }) {
+    if (!MULTI_PROVIDER) {
+      return this._claudeRun({ taskId: task.id, phase, round, cwd, prompt });
+    }
+    const taskId = task.id;
+    const sessions = this._mpSessions.get(taskId) || {};
+    const result = await runPhase({
+      phase,
+      prompt,
+      busy: this._busyProviders,
+      resumeIds: resume ? sessions : {},   // build 재개만 세션 전달, plan/eval은 항상 새 세션
+      adapterCtx: {
+        taskId, round, cwd,
+        onText: (t) => this.emit('agent:text', { taskId, phase, round, content: t, text: t }),
+      },
+      onEvent: (type, p) => {
+        if (type === 'run') {
+          console.log(`[MP] ${phase} round=${round} → ${p.provider}${p.resumeId ? ' (resume)' : ''}`);
+          logQueries.append({ task_id: taskId, phase, round, level: 'info', content: `[MP] ${phase} → ${p.provider}` });
+        } else if (type === 'limit') {
+          console.warn(`[MP] ${p.provider} 리미트(${p.windowType}) reset=${p.resetAt}`);
+          logQueries.append({ task_id: taskId, phase, round, level: 'warn', content: `[MP] ${p.provider} 리미트(${p.windowType}) → ${p.resetAt}` });
+        }
+      },
+    });
+
+    if (result.status === 'ok') {
+      try { await taskQueries.updateProvider(taskId, result.provider); } catch {}
+      if (result.sessionId) { sessions[result.provider] = result.sessionId; this._mpSessions.set(taskId, sessions); }
+      return result.output;
+    }
+    if (result.status === 'wait' || result.status === 'busy') {
+      const err = new Error('PROVIDER_WAIT');
+      err.resumeAt = result.resumeAt || minutesFromNow(2);
+      err.waitProvider = result.provider || null;
+      throw err;
+    }
+    throw new Error(result.error || `프로바이더 디스패치 실패 (${result.status})`);
   }
 
   async _runCodexFallback(taskId) {
