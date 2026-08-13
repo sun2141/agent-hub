@@ -57,7 +57,8 @@ PATH=/Users/sun/.nvm/versions/node/v22.22.2/bin:$PATH npm run migrate:neon:schem
 
 주의:
 - `NEON_DATABASE_URL`은 pooled connection string (`-pooler` 호스트)을 사용합니다.
-- 오래된 `planning`, `building`, `evaluating` 작업은 새 작업을 막을 수 있으므로 `db:health`로 감지합니다.
+- 오래된 `pending`, `planning`, `building`, `evaluating`, `fallback_running` 작업은 새 작업을 막을 수 있으므로 `db:health`로 감지합니다.
+- 하네스가 재시작되면 부팅 시 남아 있는 active 작업을 `paused`로 전환하고 `interrupted_by_harness_restart` 로그를 남깁니다. `building`/`evaluating`/`fallback_running`은 재개 시 같은 라운드를 다시 수행하도록 round를 1 되돌립니다.
 - VPS/로컬 모두 하네스와 하네스가 실행하는 CLI 자식 프로세스가 Node 22를 쓰도록 `NODE_BIN`의 디렉토리를 `PATH` 맨 앞에 둡니다.
 - `Claude CLI 비정상 종료 (code: 1)`와 함께 `Unexpected token '??='`가 나오면 `/usr/bin/env node`가 오래된 Node를 잡은 것입니다. `harness/scripts/start.sh`로 재시작하고 `NODE_BIN` 값과 `PATH` 순서를 먼저 확인합니다.
 

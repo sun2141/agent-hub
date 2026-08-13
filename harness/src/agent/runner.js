@@ -226,12 +226,11 @@ export class AgentRunner extends EventEmitter {
     if (task.status !== PHASE.PAUSED && task.status !== 'rate_limited') {
       throw new Error(`재개 불가 상태: ${task.status}`);
     }
-    // rate_limited 상태면 scheduled_resume_at 초기화하고 building 상태로 전환
+    // paused/rate_limited 상태를 실행 상태로 전환해야 _startPipeline 루프가 정상 동작
     if (task.status === 'rate_limited') {
       await taskQueries.updateScheduledResumeAt(taskId, null);
-      // 반드시 상태를 BUILD로 전환해야 _startPipeline 루프가 정상 동작
-      await taskQueries.updateStatus(taskId, PHASE.BUILD);
     }
+    await taskQueries.updateStatus(taskId, PHASE.BUILD);
     this.emit('task:resuming', { taskId });
     this._startPipeline(taskId);
   }

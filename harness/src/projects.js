@@ -47,4 +47,11 @@ export const PROJECTS = [
     stack: 'nodejs',
     description: '에이전트 허브 시스템',
   },
+  {
+    id: 'shootinglike',
+    name: 'ShootingLike',
+    path: projectPath('shootinglike'),
+    stack: 'nextjs',
+    description: 'freekick 분석 앱',
+  },
 ];

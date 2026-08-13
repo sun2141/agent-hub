@@ -344,7 +344,7 @@ export const taskQueries = {
 
   async getActiveForProject(projectId) {
     return dbGet(
-      "SELECT id, status FROM harness.tasks WHERE project_id = $1 AND status NOT IN ('done','failed','paused','rate_limited') ORDER BY created_at DESC LIMIT 1",
+      "SELECT id, status FROM harness.tasks WHERE project_id = $1 AND status NOT IN ('done','failed','paused','rate_limited','needs_review') ORDER BY created_at DESC LIMIT 1",
       [projectId]
     );
   },
@@ -358,6 +358,32 @@ export const taskQueries = {
   async getRateLimitedTasks() {
     return dbAll(
       "SELECT * FROM harness.tasks WHERE status = 'rate_limited' ORDER BY created_at DESC"
+    );
+  },
+
+  async pauseInterruptedActiveTasks(reason = 'interrupted_by_harness_restart') {
+    const activeStatuses = ['pending', 'planning', 'building', 'evaluating', 'fallback_running'];
+    return dbAll(
+      `
+      WITH interrupted AS (
+        SELECT id, project_id, status AS previous_status, round AS previous_round
+        FROM harness.tasks
+        WHERE status = ANY($1::text[])
+      )
+      UPDATE harness.tasks t
+      SET status = 'paused',
+          error = $2,
+          round = CASE
+            WHEN i.previous_status IN ('building', 'evaluating', 'fallback_running') AND t.round > 0
+              THEN t.round - 1
+            ELSE t.round
+          END,
+          scheduled_resume_at = NULL
+      FROM interrupted i
+      WHERE t.id = i.id
+      RETURNING t.id, t.project_id, i.previous_status, i.previous_round, t.status, t.round
+      `,
+      [activeStatuses, reason]
     );
   },
 };

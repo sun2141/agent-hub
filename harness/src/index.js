@@ -6,7 +6,7 @@ import fs from 'fs';
 import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initDb, projectQueries, taskQueries } from './db/db.js';
+import { initDb, projectQueries, taskQueries, logQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { createApiServer } from './api/server.js';
@@ -144,6 +144,20 @@ async function main() {
   await projectQueries.seed(PROJECTS);
   console.log(`[Boot] 프로젝트 ${PROJECTS.length}개 등록됨`);
 
+  const recoveredTasks = await taskQueries.pauseInterruptedActiveTasks();
+  if (recoveredTasks.length > 0) {
+    console.warn(`[Boot] 재시작 중단 작업 ${recoveredTasks.length}개를 paused로 복구`);
+    for (const task of recoveredTasks) {
+      await logQueries.append({
+        task_id: task.id,
+        phase: 'system',
+        round: task.round || 0,
+        level: 'warn',
+        content: `[startup_recovery] 하네스 재시작 감지: ${task.previous_status} 상태 작업을 paused로 전환했습니다. round ${task.previous_round ?? task.round} → ${task.round}. 필요하면 대시보드에서 계속하기로 재개하세요.`,
+      });
+    }
+  }
+
   // 2. Agent Runner
   const agent = new AgentRunner();
   console.log('[Boot] Agent runner 준비');
@@ -178,6 +192,13 @@ async function main() {
   console.log('[Boot] Telegram 봇 준비');
 
   notify('🟢 <b>하네스 시작됨</b>\n/help 로 명령어 확인');
+  if (recoveredTasks.length > 0) {
+    notify(
+      `⚠️ <b>하네스 재시작 복구</b>\n` +
+      `${recoveredTasks.length}개 작업을 <code>paused</code>로 전환했습니다.\n` +
+      recoveredTasks.slice(0, 5).map(t => `• <code>${t.id}</code> (${t.previous_status}, round ${t.previous_round ?? t.round}→${t.round})`).join('\n')
+    );
+  }
 
   // 5. rate_limited 작업은 대시보드 '계속하기' 버튼으로 수동 재개 (자동 재개 스케줄러 제거)
 
