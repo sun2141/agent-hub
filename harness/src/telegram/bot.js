@@ -44,12 +44,13 @@ function saveCooldownData(map) {
 }
 
 const PHASE_EMOJI = {
-  planning:   '📋',
-  building:   '🔨',
-  evaluating: '🔍',
-  done:       '✅',
-  failed:     '❌',
-  paused:     '⏸',
+  planning:     '📋',
+  building:     '🔨',
+  evaluating:   '🔍',
+  done:         '✅',
+  failed:       '❌',
+  paused:       '⏸',
+  needs_review: '⚠️',
 };
 
 export function createTelegramBot(agentRunner) {
@@ -323,6 +324,24 @@ export function createTelegramBot(agentRunner) {
           `ID: <code>${taskId}</code>\n` +
           `총 라운드: ${round}\n` +
           `평가 점수: ${evalResult?.score ?? '-'}/100`
+        );
+      }
+    });
+
+    agentRunner.on('task:needs_review', ({ taskId, round, evalResult, unresolvedIssues, reportInfo, projectId }) => {
+      // 완료가 아니므로 실패 카운터는 건드리지 않음 (알림 억제 대상도 아님 — 검토는 사용자 액션 필요)
+      const issuePreview = Array.isArray(evalResult?.issues)
+        ? evalResult.issues.slice(0, 3).map(x => `• ${String(x).substring(0, 80)}`).join('\n')
+        : '';
+      if (reportInfo?.telegramSummary) {
+        notify(`⚠️ <b>검토 필요</b> — 최대 라운드 도달, 기준 미충족\n\n${reportInfo.telegramSummary}\n\n커밋·배포는 보류됨. 대시보드에서 리포트 확인 후 새 작업으로 재시도하세요.`);
+      } else {
+        notify(
+          `⚠️ <b>검토 필요</b> — 최대 라운드 도달, 기준 미충족\n\n` +
+          `ID: <code>${taskId}</code>\n` +
+          `라운드: ${round} | 점수: ${evalResult?.score ?? '-'}/100 | 미해결: ${unresolvedIssues ?? '-'}개\n` +
+          (issuePreview ? `\n<b>미해결 항목:</b>\n${issuePreview}\n` : '') +
+          `\n커밋·배포는 보류됨. 대시보드에서 리포트 확인 후 새 작업으로 재시도하세요.`
         );
       }
     });
