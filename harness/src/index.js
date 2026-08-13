@@ -9,8 +9,12 @@ import { fileURLToPath } from 'url';
 import { initDb, projectQueries, taskQueries, logQueries } from './db/db.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
+import { reclaimExpired } from './agent/dispatcher.js';
 import { createApiServer } from './api/server.js';
 import { createTelegramBot } from './telegram/bot.js';
+
+// 멀티 프로바이더 자동 회수/재개 (기본 off — off면 기존 수동 재개 방식 유지).
+const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
 
 // ── PID 락 파일 (중복 실행 방지) ─────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -210,6 +214,32 @@ async function main() {
     console.log(`[DONE] ${taskId} — ${round} 라운드`));
   agent.on('task:failed',    ({ taskId, error }) =>
     console.error(`[FAILED] ${taskId} — ${error}`));
+
+  // 멀티 프로바이더: 대기 진입 시 ⏳ 알림 (resumeAt이 있을 때만 = 예약 재개)
+  agent.on('task:rate_limited', ({ taskId, resumeAt }) => {
+    if (resumeAt) notify(`⏳ <b>프로바이더 쿨다운</b>\n<code>${taskId}</code>\n${resumeAt} (UTC) 자동 재개 예약`);
+  });
+
+  // 멀티 프로바이더: 주기적으로 쿨다운 해제 프로바이더를 회수하고,
+  // 예약 시각이 지난 rate_limited 작업을 자동 재개한다. (pm2가 프로세스 유지)
+  if (MULTI_PROVIDER) {
+    const RECLAIM_MS = parseInt(process.env.PROVIDER_RECLAIM_INTERVAL_MS || '60000', 10);
+    const timer = setInterval(async () => {
+      try {
+        const reclaimed = await reclaimExpired();
+        if (reclaimed.length) console.log(`[reclaim] available 복귀: ${reclaimed.join(', ')}`);
+        const due = await taskQueries.getPendingRateLimitedTasks();
+        for (const t of due) {
+          console.log(`[reclaim] 예약 재개: ${t.id}`);
+          notify(`▶️ <b>자동 재개</b>\n<code>${t.id}</code> (쿨다운 해제)`);
+          try { await agent.resume(t.id); }
+          catch (e) { console.error(`[reclaim] resume 실패 ${t.id}: ${e.message}`); }
+        }
+      } catch (e) { console.error(`[reclaim] 오류: ${e.message}`); }
+    }, RECLAIM_MS);
+    timer.unref?.();
+    console.log(`[Boot] 멀티 프로바이더 자동 회수 타이머 활성 (${RECLAIM_MS}ms)`);
+  }
 
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);

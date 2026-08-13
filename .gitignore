@@ -22,6 +22,7 @@ token.json
 harness.pid
 harness/data/
 harness/.env
+.session_secret
 
 # harness-dashboard
 harness-dashboard/harness/data/

@@ -147,6 +147,22 @@ export async function initDb() {
     )
   `);
 
+  // ── 프로바이더 가용 상태 테이블 (멀티 프로바이더 오케스트레이션) ──
+  // Claude / Codex / Antigravity 각 계정의 쿨다운 상태를 기록.
+  // 디스패처가 태스크 배정 전 조회하고, 어댑터가 리미트 감지 시 기록한다.
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.providers (
+      provider            TEXT PRIMARY KEY,
+      state               TEXT DEFAULT 'available',   -- available | cooling
+      next_available_at   TEXT,                        -- 쿨다운 해제 예정 시각(UTC 문자열)
+      window_type         TEXT,                        -- 5h | weekly | null
+      last_limit_reason   TEXT,
+      weight              INTEGER DEFAULT 100,         -- 라우팅 가중치(클수록 선호)
+      enabled             INTEGER DEFAULT 1,
+      updated_at          TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
+  `);
+
   // updated_at 자동 갱신 트리거
   await dbRun(`
     CREATE OR REPLACE FUNCTION harness.update_tasks_updated_at()
@@ -173,6 +189,21 @@ export async function initDb() {
   `);
 
   await ensureOperationalIndexes();
+
+  // 프로바이더 3종 시드 (없을 때만 삽입 — 기존 상태/가중치는 보존)
+  // weight 기본값: Plan 여유가 큰 antigravity를 높게, 주간캡이 빡빡한 codex를 낮게
+  const providerSeeds = [
+    { provider: 'claude',      weight: 100 },
+    { provider: 'antigravity', weight: 90 },
+    { provider: 'codex',       weight: 70 },
+  ];
+  for (const p of providerSeeds) {
+    await dbRun(
+      `INSERT INTO harness.providers (provider, weight) VALUES ($1, $2)
+       ON CONFLICT (provider) DO NOTHING`,
+      [p.provider, p.weight]
+    );
+  }
 
   console.log('[DB] Neon DB (harness 스키마) 초기화 완료');
   return true;
@@ -454,6 +485,89 @@ export const limitEventQueries = {
     return dbAll(
       `SELECT * FROM harness.limit_events WHERE notified = 0 AND resumed_at IS NULL AND resume_available_at IS NOT NULL AND resume_available_at <= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') ORDER BY created_at ASC`
     );
+  },
+};
+
+// ── providers (프로바이더 가용 상태) ───────────────────────────
+export const providerQueries = {
+  // 활성 프로바이더 전체 (가중치 내림차순)
+  async listEnabled() {
+    return dbAll(
+      `SELECT * FROM harness.providers WHERE enabled = 1 ORDER BY weight DESC`
+    );
+  },
+
+  async get(provider) {
+    return dbGet('SELECT * FROM harness.providers WHERE provider = $1', [provider]);
+  },
+
+  // 리미트 감지 시 cooling 전환. next_available_at은 UTC 'YYYY-MM-DD HH24:MI:SS' 문자열.
+  async markCooling(provider, { nextAvailableAt, windowType, reason }) {
+    await dbRun(
+      `UPDATE harness.providers
+       SET state = 'cooling',
+           next_available_at = $2,
+           window_type = $3,
+           last_limit_reason = $4,
+           updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       WHERE provider = $1`,
+      [provider, nextAvailableAt || null, windowType || null, (reason || '').slice(0, 500)]
+    );
+  },
+
+  // 쿨다운 해제 → available. 리셋 시각이 지난 프로바이더를 디스패처가 호출.
+  async markAvailable(provider) {
+    await dbRun(
+      `UPDATE harness.providers
+       SET state = 'available',
+           next_available_at = NULL,
+           window_type = NULL,
+           updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       WHERE provider = $1`,
+      [provider]
+    );
+  },
+
+  // 리셋 시각이 지난 cooling 프로바이더를 일괄 available 전환하고, 전환된 목록 반환.
+  async reclaimExpired() {
+    return dbAll(
+      `UPDATE harness.providers
+       SET state = 'available', next_available_at = NULL, window_type = NULL,
+           updated_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       WHERE state = 'cooling'
+         AND next_available_at IS NOT NULL
+         AND next_available_at <= to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       RETURNING provider`
+    );
+  },
+
+  // 현재 사용 가능한(available) 프로바이더 중 가중치 최고. cooling만 있으면 null.
+  async pickAvailable(exclude = []) {
+    const rows = await dbAll(
+      `SELECT * FROM harness.providers
+       WHERE enabled = 1 AND state = 'available'
+       ORDER BY weight DESC`
+    );
+    const ex = new Set(exclude);
+    return rows.find(r => !ex.has(r.provider)) || null;
+  },
+
+  // 모든 cooling 프로바이더 중 가장 빠른 리셋 시각(대기 모드 계산용).
+  async earliestResetAt() {
+    const row = await dbGet(
+      `SELECT provider, next_available_at FROM harness.providers
+       WHERE enabled = 1 AND state = 'cooling' AND next_available_at IS NOT NULL
+       ORDER BY next_available_at ASC LIMIT 1`
+    );
+    return row || null;
+  },
+
+  async setWeight(provider, weight) {
+    await dbRun('UPDATE harness.providers SET weight = $1 WHERE provider = $2', [weight, provider]);
+  },
+
+  async setEnabled(provider, enabled) {
+    await dbRun('UPDATE harness.providers SET enabled = $1 WHERE provider = $2', [enabled ? 1 : 0, provider]);
   },
 };
 
