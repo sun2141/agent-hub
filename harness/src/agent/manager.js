@@ -27,6 +27,21 @@ const MANAGER_LLM_TIMEOUT_MS = parseInt(process.env.MANAGER_LLM_TIMEOUT_MS || '1
 const MAX_SUGGESTIONS_PER_PROJECT = 3;
 const MAX_SIGNALS_PER_SOURCE = 8;
 
+// 신호는 두 종류다:
+//   의도(intent) 신호  — backlog 항목, GitHub 이슈. 사람이 "이걸 하고 싶다"고 적은 것.
+//   이력(history) 신호 — 하네스 자신의 needs_review/failed 작업. 자기참조다.
+// 이력 신호만으로 제안하면 하네스가 자기 실패에 대한 후속 작업을 계속 만들어내는
+// 자기참조 루프가 된다(= 목적이 아닌 잡일 생성기). 그래서:
+//   1) 이력 신호 개수를 의도 신호보다 훨씬 적게 잡고,
+//   2) 기본값으로 의도 신호가 하나도 없는 프로젝트는 아예 제안하지 않는다.
+const MAX_HISTORY_SIGNALS = parseInt(process.env.MANAGER_MAX_HISTORY_SIGNALS || '3', 10);
+const REQUIRE_INTENT_SIGNAL = process.env.MANAGER_REQUIRE_INTENT_SIGNAL !== 'false';
+
+export const INTENT_SOURCES = new Set(['backlog_file', 'github_issue']);
+export function hasIntentSignal(signals) {
+  return signals.some(s => INTENT_SOURCES.has(s.source));
+}
+
 function newBacklogId() {
   return `backlog_${Date.now()}_${randomUUID().slice(0, 8)}`;
 }
@@ -44,7 +59,72 @@ function gatherTaskSignals(projectId, recentTasks) {
       signals.push({ source: 'failed_task', source_ref: t.id, text: `[failed] ${(t.prompt || '').slice(0, 200)} (error: ${(t.error || '').slice(0, 150)})` });
     }
   }
-  return signals.slice(0, MAX_SIGNALS_PER_SOURCE * 2);
+  // 이력 신호는 의도 신호를 밀어내지 않도록 소수만 — 위 MAX_HISTORY_SIGNALS 주석 참고.
+  return signals.slice(0, MAX_HISTORY_SIGNALS);
+}
+
+// ── 프로젝트 디렉티브 파일 파싱 ────────────────────────────────
+// 이 저장소의 기존 규약은 프로젝트당 파일 하나다: directives/projects/{id}.md
+// (예: "**GitHub**: sun2141/palmoni", "## Backlog" 섹션).
+// 초기 구현은 directives/projects/{id}/backlog.md 라는 존재하지 않는 디렉토리 구조를
+// 찾고 있어서 backlog 신호가 한 번도 잡히지 않았다. 이제 둘 다 지원한다.
+// 주석 안의 예시 불릿("- [ ] 이렇게 적으세요")이 진짜 백로그 항목으로 잡히지 않도록
+// HTML 주석을 먼저 걷어낸다. 템플릿/사용법 안내를 주석으로 두는 파일이 많다.
+export function stripHtmlComments(md) {
+  return md.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+// 불릿 한 줄 → 백로그 항목 텍스트. 항목이 아니거나 완료됨이면 null.
+function backlogItemFrom(rawLine) {
+  const line = rawLine.trim();
+  if (!line.startsWith('- ') && !line.startsWith('* ')) return null;
+  const body = line.replace(/^[-*]\s*/, '');
+  if (/^\[[xX]\]/.test(body)) return null;            // 완료 항목 제외
+  const text = body.replace(/^\[\s?\]\s*/, '').trim();
+  return text || null;
+}
+
+export function parseDirective(md) {
+  if (!md || typeof md !== 'string') return { github: null, backlog: [] };
+  md = stripHtmlComments(md);
+
+  // "**GitHub**: owner/repo" 또는 "- **GitHub**: https://github.com/owner/repo"
+  let github = null;
+  const ghMatch = md.match(/\*\*GitHub\*\*\s*:\s*([^\n]+)/i);
+  if (ghMatch) {
+    const raw = ghMatch[1].trim().replace(/^`|`$/g, '');
+    const slug = raw.match(/(?:github\.com[/:])?([\w.-]+\/[\w.-]+?)(?:\.git)?$/);
+    if (slug && slug[1] !== '-' && !/^-+$/.test(raw)) github = slug[1];
+  }
+
+  // "## Backlog" 섹션의 불릿만 수집 (다음 ## 헤딩 전까지).
+  // 체크박스는 미완료(- [ ])만 신호로 본다 — 완료 항목은 다시 제안할 이유가 없다.
+  // 정규식 하나로 "다음 ## 헤딩까지"를 잡으려다 JS에 없는 \Z를 쓰면(= 리터럴 'Z')
+  // 파일 맨 끝의 Backlog 섹션이 통째로 안 잡힌다. 줄 단위로 명시적으로 훑는다.
+  const backlog = [];
+  let inSection = false;
+  for (const rawLine of md.split('\n')) {
+    if (/^##\s/.test(rawLine)) {
+      inSection = /^##\s+Backlog\s*$/i.test(rawLine.trimEnd());
+      continue;
+    }
+    if (!inSection) continue;
+    const item = backlogItemFrom(rawLine);
+    if (item) backlog.push(item);
+  }
+  return { github, backlog };
+}
+
+function readDirective(projectId) {
+  const candidates = [
+    path.join(AGENT_HUB_ROOT, 'directives', 'projects', `${projectId}.md`),
+    path.join(AGENT_HUB_ROOT, 'directives', 'projects', projectId, 'directive.md'),
+  ];
+  for (const p of candidates) {
+    if (!fs.existsSync(p)) continue;
+    try { return parseDirective(fs.readFileSync(p, 'utf8')); } catch { /* 다음 후보 */ }
+  }
+  return { github: null, backlog: [] };
 }
 
 // backlog.md 줄의 안정적 식별자 — 줄 번호가 아니라 내용 해시를 쓴다.
@@ -55,18 +135,27 @@ export function backlogLineRef(line) {
   return createHash('sha1').update(normalized).digest('hex').slice(0, 16);
 }
 
-function gatherBacklogFileSignals(project) {
-  const filePath = path.join(AGENT_HUB_ROOT, 'directives', 'projects', project.id, 'backlog.md');
-  if (!fs.existsSync(filePath)) return [];
-  let content;
-  try { content = fs.readFileSync(filePath, 'utf8'); } catch { return []; }
-  const lines = content.split('\n')
-    .map(l => l.trim())
-    .filter(l => l.startsWith('- ') || l.startsWith('* '));
-  return lines.slice(0, MAX_SIGNALS_PER_SOURCE).map(line => ({
+// 백로그 항목은 두 곳에서 온다:
+//   1) directives/projects/{id}.md 의 "## Backlog" 섹션  ← 이 저장소의 기존 규약
+//   2) directives/projects/{id}/backlog.md 전용 파일      ← 항목이 많아질 때
+function gatherBacklogFileSignals(project, directive) {
+  const items = [...(directive?.backlog || [])];
+
+  const dedicated = path.join(AGENT_HUB_ROOT, 'directives', 'projects', project.id, 'backlog.md');
+  if (fs.existsSync(dedicated)) {
+    try {
+      const content = stripHtmlComments(fs.readFileSync(dedicated, 'utf8'));
+      for (const rawLine of content.split('\n')) {
+        const item = backlogItemFrom(rawLine);
+        if (item) items.push(item);
+      }
+    } catch { /* 무시 — 섹션 항목만으로 진행 */ }
+  }
+
+  return items.slice(0, MAX_SIGNALS_PER_SOURCE).map(text => ({
     source: 'backlog_file',
-    source_ref: backlogLineRef(line),
-    text: line.replace(/^[-*]\s*/, ''),
+    source_ref: backlogLineRef(text),
+    text,
   }));
 }
 
@@ -77,11 +166,14 @@ function isGhAvailable() {
   } catch { return false; }
 }
 
-function gatherGithubIssueSignals(project) {
-  if (!project.github || !isGhAvailable()) return [];
+// repo slug는 DB의 project.github을 우선하되, 비어 있으면 디렉티브 파일에서 읽는다
+// (projects.js에는 github 필드가 없고 디렉티브 파일이 사실상의 출처다).
+function gatherGithubIssueSignals(project, directive) {
+  const repo = project.github || directive?.github;
+  if (!repo || !isGhAvailable()) return [];
   try {
     const res = spawnSync('gh', [
-      'issue', 'list', '--repo', project.github, '--state', 'open',
+      'issue', 'list', '--repo', repo, '--state', 'open',
       '--limit', String(MAX_SIGNALS_PER_SOURCE), '--json', 'number,title,body',
     ], { timeout: 15000, encoding: 'utf8', stdio: 'pipe' });
     if (res.status !== 0) return [];
@@ -164,36 +256,66 @@ export function parseSuggestions(text) {
     }));
 }
 
-function buildPrompt(project, signals) {
-  const signalText = signals.map((s, i) => `${i + 1}. (${s.source}) ${s.text}`).join('\n\n');
-  return [
+export function buildPrompt(project, signals) {
+  const intent = signals.filter(s => INTENT_SOURCES.has(s.source));
+  const history = signals.filter(s => !INTENT_SOURCES.has(s.source));
+  const fmt = (list) => list.map((s, i) => `${i + 1}. (${s.source}) ${s.text}`).join('\n\n');
+
+  const parts = [
     `프로젝트 "${project.name}" (${project.description || project.stack || ''})의 다음 작업 후보를 제안해줘.`,
     '',
-    '아래는 이 프로젝트의 최근 신호(미해결 이슈/실패한 작업/백로그 메모)다:',
+    '[의도 신호 — 사람이 직접 적은 요구사항. 제안의 근거는 여기서 나와야 한다]',
     '',
-    signalText,
+    intent.length ? fmt(intent) : '(없음)',
+  ];
+
+  if (history.length) {
+    parts.push(
+      '',
+      '[이력 신호 — 하네스 자신의 실패/보류 작업. 참고용 맥락일 뿐 제안의 출발점이 아니다]',
+      '',
+      fmt(history),
+    );
+  }
+
+  parts.push(
     '',
-    `이 신호들을 바탕으로 구체적이고 단일 스코프인 작업 후보를 최대 ${MAX_SUGGESTIONS_PER_PROJECT}개 제안해라.`,
+    `위 의도 신호를 바탕으로 구체적이고 단일 스코프인 작업 후보를 최대 ${MAX_SUGGESTIONS_PER_PROJECT}개 제안해라.`,
     '각 후보는 한 번의 빌드 라운드로 끝낼 수 있을 만큼 좁은 범위여야 한다.',
+    '',
+    '[제안하지 말아야 할 것]',
+    '- 의도 신호와 무관하게 이력 신호만 근거로 한 후속 작업 (하네스 자체 뒤치다꺼리)',
+    '- "리팩터링", "테스트 추가", "문서 정리" 같은 요구사항 없는 일반적 개선',
+    '- 사용자가 요청한 적 없는 신규 기능 발명',
+    '근거로 삼을 의도 신호가 없으면 빈 배열 []을 반환해라. 억지로 채우지 마라.',
+    '',
     '파일을 읽거나 수정하지 말고, 위 신호 텍스트만 근거로 판단해라.',
     '',
     '반드시 아래 JSON 배열 형식으로만 답하라 (다른 설명 텍스트 없이):',
-    '[{"title": "...", "description": "...", "rationale": "이 신호를 근거로 제안하는 이유 1줄"}]',
-  ].join('\n');
+    '[{"title": "...", "description": "...", "rationale": "어느 의도 신호를 근거로 하는지 1줄"}]',
+  );
+  return parts.join('\n');
 }
 
 // ── 프로젝트 1개 스캔 ──────────────────────────────────────────
 
 async function scanProject(project, recentTasks) {
+  const directive = readDirective(project.id);
   const rawSignals = [
     ...gatherTaskSignals(project.id, recentTasks),
-    ...gatherBacklogFileSignals(project),
-    ...gatherGithubIssueSignals(project),
+    ...gatherBacklogFileSignals(project, directive),
+    ...gatherGithubIssueSignals(project, directive),
   ];
   if (rawSignals.length === 0) return { projectId: project.id, projectName: project.name, proposed: [], skipped: 'no_signals' };
 
   const signals = await dedupeSignals(project.id, rawSignals);
   if (signals.length === 0) return { projectId: project.id, projectName: project.name, proposed: [], skipped: 'all_signals_seen' };
+
+  // 의도 신호(백로그/이슈)가 없으면 제안하지 않는다 — 하네스가 자기 실패 이력만 보고
+  // 잡일을 만들어내는 걸 막는 기본 가드. MANAGER_REQUIRE_INTENT_SIGNAL=false로 해제 가능.
+  if (REQUIRE_INTENT_SIGNAL && !hasIntentSignal(signals)) {
+    return { projectId: project.id, projectName: project.name, proposed: [], skipped: 'no_intent_signal' };
+  }
 
   let suggestions;
   try {
@@ -259,9 +381,17 @@ export async function runManagerScan() {
 }
 
 export function formatScanDigest({ results, proposed }) {
+  // 의도 신호가 없어서 건너뛴 프로젝트는 따로 알려준다 — "제안 없음"으로 뭉뚱그리면
+  // 사용자가 할 일(백로그 작성)을 알 수 없다.
+  const needsIntent = results.filter(r => r.skipped === 'no_intent_signal').map(r => r.projectName);
+  const intentHint = needsIntent.length
+    ? `\n\n📝 의도 신호 없음: ${needsIntent.join(', ')}\n` +
+      `<code>directives/projects/&lt;id&gt;.md</code>의 <code>## Backlog</code> 섹션에 하고 싶은 작업을 적거나 GitHub 이슈를 열면 다음 스캔에서 후보로 올라옵니다.`
+    : '';
+
   if (proposed.length === 0) {
     const scanned = results.length;
-    return `🔍 <b>스캔 완료</b>\n\n${scanned}개 프로젝트 확인 — 새 제안 없음.`;
+    return `🔍 <b>스캔 완료</b>\n\n${scanned}개 프로젝트 확인 — 새 제안 없음.${intentHint}`;
   }
   const byProject = new Map();
   for (const p of proposed) {
@@ -273,6 +403,6 @@ export function formatScanDigest({ results, proposed }) {
     msg += `\n<b>${name}</b>\n`;
     msg += items.map(it => `• <code>${it.id}</code> ${it.title}\n  └ ${it.rationale || '(근거 없음)'}`).join('\n') + '\n';
   }
-  msg += '\n/approve <id> 또는 /reject <id> 로 결정하세요.';
+  msg += '\n/approve <id> 또는 /reject <id> 로 결정하세요.' + intentHint;
   return msg;
 }

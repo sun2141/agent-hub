@@ -7,6 +7,10 @@ import {
   filterSeenSignals,
   parseSuggestions,
   backlogLineRef,
+  parseDirective,
+  hasIntentSignal,
+  buildPrompt,
+  INTENT_SOURCES,
 } from '../src/agent/manager.js';
 import {
   parseQuietHours,
@@ -253,6 +257,136 @@ test('Config 3: 전체 설정 반영', () => {
   assert.deepStrictEqual(c.quietHours, { start: 23, end: 8 });
   assert.strictEqual(c.notifyEmpty, true);
   assert.strictEqual(c.maxPending, 5);
+});
+
+// ── 디렉티브 파일 파싱 ────────────────────────────────────────
+// 회귀 배경: 초기 구현은 directives/projects/{id}/backlog.md 라는 존재하지 않는 디렉토리
+// 구조를 찾았고, projects.js에는 github 필드가 아예 없었다. 그래서 "의도 신호"(백로그/이슈)가
+// 한 번도 잡히지 않고 하네스 자기 실패 이력만 신호로 남았다.
+section('[directive] parseDirective — 실제 규약(directives/projects/{id}.md)');
+
+const SAMPLE_DIRECTIVE = `# Palmoni Project Directive
+
+## Project Info
+
+- **ID**: palmoni
+- **GitHub**: sun2141/palmoni
+- **Deploy**: palmoni.vercel.app (Vercel)
+
+## Backlog
+
+- [ ] 기도 목록 무한 스크롤
+- [x] 로그인 오류 수정
+- 알림 설정 화면 추가
+
+## Monitoring Rules
+
+- 이건 백로그가 아니다
+`;
+
+test('Directive 1: GitHub 슬러그 추출', () => {
+  assert.strictEqual(parseDirective(SAMPLE_DIRECTIVE).github, 'sun2141/palmoni');
+});
+
+test('Directive 2: GitHub이 "-" 플레이스홀더면 null', () => {
+  assert.strictEqual(parseDirective('- **GitHub**: -\n').github, null);
+});
+
+test('Directive 3: 전체 URL / .git 접미사도 슬러그로 정규화', () => {
+  assert.strictEqual(parseDirective('**GitHub**: https://github.com/sun2141/facepick.git').github, 'sun2141/facepick');
+});
+
+test('Directive 4: Backlog 섹션 항목만 수집 (다음 ## 헤딩에서 멈춤)', () => {
+  const { backlog } = parseDirective(SAMPLE_DIRECTIVE);
+  assert.deepStrictEqual(backlog, ['기도 목록 무한 스크롤', '알림 설정 화면 추가']);
+});
+
+test('Directive 5: 완료된 체크박스(- [x])는 신호에서 제외', () => {
+  assert.ok(!parseDirective(SAMPLE_DIRECTIVE).backlog.includes('로그인 오류 수정'));
+});
+
+test('Directive 6: HTML 주석 안의 예시 불릿은 항목으로 잡지 않는다', () => {
+  // 회귀: 템플릿 안내를 <!-- --> 주석으로 넣었더니 "- [ ] 미완료 (신호로 잡힘)"이
+  // 진짜 백로그 항목으로 파싱됐다. 실제 디렉티브 파일로 확인된 버그.
+  const md = `## Backlog
+
+<!-- 사용법: - [ ] 이렇게 적으세요 / - [x] 완료 -->
+
+- [ ] 진짜 항목
+`;
+  assert.deepStrictEqual(parseDirective(md).backlog, ['진짜 항목']);
+});
+
+test('Directive 7: 파일 맨 끝의 Backlog 섹션도 잡힌다', () => {
+  // 회귀: 섹션 끝을 (?=^##\s|\Z)로 잡았는데 JS에 \Z가 없어(리터럴 'Z') 뒤에 다른
+  // 헤딩이 없는 파일에서는 섹션 전체가 매칭되지 않았다.
+  const md = '# 제목\n\n## Backlog\n\n- [ ] 마지막 항목\n';
+  assert.deepStrictEqual(parseDirective(md).backlog, ['마지막 항목']);
+});
+
+test('Directive 8: Backlog 섹션이 없으면 빈 배열 (throw 금지)', () => {
+  assert.deepStrictEqual(parseDirective('# 제목\n\n## Info\n- a\n').backlog, []);
+  assert.deepStrictEqual(parseDirective('').backlog, []);
+  assert.deepStrictEqual(parseDirective(null), { github: null, backlog: [] });
+});
+
+// ── 의도 신호 게이트 ──────────────────────────────────────────
+// 사용자 요구: "간단하거나 의미없는 작업을 반복하는 게 아니라 실제 개발을 자동화".
+// 이력 신호(하네스 자기 실패)만으로 제안하면 자기참조 잡일 루프가 된다.
+section('[intent] hasIntentSignal — 자기참조 루프 방지 게이트');
+
+test('Intent 1: 의도 신호는 backlog_file / github_issue 뿐', () => {
+  assert.deepStrictEqual([...INTENT_SOURCES].sort(), ['backlog_file', 'github_issue']);
+});
+
+test('Intent 2: 이력 신호만 있으면 false (제안하지 않음)', () => {
+  const signals = [
+    { source: 'needs_review', source_ref: 't1', text: 'a' },
+    { source: 'failed_task', source_ref: 't2', text: 'b' },
+  ];
+  assert.strictEqual(hasIntentSignal(signals), false);
+});
+
+test('Intent 3: 백로그 항목이 하나라도 있으면 true', () => {
+  const signals = [
+    { source: 'failed_task', source_ref: 't2', text: 'b' },
+    { source: 'backlog_file', source_ref: 'h1', text: '무한 스크롤' },
+  ];
+  assert.strictEqual(hasIntentSignal(signals), true);
+});
+
+test('Intent 4: GitHub 이슈도 의도 신호', () => {
+  assert.strictEqual(hasIntentSignal([{ source: 'github_issue', source_ref: '3', text: 'x' }]), true);
+});
+
+test('Intent 5: 신호가 없으면 false', () => {
+  assert.strictEqual(hasIntentSignal([]), false);
+});
+
+// ── 프롬프트 구성 ─────────────────────────────────────────────
+section('[prompt] buildPrompt — 의도/이력 신호 분리');
+
+const proj = { name: 'Palmoni', description: '기도앱', stack: 'react-vite' };
+
+test('Prompt 1: 의도 신호와 이력 신호가 별도 블록으로 분리된다', () => {
+  const p = buildPrompt(proj, [
+    { source: 'backlog_file', source_ref: 'h', text: '무한 스크롤' },
+    { source: 'failed_task', source_ref: 't', text: '빌드 실패' },
+  ]);
+  assert.ok(p.includes('[의도 신호'), '의도 신호 블록 없음');
+  assert.ok(p.includes('[이력 신호'), '이력 신호 블록 없음');
+  assert.ok(p.indexOf('[의도 신호') < p.indexOf('[이력 신호'), '의도 신호가 먼저 와야 함');
+});
+
+test('Prompt 2: 이력 신호가 없으면 이력 블록 자체를 넣지 않는다', () => {
+  const p = buildPrompt(proj, [{ source: 'backlog_file', source_ref: 'h', text: '무한 스크롤' }]);
+  assert.ok(!p.includes('[이력 신호'));
+});
+
+test('Prompt 3: 근거 없으면 빈 배열을 반환하라는 지시가 포함된다', () => {
+  const p = buildPrompt(proj, [{ source: 'failed_task', source_ref: 't', text: 'x' }]);
+  assert.ok(p.includes('빈 배열'), '억지 제안 방지 지시 없음');
+  assert.ok(p.includes('리팩터링'), '요구사항 없는 일반 개선 금지 목록 없음');
 });
 
 // ── 결과 ──────────────────────────────────────────────────────

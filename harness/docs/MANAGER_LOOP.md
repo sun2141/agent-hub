@@ -11,7 +11,8 @@
 | 항목 | 값 |
 |---|---|
 | 스캔 주기 | 수동 `/scan` + 자동 타이머(`MANAGER_SCAN_INTERVAL_MIN`, 기본 0=off) |
-| 신호 소스 | `needs_review`/`failed` 작업, `directives/projects/{id}/backlog.md`, GitHub 이슈(`gh` 인증 시) |
+| 신호 소스 | **의도**: `directives/projects/{id}.md`의 `## Backlog` 섹션, GitHub 이슈 / **이력**: `needs_review`·`failed` 작업 |
+| 제안 조건 | 의도 신호가 있어야 제안 (`MANAGER_REQUIRE_INTENT_SIGNAL`, 기본 true) |
 | 제안 LLM | 독립 1회성 `claude --print` 호출 (파이프라인 세션/로그 DB와 결합 없음) |
 | 승인 플로우 | 텔레그램 텍스트 명령만 (`/approve <id>`) — inline 버튼 없음 |
 | 브랜치+PR 범위 | **매니저 승인 작업에만** 적용. 기존 `/run` 수동 작업은 기존 direct push 그대로 |
@@ -56,6 +57,42 @@ tests/manager_loop.test.js      # 순수 로직 회귀 테스트 (신규)
 3. `/approve <id>` — 동시성/일일 상한 체크 → `agentRunner.run({..., branchMode: true})`
    → `harness.backlog_items.status='approved'`, `task_id` 연결.
 4. `/reject <id>` — `status='rejected'`.
+
+### 의도 신호 vs 이력 신호 — 잡일 루프를 막는 장치
+
+이 루프의 목적은 **실제 개발 자동화**이지 하네스가 스스로 할 일을 지어내는 게 아니다.
+그래서 신호를 두 종류로 나눈다.
+
+| 종류 | 소스 | 역할 |
+|---|---|---|
+| **의도** | `directives/projects/{id}.md`의 `## Backlog` 섹션, GitHub 이슈 | 사람이 "이걸 하고 싶다"고 적은 것. **제안의 근거는 여기서만 나온다** |
+| **이력** | 하네스 자신의 `needs_review`/`failed` 작업 | 참고용 맥락. 자기참조라 이것만으로는 제안 금지 |
+
+이력 신호만으로 제안하면 "하네스가 자기 실패에 대한 후속 작업을 계속 만들어내는" 루프가 된다.
+막는 방법 세 가지:
+
+1. **게이트** — 의도 신호가 없는 프로젝트는 LLM 호출 없이 `no_intent_signal`로 스킵
+   (`MANAGER_REQUIRE_INTENT_SIGNAL=false`로 해제). 스캔 다이제스트에 해당 프로젝트 이름과
+   "Backlog에 적으세요" 안내가 함께 나간다.
+2. **개수 비대칭** — 이력 신호는 최대 3개(`MANAGER_MAX_HISTORY_SIGNALS`), 의도 신호는 최대 8개.
+3. **프롬프트 분리** — 두 블록을 명시적으로 구분하고, "요구사항 없는 리팩터링/테스트 추가/문서 정리
+   제안 금지, 근거가 없으면 빈 배열 반환"을 지시한다.
+
+### 백로그 작성 위치
+
+```markdown
+## Backlog
+
+- [ ] 기도 목록 무한 스크롤 적용     ← 신호로 잡힘
+- [x] 로그인 오류 수정               ← 완료 항목, 제외
+```
+
+`directives/projects/{id}.md`에 이 섹션을 두는 게 기본이고, 항목이 많아지면
+`directives/projects/{id}/backlog.md` 전용 파일도 함께 읽는다.
+`<!-- -->` 주석 안의 예시 불릿은 항목으로 잡지 않는다.
+
+GitHub 이슈는 `**GitHub**: owner/repo`를 디렉티브 파일에서 읽는다(DB의 `project.github`가
+비어 있을 때). `gh` 인증이 없으면 이슈 신호는 조용히 건너뛴다.
 
 ### 중복 제안 방지가 두 테이블로 나뉜 이유
 

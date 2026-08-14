@@ -143,6 +143,14 @@ npx drizzle-kit push:pg
 
 ---
 
+## Backlog
+
+<!-- 매니저 루프(/scan)가 읽는 "의도 신호"입니다.
+     하고 싶은 작업을 한 줄씩 적으면 다음 스캔에서 작업 후보로 올라옵니다.
+     - [ ] 미완료 (신호로 잡힘)  /  - [x] 완료 (제외됨)
+     여기가 비어 있으면 그 프로젝트는 제안 대상에서 빠집니다 —
+     하네스가 자기 실패 이력만 보고 잡일을 만들어내지 않도록 하는 기본 동작입니다. -->
+
 ## Related Directives
 
 - `directives/core/database_standards.md` - DB 선택 기준 및 Neon 표준
