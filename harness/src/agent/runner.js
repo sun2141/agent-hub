@@ -23,6 +23,8 @@ const PLAN_MODEL = process.env.PLAN_MODEL || CLAUDE_MODEL;
 const CODEX_CLI    = process.env.CODEX_CLI_PATH || 'codex';
 const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_AGENTS || '2', 10);
 const MAX_ROUNDS     = parseInt(process.env.MAX_EVAL_ROUNDS || '10', 10);
+// 검증 게이트의 test/smoketest 명령 타임아웃(ms) — typecheck/lint/build(300_000)보다 넉넉하게
+const VERIFY_TEST_TIMEOUT_MS = parseInt(process.env.VERIFY_TEST_TIMEOUT_MS || '600000', 10);
 
 // 멀티 프로바이더 오케스트레이션 (기본 off — off면 기존 Claude 단독 경로 그대로).
 const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
@@ -151,12 +153,24 @@ export class AgentRunner extends EventEmitter {
     return resolved;
   }
 
-  async run({ projectId, prompt, maxRounds, attachments }) {
+  // branchMode: true면 direct push 대신 task/<taskId> 브랜치+PR로 완료(자동 병합 없음).
+  // 기본값 false — 기존 모든 호출부(/run, /api/run)는 동작 불변. 매니저 루프 승인 작업만 true로 전달.
+  async run({ projectId, prompt, maxRounds, attachments, branchMode = false, backlogItemId = null }) {
     const project = await projectQueries.get(projectId);
     if (!project) throw new Error(`프로젝트 없음: ${projectId}`);
     // DB에 등록된 경로는 server.js resolveProjectPath를 이미 통과했으므로 외부 경로도 허용
     const allowExternalForDbProject = true;
     this._validateProjectPath(project.path, { allowExternal: allowExternalForDbProject });
+
+    // 브랜치 모드는 하네스 자체 저장소에는 적용 금지 — 실행 중인 프로세스가 읽고 있는
+    // 워킹트리의 브랜치를 전환하면 위험하다(재시작 시 엉뚱한 브랜치로 뜰 수 있음).
+    if (branchMode) {
+      const harnessRootReal = fs.realpathSync(AGENT_HUB_ROOT);
+      const projectReal = fs.existsSync(project.path) ? fs.realpathSync(project.path) : path.resolve(project.path);
+      if (projectReal === harnessRootReal) {
+        throw new Error('브랜치 모드는 하네스 자체 저장소(agent-hub)에는 적용할 수 없습니다.');
+      }
+    }
 
     const activeTask = await taskQueries.getActiveForProject(projectId);
     if (activeTask) {
@@ -175,8 +189,11 @@ export class AgentRunner extends EventEmitter {
       this._saveAttachments(taskId, attachments);
     }
 
-    await taskQueries.create({ id: taskId, project_id: projectId, prompt, max_rounds: effectiveMaxRounds });
-    this.emit('task:created', { taskId, projectId });
+    await taskQueries.create({ id: taskId, project_id: projectId, prompt, max_rounds: effectiveMaxRounds, branch_mode: branchMode ? 1 : 0 });
+    if (branchMode) {
+      await taskQueries.updateBranchName(taskId, `task/${taskId}`);
+    }
+    this.emit('task:created', { taskId, projectId, branchMode, backlogItemId });
 
     if (this._running.size >= MAX_CONCURRENT) {
       this._queue.push(taskId);
@@ -295,6 +312,9 @@ export class AgentRunner extends EventEmitter {
     console.log(`[pipeline] 시작: taskId=${taskId}, project=${project.name}(${project.path}), attachments=${attachmentPaths.length}`);
 
     try {
+      if (task.branch_mode) {
+        this._ensureTaskBranch({ branchName: task.branch_name || `task/${taskId}`, cwd: safeCwd });
+      }
       await taskQueries.updateModel(taskId, `${PLAN_MODEL}/${CLAUDE_MODEL}`);
       let plan = task.plan ? JSON.parse(task.plan) : null;
       if (!plan) plan = await this._runPlanner(task, project, safeCwd, attachmentPaths);
@@ -379,7 +399,7 @@ export class AgentRunner extends EventEmitter {
           } catch (reportErr) {
             console.error(`[report] 리포트 생성 실패: ${reportErr.message}`);
           }
-          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed, reportInfo });
+          this.emit('task:complete', { taskId, projectId: currentTask.project_id, round, evalResult, maxRoundsReached: false, unresolvedIssues: 0, deployFailed, reportInfo, prUrl: (await taskQueries.get(taskId))?.pr_url || null });
           break;
         }
 
@@ -462,6 +482,9 @@ export class AgentRunner extends EventEmitter {
         this.emit('task:failed', { taskId, projectId: task?.project_id, error: safeError });
       }
     } finally {
+      // 브랜치 모드 작업은 어떤 경로로 끝나든(완료/실패/일시중지) 워킹트리를 base로 되돌린다.
+      // 재개 시에는 _ensureTaskBranch가 다시 task 브랜치를 체크아웃하므로 안전하다.
+      if (task?.branch_mode) this._restoreBaseBranch(safeCwd);
       this._running.delete(taskId);
       this._cleanupAttachments(taskId);
       this._drainQueue();
@@ -586,6 +609,132 @@ export class AgentRunner extends EventEmitter {
     return true;
   }
 
+  // 저장소 루트 해석 — git 저장소가 아니면 null.
+  _gitRoot(cwd) {
+    const cwdReal = fs.existsSync(cwd) ? fs.realpathSync(cwd) : cwd;
+    const res = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: cwdReal, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+    if (res.error || res.status !== 0) return null;
+    return res.stdout.trim();
+  }
+
+  // 기본 브랜치 이름 — origin/HEAD → main → master 순으로 탐색.
+  _resolveBaseBranch(gitRoot) {
+    const symRes = spawnSync('git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+    if (symRes.status === 0) {
+      const m = (symRes.stdout || '').trim().match(/refs\/remotes\/origin\/(.+)$/);
+      if (m) return m[1];
+    }
+    for (const candidate of ['main', 'master']) {
+      const res = spawnSync('git', ['rev-parse', '--verify', `refs/heads/${candidate}`], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+      if (res.status === 0) return candidate;
+    }
+    return 'main';
+  }
+
+  // 매니저 루프 브랜치+PR 가드레일: task.branch_mode일 때만 호출됨.
+  // 이미 해당 브랜치면 스킵(재개 시), 로컬에 존재하면 checkout,
+  // 없으면 최신 origin/<base>에서 분기한다.
+  //
+  // origin/<base>에서 분기하는 게 중요하다: 현재 HEAD에서 분기하면 아직 병합되지 않은
+  // 이전 task/* 브랜치 위에 새 작업이 쌓여서, PR diff에 남의 작업이 섞이고
+  // 사용자가 순서대로만 병합할 수 있게 된다.
+  _ensureTaskBranch({ branchName, cwd }) {
+    const gitRoot = this._gitRoot(cwd);
+    if (!gitRoot) throw new Error(`브랜치 모드: git 저장소가 아닙니다 (${cwd})`);
+
+    const currentRes = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+    if ((currentRes.stdout || '').trim() === branchName) return; // 이미 브랜치 위 — 재개 시
+
+    // 커밋되지 않은 변경이 있으면 checkout이 실패하거나 변경을 끌고 넘어간다 — 먼저 막는다.
+    const dirtyRes = spawnSync('git', ['status', '--porcelain'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+    const dirty = (dirtyRes.stdout || '').trim();
+    if (dirty) {
+      throw new Error(
+        `브랜치 모드: 워킹트리에 커밋되지 않은 변경이 있어 브랜치를 만들 수 없습니다 (${gitRoot}).\n` +
+        `정리 후 재시도하세요:\n${dirty.split('\n').slice(0, 10).join('\n')}`
+      );
+    }
+
+    const existsRes = spawnSync('git', ['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+    let args;
+    if (existsRes.status === 0) {
+      args = ['checkout', branchName];
+    } else {
+      const base = this._resolveBaseBranch(gitRoot);
+      // 최신 base에서 분기하기 위해 fetch(실패해도 로컬 ref로 진행)
+      spawnSync('git', ['fetch', 'origin', base], { cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe' });
+      const originBase = spawnSync('git', ['rev-parse', '--verify', `refs/remotes/origin/${base}`], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+      args = originBase.status === 0
+        ? ['checkout', '-b', branchName, `origin/${base}`]
+        : ['checkout', '-b', branchName, base];
+      console.log(`[branchMode] 분기 기준: ${originBase.status === 0 ? `origin/${base}` : base}`);
+    }
+
+    const res = spawnSync('git', args, { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+    if (res.error || res.status !== 0) {
+      const msg = (res.stderr || res.stdout || res.error?.message || 'git checkout 실패').trim();
+      throw new Error(`브랜치 체크아웃 실패(${branchName}): ${msg.slice(0, 300)}`);
+    }
+    console.log(`[branchMode] 브랜치 준비됨: ${branchName} (${gitRoot})`);
+  }
+
+  // 파이프라인이 끝나면(성공/실패/일시중지 모두) 워킹트리를 base 브랜치로 되돌린다.
+  // 되돌리지 않으면 저장소가 task/* 브랜치에 머물러서, 이후의 일반 /run 작업이
+  // 미병합 task 브랜치 위에 커밋하고 그 브랜치로 direct push해버린다.
+  // 커밋되지 않은 변경이 남아 있으면(예: 빌드 산출물) 강제로 전환하지 않고 경고만 남긴다.
+  _restoreBaseBranch(cwd) {
+    try {
+      const gitRoot = this._gitRoot(cwd);
+      if (!gitRoot) return;
+
+      const currentRes = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+      const current = (currentRes.stdout || '').trim();
+      if (!current.startsWith('task/')) return; // 이미 base — 할 일 없음
+
+      const dirtyRes = spawnSync('git', ['status', '--porcelain'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+      if ((dirtyRes.stdout || '').trim()) {
+        console.warn(`[branchMode] 워킹트리가 clean하지 않아 base 복귀를 건너뜁니다 (현재: ${current}). 수동 확인 필요.`);
+        return;
+      }
+
+      const base = this._resolveBaseBranch(gitRoot);
+      const res = spawnSync('git', ['checkout', base], { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+      if (res.error || res.status !== 0) {
+        console.warn(`[branchMode] base(${base}) 복귀 실패: ${(res.stderr || res.stdout || '').trim().slice(0, 200)}`);
+        return;
+      }
+      console.log(`[branchMode] base 브랜치로 복귀: ${current} → ${base}`);
+    } catch (err) {
+      console.warn(`[branchMode] base 복귀 중 예외: ${err.message}`);
+    }
+  }
+
+  // 매니저 루프 브랜치+PR 가드레일: 커밋 완료 후 PR 생성(이미 있으면 그대로 반환).
+  // gh pr merge는 절대 호출하지 않음 — 병합은 항상 사용자가 수동으로.
+  _maybeCreatePr({ taskId, branchName, safeCwd, plan }) {
+    const gitRoot = this._gitRoot(safeCwd);
+    if (!gitRoot) return null;
+
+    // 이미 PR이 있으면 그대로 반환 (라운드 재시도로 인한 중복 생성 방지)
+    const viewRes = spawnSync('gh', ['pr', 'view', branchName, '--json', 'url'], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+    if (viewRes.status === 0) {
+      try { return JSON.parse(viewRes.stdout).url || null; } catch { /* fallthrough */ }
+    }
+
+    const base = this._resolveBaseBranch(gitRoot);
+
+    const title = `feat: ${plan?.title || taskId}`.slice(0, 200);
+    const body = `🤖 agent-hub 매니저 루프가 생성한 작업입니다.\n\ntask=${taskId}`;
+    const createRes = spawnSync('gh', ['pr', 'create', '--head', branchName, '--base', base, '--title', title, '--body', body],
+      { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+    if (createRes.error || createRes.status !== 0) {
+      console.error(`[branchMode] gh pr create 실패: ${(createRes.stderr || createRes.stdout || '').trim().slice(0, 300)}`);
+      return null;
+    }
+    const lines = (createRes.stdout || '').trim().split('\n').filter(Boolean);
+    return lines[lines.length - 1] || null;
+  }
+
   async _runCommitAndDeploy(task, project, plan, round, safeCwd) {
     this.emit('phase:start', { taskId: task.id, phase: 'deploying', round });
 
@@ -652,7 +801,11 @@ export class AgentRunner extends EventEmitter {
       console.log(`[deploy] [${label}] commit 완료: ${sha}`);
       await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[commit ${label}] sha=${sha}` });
 
-      const pushRes = spawnSync('git', ['push'], { cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe' });
+      // 브랜치 모드(매니저 승인 작업): task 브랜치로 push(-u는 idempotent). 그 외: 기존 direct push.
+      const pushArgs = (task.branch_mode && task.branch_name)
+        ? ['push', '-u', 'origin', task.branch_name]
+        : ['push'];
+      const pushRes = spawnSync('git', pushArgs, { cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe' });
       const pushStdout = (pushRes.stdout || '').trim();
       const pushStderr = (pushRes.stderr || '').trim();
       if (pushRes.error || pushRes.status !== 0) {
@@ -716,6 +869,24 @@ export class AgentRunner extends EventEmitter {
 
     console.log(`[deploy] 커밋 단계 완료. commitSha=${commitSha || '(없음)'}`);
     await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info', content: `[deploy] 커밋 완료. sha=${commitSha || 'none'}` });
+
+    // 브랜치 모드(매니저 승인 작업): 배포 스크립트를 건너뛰고 PR만 생성한다.
+    // main으로 직접 배포/병합하지 않는 게 이 모드의 존재 이유 — 병합 후 배포는
+    // 각 프로젝트의 기존 CI/CD(Vercel Git 연동 등)가 사용자의 수동 병합 시점에 처리한다.
+    if (task.branch_mode && task.branch_name) {
+      let prUrl = null;
+      try {
+        prUrl = this._maybeCreatePr({ taskId: task.id, branchName: task.branch_name, safeCwd, plan });
+        if (prUrl) await taskQueries.updatePrUrl(task.id, prUrl);
+      } catch (prErr) {
+        console.error(`[branchMode] PR 생성 예외: ${prErr.message}`);
+      }
+      await taskQueries.updateDeploy(task.id, 'skipped:branch_mode_pr_pending');
+      await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'info',
+        content: `[branchMode] PR ${prUrl ? `생성됨: ${prUrl}` : '생성 실패 — gh CLI/인증 확인 필요'}. 병합은 사용자가 수동으로.` });
+      this.emit('phase:complete', { taskId: task.id, phase: 'deploying', round });
+      return prUrl ? 'skipped:pr_created' : 'skipped:pr_failed';
+    }
 
     const deployScript = _findDeployScript(safeCwd, harnessAbsPath);
     console.log(`[deploy] 배포 스크립트 탐색: ${deployScript ? `${deployScript.cmd} (cwd=${deployScript.cwd})` : '없음'}`);
@@ -836,9 +1007,11 @@ export class AgentRunner extends EventEmitter {
     }
 
     for (const c of cmds) {
-      console.log(`[verify] 실행: ${c.label} (cwd=${safeCwd})`);
+      // test/smoketest는 typecheck/lint/build보다 오래 걸릴 수 있어 더 넉넉한 타임아웃 사용
+      const timeoutMs = (c.type === 'test' || c.type === 'smoketest') ? VERIFY_TEST_TIMEOUT_MS : 300_000;
+      console.log(`[verify] 실행: ${c.label} (cwd=${safeCwd}, timeoutMs=${timeoutMs})`);
       await logQueries.append({ task_id: taskId, phase: 'eval', round, level: 'info', content: `[verify] 실행: ${c.label}` });
-      const res = await this._execCollect(c.cmd, c.args, { cwd: safeCwd, env, timeoutMs: 300_000 });
+      const res = await this._execCollect(c.cmd, c.args, { cwd: safeCwd, env, timeoutMs });
       if (res.code !== 0) {
         const tail = `${res.stderr}\n${res.stdout}`.trim().slice(-1500);
         console.error(`[verify] 실패: ${c.label} (code=${res.code})`);
@@ -1386,27 +1559,41 @@ export class AgentRunner extends EventEmitter {
   }
 }
 
+// npm init 기본 스텁("Error: no test specified") — 실제 테스트가 아니므로 자동 실행 대상에서 제외
+const NPM_INIT_TEST_STUB = /^echo\s+["']?Error:\s*no test specified/i;
+
 // ── 검증 명령 자동 감지 헬퍼 ────────────────────────────────
+// 1순위: verify.sh, 2순위: scripts.verify — 프로젝트가 검증을 통째로 직접 정의한 경우
+//   (이미 테스트를 포함할지는 프로젝트 책임) → 그 하나만 실행.
+// 그 외에는 typecheck/lint/test 중 존재하는 것을 전부 누적 실행(더 이상 하나만 고르고 멈추지 않음).
+//   test는 표준 scripts.test 필드만 신뢰 — test:* 같은 커스텀 명명은 부수효과가 있을 수 있어 제외.
+// typecheck/lint/test가 하나도 없을 때만 build로 폴백.
+// scripts.smoketest는 있으면 항상 마지막에 추가(테스트 유무와 무관한 별개 신호).
 function _detectVerifyCmds(cwd) {
-  // 1순위: 프로젝트 전용 verify.sh
   if (fs.existsSync(path.join(cwd, 'verify.sh'))) {
-    return [{ label: 'bash verify.sh', cmd: 'bash', args: ['verify.sh'] }];
+    return [{ label: 'bash verify.sh', cmd: 'bash', args: ['verify.sh'], type: 'other' }];
   }
   const pkgPath = path.join(cwd, 'package.json');
   if (!fs.existsSync(pkgPath)) return [];
   let pkg;
   try { pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')); } catch { return []; }
   const s = pkg.scripts || {};
-  // 2순위: scripts.verify (프로젝트가 명시적으로 정의한 검증)
-  if (s.verify) return [{ label: 'npm run verify', cmd: 'npm', args: ['run', 'verify'] }];
-  // 3순위: typecheck + lint (가벼움 — 우선 선택)
+
+  if (s.verify) return [{ label: 'npm run verify', cmd: 'npm', args: ['run', 'verify'], type: 'other' }];
+
   const cmds = [];
-  if (s.typecheck) cmds.push({ label: 'npm run typecheck', cmd: 'npm', args: ['run', 'typecheck'] });
-  if (s.lint) cmds.push({ label: 'npm run lint', cmd: 'npm', args: ['run', 'lint'] });
-  if (cmds.length > 0) return cmds;
-  // 4순위: build (무겁지만 확실한 검증)
-  if (s.build) return [{ label: 'npm run build', cmd: 'npm', args: ['run', 'build'] }];
-  return [];
+  if (s.typecheck) cmds.push({ label: 'npm run typecheck', cmd: 'npm', args: ['run', 'typecheck'], type: 'other' });
+  if (s.lint) cmds.push({ label: 'npm run lint', cmd: 'npm', args: ['run', 'lint'], type: 'other' });
+  if (s.test && !NPM_INIT_TEST_STUB.test(s.test.trim())) {
+    cmds.push({ label: 'npm test', cmd: 'npm', args: ['test'], type: 'test' });
+  }
+  if (cmds.length === 0 && s.build) {
+    cmds.push({ label: 'npm run build', cmd: 'npm', args: ['run', 'build'], type: 'other' });
+  }
+  if (s.smoketest) {
+    cmds.push({ label: 'npm run smoketest', cmd: 'npm', args: ['run', 'smoketest'], type: 'smoketest' });
+  }
+  return cmds;
 }
 
 // ── 배포 스크립트 탐색 헬퍼 ────────────────────────────────────

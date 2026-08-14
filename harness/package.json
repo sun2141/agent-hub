@@ -19,6 +19,7 @@
     "migrate:neon:verify": "node src/db/migrate_to_neon.js --verify",
     "test": "node tests/path_validation.test.js",
     "test:mp": "node tests/multi_provider.test.js",
+    "test:manager": "node tests/manager_loop.test.js",
     "providers": "node scripts/provider-status.js",
     "preflight": "bash scripts/preflight.sh"
   },

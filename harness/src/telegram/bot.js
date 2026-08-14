@@ -2,11 +2,18 @@
 // Telegram 봇 — 명령 수신 + 이벤트 알림
 
 import TelegramBot from 'node-telegram-bot-api';
-import { projectQueries, taskQueries } from '../db/db.js';
+import { projectQueries, taskQueries, backlogQueries } from '../db/db.js';
 import { spawnDetached } from './deploy_worker.js';
+import { runManagerScan, formatScanDigest } from '../agent/manager.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { spawnSync } from 'child_process';
+
+// 매니저 루프 (백로그 제안→승인→실행, 기본 off — MULTI_PROVIDER와 동일한 플래그 패턴)
+const MANAGER_LOOP = process.env.MANAGER_LOOP === 'true';
+const MANAGER_MAX_CONCURRENT = parseInt(process.env.MANAGER_MAX_CONCURRENT || '1', 10);
+const MANAGER_MAX_APPROVALS_PER_DAY = parseInt(process.env.MANAGER_MAX_APPROVALS_PER_DAY || '3', 10);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS_ROOT = path.resolve(__dirname, '../..');
@@ -113,7 +120,15 @@ export function createTelegramBot(agentRunner) {
         '/restart — 하네스 프로세스 재시작\n' +
         '/deploy — git push + harness 재시작 (분리 프로세스)\n\n' +
         '<b>파이프라인:</b> 📋 Plan → 🔨 Build → 🔍 Eval → ✅\n\n' +
-        '<b>rounds 예시:</b> /run facepick rounds:15 얼굴 인식 개선'
+        '<b>rounds 예시:</b> /run facepick rounds:15 얼굴 인식 개선\n\n' +
+        (MANAGER_LOOP
+          ? '<b>매니저 루프</b>\n' +
+            '/scan — 백로그 신호 스캔 + 제안\n' +
+            '/backlog — 대기 중인 제안 목록\n' +
+            '/approve &lt;id&gt; — 제안 승인 → 브랜치+PR 모드로 실행\n' +
+            '/reject &lt;id&gt; — 제안 거절\n' +
+            '/rollback &lt;projectId&gt; — 최근 완료 커밋 되돌리기(revert)\n'
+          : '<i>매니저 루프 비활성화 상태 (.env MANAGER_LOOP=true 로 활성화)</i>\n')
       );
     });
 
@@ -289,6 +304,150 @@ export function createTelegramBot(agentRunner) {
         notify(`❌ 배포 실패: ${err.message.substring(0, 200)}`);
       }
     });
+
+    // ── 매니저 루프 (백로그 제안→승인→실행) — MANAGER_LOOP=true 일 때만 동작 ──
+    function requireManagerLoop() {
+      if (!MANAGER_LOOP) {
+        notify('⚠️ 매니저 루프가 비활성화되어 있습니다. .env에 MANAGER_LOOP=true 설정 후 재시작하세요.');
+        return false;
+      }
+      return true;
+    }
+
+    // /scan — 등록된 프로젝트를 신호 스캔하고 새 제안을 백로그에 저장
+    onCommand(/\/scan/, async () => {
+      if (!requireManagerLoop()) return;
+      notify('🔍 스캔 시작... (프로젝트별 LLM 호출 — 다소 시간이 걸릴 수 있습니다)');
+      try {
+        const scanResult = await runManagerScan();
+        notify(formatScanDigest(scanResult));
+      } catch (err) {
+        notify(`❌ 스캔 실패: ${err.message.substring(0, 200)}`);
+      }
+    });
+
+    // /backlog — 대기 중(proposed)인 제안 목록
+    onCommand(/\/backlog/, async () => {
+      if (!requireManagerLoop()) return;
+      const items = await backlogQueries.listPending();
+      if (!items.length) { notify('대기 중인 백로그 제안 없음. /scan 으로 새로 찾아보세요.'); return; }
+      const msg = '<b>📥 대기 중인 백로그 제안</b>\n\n' +
+        items.map(it => `• <code>${it.id}</code> [${it.project_name}] ${it.title}\n  └ ${it.rationale || '-'}`).join('\n\n');
+      notify(msg);
+    });
+
+    // /approve <backlogId> — 상한 체크 후 branchMode:true로 파이프라인 시작
+    onCommand(/\/approve (\S+)/, async (msg, match) => {
+      if (!requireManagerLoop()) return;
+      const id = match[1].trim();
+      if (!/^backlog_[0-9]+_[a-z0-9]+$/.test(id)) { notify('❌ 잘못된 백로그 ID 형식'); return; }
+
+      const item = await backlogQueries.get(id);
+      if (!item) { notify(`❌ 백로그 항목 없음: <code>${id}</code>`); return; }
+      if (item.status !== 'proposed') { notify(`❌ 이미 처리된 항목입니다 (상태: ${item.status})`); return; }
+
+      const activeManager = await backlogQueries.countActiveManagerTasks();
+      if (activeManager >= MANAGER_MAX_CONCURRENT) {
+        notify(`❌ 매니저 작업 동시 실행 상한(${MANAGER_MAX_CONCURRENT}) 도달. 진행 중인 작업 완료 후 재시도하세요.`);
+        return;
+      }
+      const approvedToday = await backlogQueries.countApprovedToday();
+      if (approvedToday >= MANAGER_MAX_APPROVALS_PER_DAY) {
+        notify(`❌ 오늘 승인 상한(${MANAGER_MAX_APPROVALS_PER_DAY}건) 도달. 내일 다시 시도하세요.`);
+        return;
+      }
+
+      const prompt = `${item.title}\n\n${item.description || ''}`.trim();
+      try {
+        const taskId = await agentRunner.run({ projectId: item.project_id, prompt, branchMode: true, backlogItemId: id });
+        await backlogQueries.markApproved(id, taskId);
+        notify(`✅ <b>승인됨</b>\n<code>${id}</code> → <code>${taskId}</code>\n브랜치+PR 모드로 실행됩니다. 완료 시 PR 링크를 알려드립니다(자동 병합 없음).`);
+      } catch (err) {
+        notify(`❌ 실행 시작 실패: ${err.message.substring(0, 200)}`);
+      }
+    });
+
+    // /reject <backlogId>
+    onCommand(/\/reject (\S+)/, async (msg, match) => {
+      if (!requireManagerLoop()) return;
+      const id = match[1].trim();
+      if (!/^backlog_[0-9]+_[a-z0-9]+$/.test(id)) { notify('❌ 잘못된 백로그 ID 형식'); return; }
+      const item = await backlogQueries.get(id);
+      if (!item) { notify(`❌ 백로그 항목 없음: <code>${id}</code>`); return; }
+      if (item.status !== 'proposed') { notify(`❌ 이미 처리된 항목입니다 (상태: ${item.status})`); return; }
+      await backlogQueries.markRejected(id);
+      notify(`🗑 거절됨: <code>${id}</code>`);
+    });
+
+    // /rollback <projectId> — 가장 최근 완료(done) 작업의 커밋을 git revert + push (break-glass, 직접 실행)
+    onCommand(/\/rollback (.+)/, async (msg, match) => {
+      if (!requireManagerLoop()) return;
+      const projectId = match[1].trim();
+      if (!/^[a-z0-9-]{1,50}$/.test(projectId)) { notify('❌ 프로젝트 ID는 영문 소문자/숫자/하이픈만 허용됩니다'); return; }
+
+      const project = await projectQueries.get(projectId);
+      if (!project) { notify(`❌ 프로젝트 없음: <code>${projectId}</code>`); return; }
+
+      // branch_mode(매니저 승인) 작업은 제외 — 그 커밋은 미병합 task 브랜치에만 있어서
+      // 기본 브랜치에서 revert할 수 없다. 취소하려면 PR을 닫으면 된다.
+      const lastDone = await taskQueries.getLastDoneWithCommit(projectId);
+      if (!lastDone?.commit_sha) {
+        notify(`❌ 롤백할 커밋을 찾지 못했습니다 (direct push로 완료된 작업 없음): <code>${projectId}</code>\n매니저 승인 작업은 PR을 닫아서 취소하세요.`);
+        return;
+      }
+
+      // 진행 중인 작업이 있으면 롤백 금지 — 에이전트가 쓰고 있는 워킹트리를 건드리게 된다.
+      const activeTask = await taskQueries.getActiveForProject(projectId);
+      if (activeTask) {
+        notify(`❌ 실행 중인 작업이 있어 롤백할 수 없습니다: <code>${activeTask.id}</code> (${activeTask.status})`);
+        return;
+      }
+
+      notify(`⏪ <b>롤백 시작</b>\n프로젝트: ${project.name}\n대상 커밋: <code>${lastDone.commit_sha.slice(0, 10)}</code> (task=<code>${lastDone.id}</code>)`);
+      try {
+        const rootRes = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: project.path, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+        if (rootRes.error || rootRes.status !== 0) throw new Error('git 저장소를 찾을 수 없습니다');
+        const gitRoot = rootRes.stdout.trim();
+
+        // 사전 체크 1: 워킹트리가 clean해야 한다. dirty면 revert가 사용자의 미커밋 변경과
+        // 섞이거나 중간 상태로 멈춘다.
+        const dirtyRes = spawnSync('git', ['status', '--porcelain'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+        const dirty = (dirtyRes.stdout || '').trim();
+        if (dirty) {
+          throw new Error(`워킹트리에 커밋되지 않은 변경이 있습니다. 정리 후 재시도하세요:\n${dirty.split('\n').slice(0, 8).join('\n')}`);
+        }
+
+        // 사전 체크 2: 현재 브랜치가 task/* 면 중단 — 롤백은 기본 브랜치에서만.
+        const branchRes = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+        const currentBranch = (branchRes.stdout || '').trim();
+        if (currentBranch.startsWith('task/')) {
+          throw new Error(`현재 브랜치가 <code>${currentBranch}</code> 입니다. 기본 브랜치로 전환 후 재시도하세요.`);
+        }
+
+        // 사전 체크 3: 대상 커밋이 현재 HEAD의 조상이어야 revert가 의미를 갖는다.
+        const ancestorRes = spawnSync('git', ['merge-base', '--is-ancestor', lastDone.commit_sha, 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
+        if (ancestorRes.status !== 0) {
+          throw new Error(`대상 커밋이 현재 브랜치(${currentBranch}) 히스토리에 없습니다. 이미 되돌렸거나 다른 브랜치의 커밋입니다.`);
+        }
+
+        const revertRes = spawnSync('git', ['revert', '--no-edit', lastDone.commit_sha], { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+        if (revertRes.error || revertRes.status !== 0) {
+          // 충돌 등으로 중간 상태에 멈췄으면 되돌려서 저장소를 원상 복구한다.
+          spawnSync('git', ['revert', '--abort'], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+          throw new Error((revertRes.stderr || revertRes.stdout || 'git revert 실패').trim().slice(0, 300));
+        }
+
+        const pushRes = spawnSync('git', ['push'], { cwd: gitRoot, encoding: 'utf8', timeout: 60_000, stdio: 'pipe' });
+        if (pushRes.error || pushRes.status !== 0) {
+          const pushErr = (pushRes.stderr || pushRes.stdout || 'git push 실패').trim().slice(0, 300);
+          throw new Error(`revert 커밋은 로컬에 생성됐지만 push에 실패했습니다 (${currentBranch}):\n${pushErr}`);
+        }
+
+        notify(`✅ <b>롤백 완료</b>\n${project.name} (${currentBranch})에서 <code>${lastDone.commit_sha.slice(0, 10)}</code>를 되돌리고 push했습니다.`);
+      } catch (err) {
+        notify(`❌ 롤백 실패: ${err.message.substring(0, 400)}`);
+      }
+    });
   }
 
   // ── 에이전트 이벤트 → 텔레그램 알림 ───────────────────────
@@ -307,7 +466,7 @@ export function createTelegramBot(agentRunner) {
       }
     });
 
-    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached, projectId, reportInfo }) => {
+    agentRunner.on('task:complete', ({ taskId, round, evalResult, maxRoundsReached, projectId, reportInfo, prUrl }) => {
       const flag = maxRoundsReached ? ' (최대 라운드 도달)' : '';
       // 작업 완료 시 해당 프로젝트의 연속 실패 카운터 리셋
       const pid = projectId || taskId;
@@ -316,14 +475,16 @@ export function createTelegramBot(agentRunner) {
         entry.failCount = 0;
         saveCooldownData(_lastFailNotify);
       }
+      const prNote = prUrl ? `\n\n🔀 <b>PR:</b> ${prUrl}\n(자동 병합 없음 — 확인 후 직접 병합하세요)` : '';
       if (reportInfo?.telegramSummary) {
-        notify(`✅ <b>완료</b>${flag}\n\n${reportInfo.telegramSummary}`);
+        notify(`✅ <b>완료</b>${flag}\n\n${reportInfo.telegramSummary}${prNote}`);
       } else {
         notify(
           `✅ <b>완료</b>${flag}\n\n` +
           `ID: <code>${taskId}</code>\n` +
           `총 라운드: ${round}\n` +
-          `평가 점수: ${evalResult?.score ?? '-'}/100`
+          `평가 점수: ${evalResult?.score ?? '-'}/100` +
+          prNote
         );
       }
     });

@@ -12,6 +12,7 @@ import { AgentRunner } from './agent/runner.js';
 import { reclaimExpired } from './agent/dispatcher.js';
 import { createApiServer } from './api/server.js';
 import { createTelegramBot } from './telegram/bot.js';
+import { startManagerScanScheduler } from './agent/scanScheduler.js';
 
 // 멀티 프로바이더 자동 회수/재개 (기본 off — off면 기존 수동 재개 방식 유지).
 const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
@@ -241,8 +242,19 @@ async function main() {
     console.log(`[Boot] 멀티 프로바이더 자동 회수 타이머 활성 (${RECLAIM_MS}ms)`);
   }
 
+  // 6. 매니저 루프 자동 스캔 (MANAGER_LOOP=true + MANAGER_SCAN_INTERVAL_MIN>0 일 때만).
+  //    자동화 범위는 "제안"까지 — 승인은 /approve, 병합은 GitHub에서 사람이 한다.
+  const scanScheduler = startManagerScanScheduler({ notify });
+  if (scanScheduler.active) {
+    notify(
+      `🕒 <b>자동 스캔 활성</b>\n${scanScheduler.config.intervalMin}분 주기로 백로그를 스캔합니다.\n` +
+      `승인은 여전히 /approve 로 직접 하셔야 합니다.`
+    );
+  }
+
   function shutdown(signal) {
     console.log(`\n[종료] ${signal} 수신...`);
+    scanScheduler.stop();
     releaseLock();
     notify('🔴 <b>하네스 종료됨</b>');
     server.close(() => process.exit(0));

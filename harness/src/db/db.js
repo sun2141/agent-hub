@@ -119,6 +119,10 @@ export async function initDb() {
   // 기존 테이블 마이그레이션 (CREATE TABLE IF NOT EXISTS는 컬럼 추가를 못 하므로)
   await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS model TEXT`);
   await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS session_id TEXT`);
+  // 매니저 루프 (백로그 제안→승인→실행) — 브랜치+PR 가드레일용 컬럼
+  await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS pr_url TEXT`);
+  await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS branch_mode INTEGER DEFAULT 0`);
+  await dbRun(`ALTER TABLE harness.tasks ADD COLUMN IF NOT EXISTS branch_name TEXT`);
 
   await dbRun(`
     CREATE TABLE IF NOT EXISTS harness.logs (
@@ -160,6 +164,48 @@ export async function initDb() {
       weight              INTEGER DEFAULT 100,         -- 라우팅 가중치(클수록 선호)
       enabled             INTEGER DEFAULT 1,
       updated_at          TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS'))
+    )
+  `);
+
+  // ── 매니저 루프: 백로그 제안 테이블 ──────────────────────────
+  // LLM이 생성한 작업 후보를 저장. source는 항상 'manager_suggestion',
+  // source_ref는 id와 동일(제안 자체는 언제나 신규) — 중복 판정은 이 테이블이 아니라
+  // 아래 backlog_seen_signals(원본 신호 기록)가 담당한다.
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.backlog_items (
+      id           TEXT PRIMARY KEY,
+      project_id   TEXT NOT NULL REFERENCES harness.projects(id),
+      source       TEXT NOT NULL,
+      source_ref   TEXT,
+      title        TEXT NOT NULL,
+      description  TEXT,
+      rationale    TEXT,
+      status       TEXT DEFAULT 'proposed',
+      task_id      TEXT,
+      proposed_at  TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+      decided_at   TEXT,
+      UNIQUE (project_id, source, source_ref)
+    )
+  `);
+
+  await dbRun(`
+    CREATE INDEX IF NOT EXISTS idx_harness_backlog_items_status
+    ON harness.backlog_items (status, proposed_at DESC)
+  `);
+
+  // ── 매니저 루프: 스캔 신호 소진 기록 ──────────────────────────
+  // backlog_items가 "LLM이 만든 제안"을 담는다면, 이 테이블은 "그 제안의 근거가 된
+  // 원본 신호"(needs_review 작업 id / backlog.md 줄 해시 / GitHub 이슈 번호)를 담는다.
+  // 둘을 분리한 이유: 제안 row의 source는 항상 'manager_suggestion'이라 원본 신호의
+  // (source, source_ref)를 담을 수 없고, 그래서 재스캔 중복 판정에 쓸 수 없다.
+  // 제안 생성에 성공한 신호만 기록되므로, LLM 실패로 제안이 없었던 신호는 다음 스캔에 재시도된다.
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS harness.backlog_seen_signals (
+      project_id  TEXT NOT NULL REFERENCES harness.projects(id),
+      source      TEXT NOT NULL,
+      source_ref  TEXT NOT NULL,
+      seen_at     TEXT DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')),
+      PRIMARY KEY (project_id, source, source_ref)
     )
   `);
 
@@ -312,10 +358,10 @@ export const projectQueries = {
 
 // ── tasks ─────────────────────────────────────────────────────
 export const taskQueries = {
-  async create({ id, project_id, prompt, max_rounds = 10 }) {
+  async create({ id, project_id, prompt, max_rounds = 10, branch_mode = 0 }) {
     await dbRun(
-      'INSERT INTO harness.tasks (id, project_id, prompt, max_rounds) VALUES ($1, $2, $3, $4)',
-      [id, project_id, prompt, max_rounds]
+      'INSERT INTO harness.tasks (id, project_id, prompt, max_rounds, branch_mode) VALUES ($1, $2, $3, $4, $5)',
+      [id, project_id, prompt, max_rounds, branch_mode ? 1 : 0]
     );
   },
 
@@ -371,6 +417,28 @@ export const taskQueries = {
 
   async updateScheduledResumeAt(id, scheduledResumeAt) {
     await dbRun('UPDATE harness.tasks SET scheduled_resume_at = $1 WHERE id = $2', [scheduledResumeAt, id]);
+  },
+
+  async updateBranchName(id, branchName) {
+    await dbRun('UPDATE harness.tasks SET branch_name = $1 WHERE id = $2', [branchName, id]);
+  },
+
+  async updatePrUrl(id, prUrl) {
+    await dbRun('UPDATE harness.tasks SET pr_url = $1 WHERE id = $2', [prUrl, id]);
+  },
+
+  // 가장 최근 완료(done) 작업의 커밋 — /rollback이 되돌릴 대상 탐색용.
+  // branch_mode 작업은 제외한다: 그 커밋은 아직 병합되지 않은 task/* 브랜치에만 있어서
+  // 기본 브랜치에서 revert하면 실패하거나 엉뚱한 변경을 되돌린다. 매니저 승인 작업을
+  // 취소하려면 PR을 닫으면 된다.
+  async getLastDoneWithCommit(projectId) {
+    return dbGet(
+      `SELECT id, commit_sha FROM harness.tasks
+       WHERE project_id = $1 AND status = 'done' AND commit_sha IS NOT NULL
+         AND (branch_mode IS NULL OR branch_mode = 0)
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId]
+    );
   },
 
   async getActiveForProject(projectId) {
@@ -568,6 +636,110 @@ export const providerQueries = {
 
   async setEnabled(provider, enabled) {
     await dbRun('UPDATE harness.providers SET enabled = $1 WHERE provider = $2', [enabled ? 1 : 0, provider]);
+  },
+};
+
+// ── backlog_items (매니저 루프: 제안→승인→실행) ────────────────
+export const backlogQueries = {
+  // 충돌(동일 project_id+source+source_ref) 시 조용히 skip — 재스캔 시 중복 제안 방지.
+  async propose({ id, project_id, source, source_ref, title, description, rationale }) {
+    const rows = await dbRun(
+      `INSERT INTO harness.backlog_items (id, project_id, source, source_ref, title, description, rationale)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (project_id, source, source_ref) DO NOTHING
+       RETURNING id`,
+      [id, project_id, source, source_ref || null, title, description || null, rationale || null]
+    );
+    return rows[0]?.id || null;
+  },
+
+  async listPending(projectId = null) {
+    if (projectId) {
+      return dbAll(
+        `SELECT b.*, p.name AS project_name FROM harness.backlog_items b
+         JOIN harness.projects p ON b.project_id = p.id
+         WHERE b.status = 'proposed' AND b.project_id = $1
+         ORDER BY b.proposed_at DESC`,
+        [projectId]
+      );
+    }
+    return dbAll(
+      `SELECT b.*, p.name AS project_name FROM harness.backlog_items b
+       JOIN harness.projects p ON b.project_id = p.id
+       WHERE b.status = 'proposed'
+       ORDER BY b.proposed_at DESC`
+    );
+  },
+
+  async get(id) {
+    return dbGet('SELECT * FROM harness.backlog_items WHERE id = $1', [id]);
+  },
+
+  async markApproved(id, taskId) {
+    await dbRun(
+      `UPDATE harness.backlog_items
+       SET status = 'approved', task_id = $2,
+           decided_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       WHERE id = $1`,
+      [id, taskId]
+    );
+  },
+
+  async markRejected(id) {
+    await dbRun(
+      `UPDATE harness.backlog_items
+       SET status = 'rejected',
+           decided_at = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
+       WHERE id = $1`,
+      [id]
+    );
+  },
+
+  // 오늘(UTC) 승인된 매니저 작업 수 — 일일 상한 계산용
+  async countApprovedToday() {
+    const row = await dbGet(
+      `SELECT COUNT(*) AS cnt FROM harness.backlog_items
+       WHERE status IN ('approved') AND decided_at >= to_char(date_trunc('day', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD HH24:MI:SS')`
+    );
+    return row ? Number(row.cnt) : 0;
+  },
+
+  // 현재 진행 중인 매니저 승인 작업 수 — 동시성 상한 계산용
+  async countActiveManagerTasks() {
+    const row = await dbGet(
+      `SELECT COUNT(*) AS cnt FROM harness.tasks
+       WHERE branch_mode = 1 AND status NOT IN ('done', 'failed', 'paused', 'needs_review')`
+    );
+    return row ? Number(row.cnt) : 0;
+  },
+
+  // 이미 제안 근거로 소진된 원본 신호 ref 집합 — 재스캔 시 같은 신호 재제안 방지.
+  // backlog_items가 아니라 backlog_seen_signals를 본다(제안 row의 source는 항상
+  // 'manager_suggestion'이라 원본 신호와 매칭되지 않기 때문).
+  async seenRefs(projectId, source) {
+    const rows = await dbAll(
+      `SELECT source_ref FROM harness.backlog_seen_signals WHERE project_id = $1 AND source = $2`,
+      [projectId, source]
+    );
+    return new Set(rows.map(r => r.source_ref));
+  },
+
+  // 제안 생성에 성공한 신호들을 소진 처리. 이미 있으면 조용히 skip.
+  async markSignalsSeen(projectId, signals) {
+    if (!signals?.length) return 0;
+    let inserted = 0;
+    for (const s of signals) {
+      if (!s?.source || s.source_ref == null) continue;
+      const rows = await dbRun(
+        `INSERT INTO harness.backlog_seen_signals (project_id, source, source_ref)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, source, source_ref) DO NOTHING
+         RETURNING source_ref`,
+        [projectId, s.source, String(s.source_ref)]
+      );
+      if (rows[0]) inserted += 1;
+    }
+    return inserted;
   },
 };
 
