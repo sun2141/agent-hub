@@ -48,6 +48,53 @@ done
 [ -n "${NEON_DATABASE_URL:-}" ] && ok "NEON_DATABASE_URL 설정됨" || bad "NEON_DATABASE_URL 없음"
 [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && ok "TELEGRAM_BOT_TOKEN 설정됨" || warn "TELEGRAM_BOT_TOKEN 없음"
 
+echo "── gh CLI (매니저 승인 작업의 PR 생성) ────"
+if command -v gh >/dev/null 2>&1; then
+  ok "gh 설치됨 ($(command -v gh))"
+  if gh auth status >/dev/null 2>&1; then ok "gh 인증됨"; else
+    bad "gh 미인증 — 'gh auth login' (repo 스코프). 없으면 브랜치 push까지만 되고 PR 생성이 실패한다"; fi
+else
+  warn "gh 없음 — 매니저 승인 작업이 PR을 열지 못한다 (브랜치는 push됨)"
+fi
+
+echo "── 매니저 루프 ────────────────────────────"
+if [ "${MANAGER_LOOP:-}" = "true" ]; then
+  ok "MANAGER_LOOP=true (활성)"
+
+  SCAN_MIN="${MANAGER_SCAN_INTERVAL_MIN:-0}"
+  if [ "$SCAN_MIN" -gt 0 ] 2>/dev/null; then
+    ok "자동 스캔 ${SCAN_MIN}분 주기"
+  else
+    warn "MANAGER_SCAN_INTERVAL_MIN=0 → 자동 스캔 없음 (텔레그램 /scan 수동만)"
+  fi
+
+  if [ "${MANAGER_REQUIRE_INTENT_SIGNAL:-true}" = "false" ]; then
+    warn "MANAGER_REQUIRE_INTENT_SIGNAL=false → 백로그/이슈 없이 자기 실패 이력만으로도 제안함 (잡일 루프 위험)"
+  else
+    ok "의도 신호 게이트 활성 (백로그/GitHub 이슈가 있어야 제안)"
+  fi
+
+  # 의도 신호가 실제로 존재하는지 — 없으면 스캔해도 제안이 0건이다.
+  # 판정은 하네스와 같은 parseDirective를 쓰는 backlog-status.js에 위임한다.
+  if BL=$(node scripts/backlog-status.js 2>/dev/null); then
+    TOTAL_BL=$(printf '%s\n' "$BL" | awk -F'\t' '$1=="TOTAL"{print $2}')
+    printf '%s\n' "$BL" | awk -F'\t' '$1!="TOTAL"' | while IFS=$'\t' read -r pid cnt repo; do
+      if [ "${cnt:-0}" -gt 0 ]; then echo "  ✓ 백로그 ${pid}: ${cnt}건 (github: ${repo})"
+      else echo "  · 백로그 ${pid}: 0건 (github: ${repo})"; fi
+    done
+    if [ "${TOTAL_BL:-0}" -gt 0 ]; then
+      ok "백로그 총 ${TOTAL_BL}건 — 의도 신호 있음"
+    else
+      warn "백로그 항목 0건 — GitHub 이슈가 없다면 /scan 해도 제안이 나오지 않는다"
+      warn "  → directives/projects/<id>.md 의 '## Backlog' 섹션에 작업을 적으세요"
+    fi
+  else
+    warn "백로그 조회 실패 (npm install 전이면 정상)"
+  fi
+else
+  warn "MANAGER_LOOP≠true — /scan /backlog /approve 가 '비활성화' 응답만 함"
+fi
+
 echo "── DB 연결 + providers 테이블 ─────────────"
 if [ -n "${NEON_DATABASE_URL:-}" ]; then
   node scripts/provider-status.js >/tmp/pf_providers.txt 2>&1 && { ok "providers 조회 성공"; sed 's/^/    /' /tmp/pf_providers.txt; } \

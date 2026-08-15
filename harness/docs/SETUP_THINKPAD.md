@@ -1,7 +1,74 @@
 # ThinkPad(Ubuntu 24.04) 멀티 프로바이더 하네스 셋업 가이드
 
-메인 런타임 = ThinkPad X13, VPS = 예비. 아래 순서대로 1회 설정하면 무인 운영된다.
-각 단계 후 `npm run preflight`로 검증할 수 있다.
+**메인 런타임 = ThinkPad X13 (24시간 상시 가동).**
+맥북과 아이폰은 클라이언트 전용 — 텔레그램/대시보드로 확인·명령만 하고 하네스를 실행하지 않는다.
+
+아래 순서대로 1회 설정하면 무인 운영된다. 각 단계 후 `npm run preflight`로 검증할 수 있다.
+
+> 씽크패드를 켜기 **전에** 맥의 하네스를 반드시 멈춰야 한다 → 아래 "맥 → 씽크패드 컷오버" 참고.
+
+---
+
+## 맥 → 씽크패드 컷오버 (한 번만)
+
+두 대가 같은 텔레그램 봇 토큰을 동시에 폴링하면 409 Conflict가 나면서 명령이
+한쪽으로만 가거나 씹힌다. Codex의 `~/.codex/auth.json`도 제자리 갱신이라
+두 인스턴스가 동시에 쓰면 손상될 수 있다. **반드시 끄고 켜는 순서로.**
+
+### 1) 맥에서 (넘기기 전)
+
+```bash
+cd /Users/sun/agent-hub
+
+git push origin main                    # 씽크패드가 pull 할 수 있도록
+bash harness/scripts/start.sh stop      # 하네스 정지 — 이후 맥에서는 다시 켜지 않는다
+bash harness/scripts/start.sh status    # 정지 확인
+
+cp harness/.env ~/env-from-mac          # 비밀값(DB/토큰/키) 이관용. 안전한 경로로 옮길 것
+```
+
+맥의 `harness/.env`는 지우지 말고 그대로 둔다(경로가 전부 맥 기준이라 참고용으로만).
+다만 **다시 실행하지 않는다.**
+
+### 2) 씽크패드에서
+
+`~/env-from-mac`을 USB나 `scp`로 가져온 뒤, 아래 0~7단계를 진행한다.
+`.env`는 직접 편집하지 말고 이관 스크립트를 쓰면 경로가 자동으로 맞춰진다:
+
+```bash
+cd ~/agent-hub/harness
+bash scripts/migrate-env-to-linux.sh ~/env-from-mac
+```
+
+이 스크립트가 하는 일:
+
+- `PROJECTS_ROOT` / `CLAUDE_CLI_PATH` / `CLAUDE_CONFIG_DIR` / `NODE_BIN` /
+  `CODEX_CLI_PATH` / `AGY_CLI_PATH`를 이 머신에서 감지한 값으로 교체
+- 멀티 프로바이더·매니저 루프 키가 없으면 권장값으로 추가(있으면 건드리지 않음)
+- 비밀값은 그대로 보존하고 화면에 출력하지 않음
+- 맥 경로(`/Users/...`)가 남아 있으면 키 이름을 경고로 알려줌
+
+이관이 끝나면 **`~/env-from-mac`은 삭제**한다(비밀값이 평문으로 들어 있다).
+
+### 3) 프로젝트 저장소
+
+`PROJECTS_ROOT` 아래에 각 프로젝트를 clone해야 파이프라인이 돈다.
+경로가 없으면 부팅 시 경고가 뜨고 해당 프로젝트 작업이 실패한다.
+
+```bash
+cd "$PROJECTS_ROOT"        # 기본값: $HOME
+git clone git@github.com:sun2141/palmoni.git
+# … 필요한 프로젝트만
+```
+
+### 4) 확인
+
+```bash
+npm run preflight     # CLI/인증/키링/env/백로그/DB/sleep 종합 점검
+npm run verify        # 하네스 자체 테스트 3종 (45 + 28 + 7)
+```
+
+텔레그램에 `/help`를 보내 **씽크패드 쪽에서만** 응답이 오는지 확인한다.
 
 ---
 
@@ -100,8 +167,20 @@ PROVIDER_RECLAIM_INTERVAL_MS=60000
 #                   DASHBOARD_PASSWORD, PROJECTS_ROOT 등
 ```
 
-> **Telegram 단일 폴링**: ThinkPad와 VPS가 같은 봇 토큰을 동시에 폴링하면 충돌한다.
-> ThinkPad를 메인으로 켤 땐 VPS 하네스를 멈추거나(`pm2 stop`), 예비 전용으로만 둔다.
+> **Telegram 단일 폴링**: 같은 봇 토큰을 두 대가 동시에 폴링하면 409 Conflict가 난다.
+> 씽크패드를 메인으로 켤 땐 **맥북의 하네스**(그리고 쓰고 있다면 VPS의 하네스)를 반드시 멈춘다.
+> 위 "맥 → 씽크패드 컷오버" 참고.
+
+매니저 루프도 함께 켠다(이관 스크립트를 썼다면 이미 들어가 있다):
+
+```ini
+MANAGER_LOOP=true
+MANAGER_SCAN_INTERVAL_MIN=180     # 자동 스캔 3시간 주기, 0이면 /scan 수동만
+MANAGER_SCAN_QUIET_HOURS=23-8
+MANAGER_MAX_CONCURRENT=1
+MANAGER_MAX_APPROVALS_PER_DAY=3
+MANAGER_REQUIRE_INTENT_SIGNAL=true   # 백로그/이슈 없으면 제안하지 않음
+```
 
 ---
 
@@ -190,3 +269,7 @@ Plan→antigravity, Build→claude, Review→codex 로 흐르는지 로그(`[MP]
 | providers 조회 실패 | 하네스 최초 기동 전이거나 `NEON_DATABASE_URL` 오류 |
 | 자꾸 대기만 함 | `npm run providers`로 전부 cooling인지 확인, 리셋 시각 도달 여부 |
 | 노트북이 잠들어 중단 | 5단계 sleep 방지 재적용, `systemctl is-enabled sleep.target`=masked 확인 |
+| `/scan` 했는데 제안이 0건 | `npm run backlog`로 의도 신호 확인. 0건이면 `directives/projects/<id>.md`의 `## Backlog`에 작업을 적어야 한다 |
+| `/approve` 후 PR이 안 열림 | `gh auth status` 확인. 미인증이면 브랜치 push까지만 되고 PR 생성이 실패한다(브랜치는 이미 올라가 있으니 GitHub에서 수동으로 열 수 있음) |
+| 텔레그램 명령이 씹힘 | 맥이나 VPS의 하네스가 아직 도는지 확인 — 같은 토큰 동시 폴링 |
+| 검증이 늘 통과하는데 배포하면 깨짐 | 대상 프로젝트에 검증 스크립트가 없어서 `build`만 도는 것. `docs/PROJECT_VERIFY_GATE.md` 참고 |
