@@ -1,26 +1,24 @@
-name: Path Validation Tests
+name: Harness Tests
 
+# 하네스 소스/테스트가 바뀌면 전체 테스트 스위트를 돌린다.
+# (이전에는 path_validation 하나만, 그것도 특정 파일이 바뀔 때만 돌았다.)
 on:
   push:
     branches: [main, develop]
     paths:
-      - 'harness/src/agent/runner.js'
-      - 'harness/src/api/server.js'
-      - 'harness/tests/path_validation.test.js'
-      - 'directives/core/project_path_validation.md'
+      - 'harness/**'
+      - 'directives/core/**'
       - '.github/workflows/test.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'harness/src/agent/runner.js'
-      - 'harness/src/api/server.js'
-      - 'harness/tests/path_validation.test.js'
-      - 'directives/core/project_path_validation.md'
+      - 'harness/**'
+      - 'directives/core/**'
       - '.github/workflows/test.yml'
 
 jobs:
-  path-validation:
-    name: Path Validation Regression Tests
+  verify:
+    name: Harness Regression Suite
     runs-on: ubuntu-latest
 
     steps:
@@ -38,11 +36,31 @@ jobs:
         working-directory: harness
         run: npm ci
 
-      - name: Run path validation tests
+      # 각 스위트를 개별 스텝으로 두어 어떤 스위트가 깨졌는지 로그에서 바로 보이게 한다
+      - name: Path validation (경로 검증 회귀)
         working-directory: harness
         run: npm test
 
-      - name: Upload test results on failure
+      - name: Multi-provider dispatch (프로바이더 선택 정책)
+        working-directory: harness
+        run: npm run test:mp
+
+      - name: Manager loop (의도 신호/중복 제거/스캔 판정)
+        working-directory: harness
+        run: npm run test:manager
+
+      # 소스에 NUL 바이트가 섞이면 git이 바이너리로 취급해 diff/리뷰가 불가능해진다.
+      # 실제로 한 번 발생했던 문제라 회귀 방지로 검사한다.
+      - name: NUL 바이트 검사
+        run: |
+          if grep -rlP '\x00' --include='*.js' --include='*.json' --include='*.md' \
+               harness/src harness/tests harness/docs; then
+            echo "::error::위 파일에 NUL 바이트가 있습니다 (git이 바이너리로 인식)"
+            exit 1
+          fi
+          echo "NUL 바이트 없음"
+
+      - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
