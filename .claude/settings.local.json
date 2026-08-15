@@ -37,7 +37,22 @@
       "Bash(npm install:*)",
       "Bash(chmod:*)",
       "Bash(source ~/.secrets/hetzner.env)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(grep -E \"\\(^|/\\)\\\\.env$\")",
+      "Bash(gh repo *)",
+      "Bash(grep -E \"\\\\.env$\")",
+      "Bash(cd /Users/sun/agent-hub *)",
+      "Bash(grep -nE \"\\(api[_-]?key|secret|password|token\\)\\\\s*[:=]\\\\s*['\\\\\"][^'\\\\\"]{8,}\" -i)",
+      "Bash(git commit -m ' *)",
+      "Bash(git rm *)",
+      "Bash(pm2 list *)",
+      "Bash(launchctl list *)",
+      "Bash(ls -la ~/.secrets/hetzner.env 2>/dev/null && echo \"exists\" || echo \"not found\")",
+      "Bash(node -e ' *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "Bash(gh auth *)"
     ]
   }
 }
