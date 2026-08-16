@@ -21,6 +21,7 @@
     "test:mp": "node tests/multi_provider.test.js",
     "test:manager": "node tests/manager_loop.test.js",
     "verify": "npm test && npm run test:mp && npm run test:manager",
+    "setup:thinkpad": "bash scripts/setup-thinkpad.sh",
     "providers": "node scripts/provider-status.js",
     "backlog": "node scripts/backlog-status.js",
     "preflight": "bash scripts/preflight.sh"

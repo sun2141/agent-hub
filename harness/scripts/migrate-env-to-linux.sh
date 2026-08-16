@@ -47,8 +47,11 @@ CLAUDE_PATH_DETECTED="$(detect claude)"
 CODEX_PATH_DETECTED="$(detect codex)"
 AGY_PATH_DETECTED="$(detect agy)"
 
-# PROJECTS_ROOT: 프로젝트 저장소들을 둔 부모 디렉토리. 홈 아래 관례를 따른다.
-PROJECTS_ROOT_NEW="${PROJECTS_ROOT_OVERRIDE:-$HOME}"
+# PROJECTS_ROOT: 에이전트가 접근할 수 있는 범위를 정하는 값이다.
+# $HOME 을 그대로 쓰면 ~/.ssh, ~/.codex/auth.json, 다른 .env 까지 전부 사정권에 들어온다.
+# 에이전트는 --dangerously-skip-permissions 로 돌기 때문에 확인 없이 쓰기도 한다.
+# 그래서 전용 하위 디렉토리로 좁힌다.
+PROJECTS_ROOT_NEW="${PROJECTS_ROOT_OVERRIDE:-$HOME/projects}"
 CLAUDE_CONFIG_NEW="${CLAUDE_CONFIG_OVERRIDE:-$HOME/.claude-harness}"
 
 for pair in "node:$NODE_PATH_DETECTED" "claude:$CLAUDE_PATH_DETECTED" \
@@ -57,7 +60,10 @@ for pair in "node:$NODE_PATH_DETECTED" "claude:$CLAUDE_PATH_DETECTED" \
   if [ -n "$val" ]; then echo "  ✓ $nm → $val"; else echo "  ✗ $nm 없음 (설치 후 다시 실행하거나 .env를 직접 수정)"; fi
 done
 echo "  · PROJECTS_ROOT  → $PROJECTS_ROOT_NEW   (바꾸려면 PROJECTS_ROOT_OVERRIDE=... 로 재실행)"
+echo "      에이전트가 접근 가능한 범위입니다. \$HOME 으로 넓히지 마세요"
+echo "      (~/.ssh, ~/.codex/auth.json 까지 사정권에 들어옵니다)"
 echo "  · CLAUDE_CONFIG_DIR → $CLAUDE_CONFIG_NEW"
+mkdir -p "$PROJECTS_ROOT_NEW"
 echo
 
 # 기존 .env 백업

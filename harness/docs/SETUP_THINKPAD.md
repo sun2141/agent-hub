@@ -3,7 +3,85 @@
 **메인 런타임 = ThinkPad X13 (24시간 상시 가동).**
 맥북과 아이폰은 클라이언트 전용 — 텔레그램/대시보드로 확인·명령만 하고 하네스를 실행하지 않는다.
 
-아래 순서대로 1회 설정하면 무인 운영된다. 각 단계 후 `npm run preflight`로 검증할 수 있다.
+---
+
+> **씽크패드가 윈도우라면** → [`SETUP_WSL2.md`](./SETUP_WSL2.md) 를 먼저 보세요.
+> WSL2 설치와 systemd 활성화까지 마친 뒤 아래 설치기를 쓰면 됩니다
+> (설치기가 WSL을 감지해서 절전·자동시작·키링 단계를 알아서 분기합니다).
+
+---
+
+## 한 줄로 시작하기 (권장)
+
+아래 문서 전체를 읽을 필요 없다. 씽크패드에서 이것만 실행하면 9단계를 순서대로 안내한다.
+
+```bash
+git clone git@github.com:sun2141/agent-hub.git ~/agent-hub
+cd ~/agent-hub/harness
+npm install
+npm run setup:thinkpad
+```
+
+- 중간에 끊겨도 **다시 실행하면 이어서** 진행한다 (완료 단계는 자동으로 건너뜀).
+- sudo가 필요하거나 되돌리기 어려운 작업은 **실행 전에 명령을 보여주고 물어본다.**
+- 진행 상황: `npm run setup:thinkpad -- --status`
+- 특정 단계만 다시: `bash scripts/setup-thinkpad.sh --step 5`
+
+| 단계 | 내용 |
+|---|---|
+| 1 | 사전 점검 (OS / node / 저장소 / 의존성) |
+| 2 | CLI 3종 설치 — claude(Build) / codex(Review) / agy(Plan) |
+| 3 | 인증 시딩 — 구독 3개 로그인 (브라우저 필요) |
+| 4 | 키링 무인 잠금 해제 — agy가 매번 재인증 요구하는 문제 |
+| 5 | `.env` 이관 — 맥 경로를 리눅스 경로로 자동 변환 |
+| 6 | 프로젝트 저장소 clone 확인 |
+| 7 | **절전 방지** — 24시간 가동의 핵심 |
+| 8 | systemd 등록 — 부팅 자동 시작 + 자동 재시작 |
+| 9 | 최종 검증 — preflight + 테스트 |
+
+### 시작 전: 맥의 `.env` 가져오기
+
+5단계에서 쓴다. 씽크패드 홈에 `env-from-mac` 이라는 이름으로 두면 스크립트가 자동으로 찾는다.
+
+**방법 A — SSH 전송 (권장, 중간 저장 흔적이 없다)**
+
+씽크패드에서 먼저:
+
+```bash
+sudo apt install -y openssh-server
+sudo systemctl enable --now ssh
+whoami        # 사용자명
+hostname -I   # IP (예: 192.168.0.15)
+```
+
+맥에서 (위에서 확인한 사용자명·IP로 치환):
+
+```bash
+scp /Users/sun/agent-hub/harness/.env 사용자명@192.168.0.15:~/env-from-mac
+```
+
+둘 다 같은 공유기에 연결돼 있어야 한다. 비밀번호는 씽크패드 로그인 비밀번호.
+
+**방법 B — USB**
+
+```bash
+# 맥에서 (USB 이름이 MYUSB라면)
+cp /Users/sun/agent-hub/harness/.env /Volumes/MYUSB/env-from-mac
+```
+
+씽크패드에 꽂아 홈 폴더로 복사. **사용 후 USB를 포맷할 것** — 평문 비밀값이 들어 있고
+단순 삭제는 복구 가능하다.
+
+클라우드 드라이브·메신저·이메일로는 보내지 말 것 (휴지통·버전 기록에 남는다).
+
+**보안 주의사항은 [`SECURITY_EXPOSURE.md`](./SECURITY_EXPOSURE.md)에 따로 정리했다.**
+설치 전에 한 번 읽어보길 권한다 — 특히 `PROJECTS_ROOT` 범위와 이관 파일 처리.
+
+아래는 각 단계가 무엇을 하는지 알고 싶거나, 수동으로 진행할 때의 참고 문서다.
+
+---
+
+각 단계 후 `npm run preflight`로 검증할 수 있다.
 
 > 씽크패드를 켜기 **전에** 맥의 하네스를 반드시 멈춰야 한다 → 아래 "맥 → 씽크패드 컷오버" 참고.
 
