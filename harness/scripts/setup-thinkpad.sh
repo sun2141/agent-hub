@@ -193,11 +193,76 @@ step2() {
 
   if [ "$missing" -ne 0 ]; then
     echo
-    warn "일부 CLI가 없습니다. 없는 프로바이더는 하네스가 자동으로 건너뛰지만,"
-    warn "역할 분리(구현≠리뷰)의 효과가 줄어듭니다."
-    ask "이대로 진행할까요?" || return 1
+    warn "일부 CLI가 없습니다."
+    warn "${B}자동 폴백은 없습니다${N} — Plan/Review는 선호 프로바이더에 핀 고정이라,"
+    warn "해당 CLI가 없으면 그 단계에서 작업이 실패합니다."
+    info "5단계(.env 이관)에서 없는 프로바이더를 빼도록 자동으로 조정합니다."
+    echo
+    if ! command -v claude >/dev/null 2>&1 && ! command -v codex >/dev/null 2>&1; then
+      bad "claude와 codex가 둘 다 없으면 파이프라인이 돌지 않습니다"
+      ask "그래도 계속할까요?" || return 1
+    else
+      ok "claude 또는 codex가 있으므로 파이프라인은 동작합니다"
+      ask "이대로 진행할까요?" || return 1
+    fi
   fi
   return 0
+}
+
+# 설치되지 않은 CLI를 쓰도록 .env에 남아 있으면 그 단계에서 작업이 실패한다.
+# 실제로 있는 프로바이더로 재배치한다. (호출: step5, .env 생성 직후)
+_reconcile_providers_with_env() {
+  local env="$HARNESS_DIR/.env"
+  [ -f "$env" ] || return 0
+
+  local have_claude=0 have_codex=0 have_agy=0
+  command -v claude >/dev/null 2>&1 && have_claude=1
+  command -v codex  >/dev/null 2>&1 && have_codex=1
+  command -v agy    >/dev/null 2>&1 && have_agy=1
+
+  # 사용 가능한 대체 프로바이더 (claude 우선, 없으면 codex)
+  local fallback=""
+  [ "$have_claude" = "1" ] && fallback="claude"
+  [ -z "$fallback" ] && [ "$have_codex" = "1" ] && fallback="codex"
+  [ -z "$fallback" ] && return 0
+
+  local changed=0
+  _reassign() {  # _reassign <KEY> <필요한프로바이더>
+    local key="$1" want="$2" cur
+    cur="$(grep -E "^${key}=" "$env" | head -1 | cut -d= -f2-)"
+    [ -z "$cur" ] && cur="$want"
+    case "$cur" in
+      claude)      [ "$have_claude" = "1" ] && return 0 ;;
+      codex)       [ "$have_codex"  = "1" ] && return 0 ;;
+      antigravity) [ "$have_agy"    = "1" ] && return 0 ;;
+    esac
+    if grep -qE "^${key}=" "$env"; then
+      sed -i "s|^${key}=.*|${key}=${fallback}|" "$env"
+    else
+      printf '%s=%s\n' "$key" "$fallback" >> "$env"
+    fi
+    warn "${key}: ${cur} → ${fallback} (${cur} CLI가 설치되지 않음)"
+    changed=1
+  }
+
+  echo
+  echo "  ${B}[프로바이더 배치 점검]${N}"
+  _reassign PROVIDER_PLAN   antigravity
+  _reassign PROVIDER_BUILD  claude
+  _reassign PROVIDER_REVIEW codex
+
+  if [ "$changed" = "0" ]; then
+    ok "설치된 CLI와 .env 배치가 일치합니다"
+  else
+    if [ "$have_claude" = "1" ] && [ "$have_codex" = "1" ]; then
+      ok "구현(claude) ≠ 리뷰(codex) 교차 검증은 유지됩니다"
+    else
+      warn "구현과 리뷰가 같은 프로바이더입니다 — 자기 코드를 자기가 채점하게 됩니다"
+      info "나중에 없는 CLI를 설치하면: bash scripts/setup-thinkpad.sh --step 2"
+    fi
+    info "하네스를 처음 기동한 뒤 없는 프로바이더는 DB에서도 꺼두세요:"
+    info "  node scripts/provider-enable.js antigravity off"
+  fi
 }
 
 step3() {
@@ -317,6 +382,9 @@ step5() {
   [ -f "$src" ] || { bad "파일 없음: $src"; return 1; }
 
   bash scripts/migrate-env-to-linux.sh "$src" || return 1
+
+  # 설치되지 않은 CLI가 .env에 남아 있으면 그 단계에서 작업이 실패한다 — 지금 바로잡는다.
+  _reconcile_providers_with_env
 
   echo
   if ask "${Y}원본($src)을 삭제할까요? 평문 비밀값이 들어 있습니다${N}"; then

@@ -574,10 +574,50 @@ export function createTelegramBot(agentRunner) {
       },
     });
 
+    // 텔레그램 API가 거절한 이유(409/401 등)는 err.response.body 에만 들어 있다.
+    // err.code는 API 오류면 전부 'ETELEGRAM'이라, 그것만 찍으면 "다른 인스턴스가 폴링 중"인지
+    // "토큰이 틀렸는지" 구분이 안 된다 — 무인 운영에서 원인 파악이 불가능해진다.
+    function describeTelegramError(err) {
+      const code = err?.code || 'unknown';
+      const apiCode = err?.response?.body?.error_code;
+      const desc = err?.response?.body?.description || err?.message || '';
+      if (!apiCode && !desc) return code;
+      return `${code}${apiCode ? ` ${apiCode}` : ''}${desc ? `: ${desc}` : ''}`;
+    }
+
+    // 같은 원인으로 폴링(7초)마다 로그가 쌓이면 journal이 금방 못 쓰게 된다.
+    // 동일 오류는 처음 한 번, 이후 5분 간격으로만 남기고 생략 횟수를 함께 표시한다.
+    let lastPollErrKey = null;
+    let lastPollErrAt = 0;
+    let pollErrRepeat = 0;
+    const POLL_ERR_LOG_INTERVAL_MS = 5 * 60 * 1000;
+
     // 네트워크 에러 자동 재연결
     bot.on('polling_error', (err) => {
       const errStr = err.code || err.message || String(err);
       const isNetworkError = /ENOTFOUND|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|network/i.test(errStr);
+
+      if (!isNetworkError) {
+        const detail = describeTelegramError(err);
+        const now = Date.now();
+        if (detail === lastPollErrKey && now - lastPollErrAt < POLL_ERR_LOG_INTERVAL_MS) {
+          pollErrRepeat++;
+          return;
+        }
+        const repeated = pollErrRepeat > 0 ? ` (동일 오류 ${pollErrRepeat}회 생략됨)` : '';
+        lastPollErrKey = detail; lastPollErrAt = now; pollErrRepeat = 0;
+
+        console.error(`[Telegram] 폴링 오류: ${detail}${repeated}`);
+        const apiCode = err?.response?.body?.error_code;
+        if (apiCode === 409) {
+          console.error('[Telegram] → 같은 봇 토큰을 다른 인스턴스가 폴링 중입니다.');
+          console.error('[Telegram]   맥/VPS 등 다른 하네스를 정지하세요 — 한 번에 한 대만 가능합니다.');
+        } else if (apiCode === 401) {
+          console.error('[Telegram] → 토큰이 유효하지 않습니다. .env의 TELEGRAM_BOT_TOKEN을 확인하세요.');
+          console.error('[Telegram]   (.env를 옮기는 과정에서 값이 잘렸을 수 있습니다.)');
+        }
+        return;
+      }
 
       if (isNetworkError) {
         reconnectAttempt++;

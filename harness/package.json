@@ -23,6 +23,7 @@
     "verify": "npm test && npm run test:mp && npm run test:manager",
     "setup:thinkpad": "bash scripts/setup-thinkpad.sh",
     "providers": "node scripts/provider-status.js",
+    "providers:toggle": "node scripts/provider-enable.js",
     "backlog": "node scripts/backlog-status.js",
     "preflight": "bash scripts/preflight.sh"
   },
