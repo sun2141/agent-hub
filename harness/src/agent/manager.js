@@ -8,10 +8,10 @@
 // 매니저의 LLM 호출은 runner.js의 파이프라인(_claudeRun/_dispatchPhase)과 의도적으로
 // 분리했다: 그쪽은 taskId가 harness.tasks FK를 가진 실제 작업 row를 전제로 로그를 남기는데,
 // 매니저 스캔은 실제 작업이 아닌 1회성 브레인스토밍 호출이라 FK가 없는 가짜 taskId를 만들면
-// 로그 insert가 FK 위반으로 실패한다. 그래서 세션/로그 DB 결합이 없는 독립 spawnSync 호출을
+// 로그 insert가 FK 위반으로 실패한다. 그래서 세션/로그 DB 결합이 없는 독립 프로세스 호출을
 // 사용한다 — 실패해도 안전하게 해당 프로젝트만 skip된다.
 
-import { spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -159,24 +159,58 @@ function gatherBacklogFileSignals(project, directive) {
   }));
 }
 
-function isGhAvailable() {
-  try {
-    const res = spawnSync('gh', ['--version'], { timeout: 3000, stdio: 'pipe' });
-    return res.status === 0;
-  } catch { return false; }
+// 모든 외부 명령은 비동기로 실행한다.
+// spawnSync를 쓰면 명령이 끝날 때까지 Node 이벤트 루프가 통째로 멈춘다. 스캔은
+// 프로젝트마다 gh 호출 + 최대 120초짜리 LLM 호출을 하므로, 동기 실행이면 스캔 한 번에
+// 텔레그램 봇이 수 분간 어떤 명령에도 응답하지 못한다(실제로 그렇게 동작했다).
+function exec(cmd, args, { cwd, timeoutMs = 30_000 } = {}) {
+  return new Promise((resolve) => {
+    let stdout = '', stderr = '', done = false;
+    let proc;
+    try {
+      proc = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    } catch (err) {
+      resolve({ status: 1, stdout: '', stderr: err.message, spawnError: true });
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (done) return;
+      try { proc.kill('SIGKILL'); } catch { /* 무시 */ }
+      stderr += `\n[timeout] ${Math.round(timeoutMs / 1000)}초 초과`;
+    }, timeoutMs);
+    proc.stdout.on('data', d => { stdout += d.toString(); if (stdout.length > 400_000) stdout = stdout.slice(-200_000); });
+    proc.stderr.on('data', d => { stderr += d.toString(); if (stderr.length > 100_000) stderr = stderr.slice(-50_000); });
+    proc.on('close', code => { done = true; clearTimeout(timer); resolve({ status: code ?? 1, stdout, stderr }); });
+    proc.on('error', err => { done = true; clearTimeout(timer); resolve({ status: 1, stdout, stderr: `${stderr}\n${err.message}`, spawnError: true }); });
+  });
+}
+
+async function isGhAvailable() {
+  const res = await exec('gh', ['--version'], { timeoutMs: 5_000 });
+  return res.status === 0;
 }
 
 // repo slug는 DB의 project.github을 우선하되, 비어 있으면 디렉티브 파일에서 읽는다
 // (projects.js에는 github 필드가 없고 디렉티브 파일이 사실상의 출처다).
-function gatherGithubIssueSignals(project, directive) {
+async function gatherGithubIssueSignals(project, directive) {
   const repo = project.github || directive?.github;
-  if (!repo || !isGhAvailable()) return [];
+  if (!repo) {
+    console.log(`[manager] ${project.id}: GitHub 슬러그 없음 — 이슈 신호 건너뜀`);
+    return [];
+  }
+  if (!await isGhAvailable()) {
+    console.warn(`[manager] ${project.id}: gh CLI를 실행할 수 없음 — 이슈 신호 건너뜀 (설치/PATH 확인)`);
+    return [];
+  }
+  const res = await exec('gh', [
+    'issue', 'list', '--repo', repo, '--state', 'open',
+    '--limit', String(MAX_SIGNALS_PER_SOURCE), '--json', 'number,title,body',
+  ], { timeoutMs: 20_000 });
+  if (res.status !== 0) {
+    console.warn(`[manager] gh issue list 실패 (${repo}): ${(res.stderr || '').trim().slice(0, 200)}`);
+    return [];
+  }
   try {
-    const res = spawnSync('gh', [
-      'issue', 'list', '--repo', repo, '--state', 'open',
-      '--limit', String(MAX_SIGNALS_PER_SOURCE), '--json', 'number,title,body',
-    ], { timeout: 15000, encoding: 'utf8', stdio: 'pipe' });
-    if (res.status !== 0) return [];
     const issues = JSON.parse(res.stdout || '[]');
     return issues.map(iss => ({
       source: 'github_issue',
@@ -214,20 +248,16 @@ async function dedupeSignals(projectId, rawSignals) {
 
 // ── LLM 제안 (독립 1회성 호출) ────────────────────────────────
 
-function runManagerLLM(prompt, cwd) {
-  const res = spawnSync(CLAUDE_CLI, [
+async function runManagerLLM(prompt, cwd) {
+  // cwd가 없으면 spawn 자체가 ENOENT로 실패한다 — 저장소를 아직 clone하지 않은 프로젝트.
+  const runCwd = cwd && fs.existsSync(cwd) ? cwd : AGENT_HUB_ROOT;
+  const res = await exec(CLAUDE_CLI, [
     '--print',
     '--model', MANAGER_MODEL,
     '--dangerously-skip-permissions',
     prompt,
-  ], {
-    cwd,
-    encoding: 'utf8',
-    timeout: MANAGER_LLM_TIMEOUT_MS,
-    stdio: 'pipe',
-    env: process.env,
-  });
-  if (res.error) throw new Error(`매니저 LLM 호출 실패: ${res.error.message}`);
+  ], { cwd: runCwd, timeoutMs: MANAGER_LLM_TIMEOUT_MS });
+  if (res.spawnError) throw new Error(`매니저 LLM 호출 실패: ${(res.stderr || '').slice(0, 200)}`);
   if (res.status !== 0 && !(res.stdout || '').trim()) {
     throw new Error(`매니저 LLM 비정상 종료 (code ${res.status}): ${(res.stderr || '').slice(0, 300)}`);
   }
@@ -301,11 +331,17 @@ export function buildPrompt(project, signals) {
 
 async function scanProject(project, recentTasks) {
   const directive = readDirective(project.id);
-  const rawSignals = [
-    ...gatherTaskSignals(project.id, recentTasks),
-    ...gatherBacklogFileSignals(project, directive),
-    ...gatherGithubIssueSignals(project, directive),
-  ];
+  const taskSig = gatherTaskSignals(project.id, recentTasks);
+  const backlogSig = gatherBacklogFileSignals(project, directive);
+  const issueSig = await gatherGithubIssueSignals(project, directive);
+  const rawSignals = [...taskSig, ...backlogSig, ...issueSig];
+
+  // 왜 제안이 안 나왔는지 로그만 보고도 알 수 있게 소스별 개수를 남긴다.
+  console.log(
+    `[manager] ${project.id}: 신호 수집 — 이력 ${taskSig.length}, ` +
+    `백로그 ${backlogSig.length}, 이슈 ${issueSig.length} (repo=${project.github || directive?.github || '없음'})`
+  );
+
   if (rawSignals.length === 0) return { projectId: project.id, projectName: project.name, proposed: [], skipped: 'no_signals' };
 
   const signals = await dedupeSignals(project.id, rawSignals);
@@ -319,7 +355,7 @@ async function scanProject(project, recentTasks) {
 
   let suggestions;
   try {
-    const output = runManagerLLM(buildPrompt(project, signals), project.path);
+    const output = await runManagerLLM(buildPrompt(project, signals), project.path);
     suggestions = parseSuggestions(output);
   } catch (err) {
     return { projectId: project.id, projectName: project.name, proposed: [], skipped: `llm_error: ${err.message.slice(0, 150)}` };
@@ -380,18 +416,44 @@ export async function runManagerScan() {
   return { results, proposed: results.flatMap(r => r.proposed) };
 }
 
+// 스킵 사유를 사람이 읽을 수 있는 한 줄로 옮긴다.
+// 사유를 감추면 "왜 내 이슈를 안 읽지?"를 서버 로그 없이는 알 수 없다 — 실제로 그랬다.
+export const SKIP_REASONS = {
+  no_signals:            '신호 없음 — 백로그·이슈·실패이력이 모두 비어 있음',
+  all_signals_seen:      '이미 제안에 쓴 신호뿐',
+  no_intent_signal:      '의도 신호 없음 — 백로그/이슈 필요',
+  active_task:           '실행 중인 작업이 있어 건너뜀',
+  harness_self_excluded: '하네스 자기 저장소 — 대상 아님',
+  no_suggestions:        'LLM이 후보를 내지 않음',
+};
+
+export function describeSkip(skipped) {
+  if (!skipped) return null;
+  if (SKIP_REASONS[skipped]) return SKIP_REASONS[skipped];
+  if (String(skipped).startsWith('llm_error:')) {
+    return `LLM 호출 실패 — ${String(skipped).slice('llm_error:'.length).trim().slice(0, 120)}`;
+  }
+  return String(skipped);
+}
+
 export function formatScanDigest({ results, proposed }) {
-  // 의도 신호가 없어서 건너뛴 프로젝트는 따로 알려준다 — "제안 없음"으로 뭉뚱그리면
-  // 사용자가 할 일(백로그 작성)을 알 수 없다.
-  const needsIntent = results.filter(r => r.skipped === 'no_intent_signal').map(r => r.projectName);
-  const intentHint = needsIntent.length
-    ? `\n\n📝 의도 신호 없음: ${needsIntent.join(', ')}\n` +
-      `<code>directives/projects/&lt;id&gt;.md</code>의 <code>## Backlog</code> 섹션에 하고 싶은 작업을 적거나 GitHub 이슈를 열면 다음 스캔에서 후보로 올라옵니다.`
+  // 제안이 나오지 않은 프로젝트는 "왜 빠졌는지"를 하나씩 보여준다.
+  const proposedIds = new Set(proposed.map(p => p.projectId));
+  const skippedLines = results
+    .filter(r => !proposedIds.has(r.projectId) && r.skipped)
+    .map(r => `• ${r.projectName}: ${describeSkip(r.skipped)}`);
+  const skipBlock = skippedLines.length
+    ? `\n\n<b>건너뛴 프로젝트</b>\n${skippedLines.join('\n')}`
+    : '';
+
+  const needsIntent = results.some(r => r.skipped === 'no_intent_signal');
+  const intentHint = needsIntent
+    ? `\n\n📝 <code>directives/projects/&lt;id&gt;.md</code>의 <code>## Backlog</code> 섹션에 작업을 적거나 GitHub 이슈를 열면 다음 스캔에서 후보로 올라옵니다.`
     : '';
 
   if (proposed.length === 0) {
     const scanned = results.length;
-    return `🔍 <b>스캔 완료</b>\n\n${scanned}개 프로젝트 확인 — 새 제안 없음.${intentHint}`;
+    return `🔍 <b>스캔 완료</b>\n\n${scanned}개 프로젝트 확인 — 새 제안 없음.${skipBlock}${intentHint}`;
   }
   const byProject = new Map();
   for (const p of proposed) {
@@ -403,6 +465,6 @@ export function formatScanDigest({ results, proposed }) {
     msg += `\n<b>${name}</b>\n`;
     msg += items.map(it => `• <code>${it.id}</code> ${it.title}\n  └ ${it.rationale || '(근거 없음)'}`).join('\n') + '\n';
   }
-  msg += '\n/approve <id> 또는 /reject <id> 로 결정하세요.' + intentHint;
+  msg += '\n/approve <id> 또는 /reject <id> 로 결정하세요.' + skipBlock + intentHint;
   return msg;
 }

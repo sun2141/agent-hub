@@ -4,11 +4,11 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { projectQueries, taskQueries, backlogQueries } from '../db/db.js';
 import { spawnDetached } from './deploy_worker.js';
-import { runManagerScan, formatScanDigest } from '../agent/manager.js';
+import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 
 // 매니저 루프 (백로그 제안→승인→실행, 기본 off — MULTI_PROVIDER와 동일한 플래그 패턴)
 const MANAGER_LOOP = process.env.MANAGER_LOOP === 'true';
@@ -96,13 +96,22 @@ export function createTelegramBot(agentRunner) {
   }
 
   // ── 인증된 요청에만 명령어 실행 ───────────────────────────
+  // 핸들러가 async라 예외를 여기서 잡지 않으면 unhandledRejection으로 새고,
+  // 사용자에게는 "아무 응답이 없는" 상태로만 보인다 — DB가 잠깐 흔들려도 명령이
+  // 조용히 사라지는 셈이라 원인을 짐작할 수 없다. 실패도 반드시 알린다.
   function onCommand(pattern, handler) {
-    bot.onText(pattern, (msg, match) => {
+    bot.onText(pattern, async (msg, match) => {
       if (!isAuthorized(msg)) {
         console.warn(`[Telegram] 미인가 접근 시도: chat_id=${msg.chat.id}`);
         return;
       }
-      handler(msg, match);
+      try {
+        await handler(msg, match);
+      } catch (err) {
+        const cmd = String(msg.text || '').split(/\s+/)[0] || String(pattern);
+        console.error(`[Telegram] 명령 처리 실패 (${cmd}):`, err?.stack || err?.message || err);
+        notify(`❌ <code>${cmd}</code> 처리 중 오류\n${String(err?.message || err).slice(0, 300)}`);
+      }
     });
   }
 
@@ -118,7 +127,8 @@ export function createTelegramBot(agentRunner) {
         '/stop &lt;taskId&gt; — 작업 중지\n' +
         '/tasks — 최근 작업 이력\n' +
         '/restart — 하네스 프로세스 재시작\n' +
-        '/deploy — git push + harness 재시작 (분리 프로세스)\n\n' +
+        '/deploy — git push + harness 재시작 (분리 프로세스)\n' +
+        '/clone [projectId] — 프로젝트 저장소 내려받기 (인자 없으면 누락 목록)\n\n' +
         '<b>파이프라인:</b> 📋 Plan → 🔨 Build → 🔍 Eval → ✅\n\n' +
         '<b>rounds 예시:</b> /run facepick rounds:15 얼굴 인식 개선\n\n' +
         (MANAGER_LOOP
@@ -154,6 +164,14 @@ export function createTelegramBot(agentRunner) {
 
     onCommand(/\/projects/, async () => {
       const list = await projectQueries.list();
+      if (!list.length) {
+        notify(
+          '<b>📁 프로젝트 목록</b>\n\n등록된 프로젝트가 없습니다.\n' +
+          'DB에 시드가 안 됐거나 전부 숨김 처리된 상태입니다.\n' +
+          '하네스 기동 로그의 <code>[Boot] 프로젝트 N개 등록됨</code> 줄을 확인하세요.'
+        );
+        return;
+      }
       const msg = '<b>📁 프로젝트 목록</b>\n\n' +
         list.map(p =>
           `• <b>${p.name}</b> (<code>${p.id}</code>)\n` +
@@ -302,6 +320,125 @@ export function createTelegramBot(agentRunner) {
         );
       } catch (err) {
         notify(`❌ 배포 실패: ${err.message.substring(0, 200)}`);
+      }
+    });
+
+    // ── /clone — 등록된 프로젝트 저장소를 PROJECTS_ROOT 아래에 내려받는다 ──
+    //
+    // 왜 필요한가: projects.js의 프로젝트는 하네스 기동 시 DB에 자동 등록되지만,
+    // 실제 저장소가 project.path에 없으면 작업이 그 자리에서 실패한다. 지금까지는
+    // 서버에 직접 접속해 git clone 하는 수밖에 없었는데, 폰만 들고 있을 때는 불가능하다.
+    //
+    // 저장소 주소는 DB의 project.github, 없으면 디렉티브 파일의 "**GitHub**: owner/repo"
+    // 에서 읽는다(스캔 신호와 같은 출처라 한쪽만 고치면 되는 상황을 피한다).
+
+    // 셸을 거치지 않는 비동기 실행 — clone은 수 분이 걸릴 수 있어 봇을 막으면 안 된다.
+    function execAsync(cmd, args, { cwd, timeoutMs = 600_000 } = {}) {
+      return new Promise((resolve) => {
+        let stdout = '', stderr = '', settled = false;
+        const proc = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+        const timer = setTimeout(() => {
+          if (settled) return;
+          try { proc.kill('SIGKILL'); } catch { /* 무시 */ }
+          stderr += `\n[timeout] ${Math.round(timeoutMs / 1000)}초 초과`;
+        }, timeoutMs);
+        proc.stdout.on('data', d => { stdout += d.toString().slice(0, 4000); });
+        proc.stderr.on('data', d => { stderr += d.toString().slice(0, 4000); });
+        proc.on('close', code => { settled = true; clearTimeout(timer); resolve({ code: code ?? 1, stdout, stderr }); });
+        proc.on('error', err => { settled = true; clearTimeout(timer); resolve({ code: 1, stdout, stderr: `${stderr}\n${err.message}` }); });
+      });
+    }
+
+    // DB에 github 슬러그가 없으면 디렉티브 파일에서 읽는다.
+    function resolveRepoSlug(project) {
+      if (project.github) return project.github.trim();
+      const file = path.join(HARNESS_ROOT, '..', 'directives', 'projects', `${project.id}.md`);
+      if (!fs.existsSync(file)) return null;
+      try { return parseDirective(fs.readFileSync(file, 'utf8')).github; } catch { return null; }
+    }
+
+    function isCloned(p) {
+      try { return fs.existsSync(path.join(p, '.git')); } catch { return false; }
+    }
+
+    // /clone            → 아직 내려받지 않은 프로젝트 목록
+    // /clone <id>       → 해당 프로젝트 clone
+    onCommand(/\/clone(?:\s+(\S+))?\s*$/, async (msg, match) => {
+      const projectId = (match[1] || '').trim();
+
+      if (!projectId) {
+        const projects = await projectQueries.list();
+        const missing = projects.filter(p => !isCloned(p.path));
+        if (!missing.length) {
+          notify('✅ 등록된 프로젝트가 모두 준비돼 있습니다.');
+          return;
+        }
+        notify(
+          '<b>📥 아직 없는 프로젝트</b>\n\n' +
+          missing.map(p => {
+            const slug = resolveRepoSlug(p);
+            return `• <code>${p.id}</code> — ${slug ? slug : '⚠️ GitHub 주소 미등록'}`;
+          }).join('\n') +
+          '\n\n<code>/clone &lt;id&gt;</code> 로 내려받으세요.'
+        );
+        return;
+      }
+
+      if (!/^[a-z0-9-]{1,50}$/.test(projectId)) { notify('❌ 프로젝트 ID는 영문 소문자/숫자/하이픈만 허용됩니다'); return; }
+
+      const project = await projectQueries.get(projectId);
+      if (!project) { notify(`❌ 등록되지 않은 프로젝트: <code>${projectId}</code>\n/projects 로 목록을 확인하세요.`); return; }
+
+      if (isCloned(project.path)) { notify(`✅ 이미 있습니다: <code>${project.path}</code>`); return; }
+
+      // 폴더가 있는데 .git이 없으면 덮어쓰지 않는다 — 사용자가 뭔가 넣어둔 상태일 수 있다.
+      if (fs.existsSync(project.path) && fs.readdirSync(project.path).length > 0) {
+        notify(`❌ 경로에 이미 파일이 있는데 git 저장소가 아닙니다:\n<code>${project.path}</code>\n직접 정리한 뒤 다시 시도하세요.`);
+        return;
+      }
+
+      const slug = resolveRepoSlug(project);
+      if (!slug) {
+        notify(
+          `❌ <code>${projectId}</code> 의 GitHub 주소를 찾지 못했습니다.\n\n` +
+          `<code>directives/projects/${projectId}.md</code> 의\n` +
+          `<code>- **GitHub**: owner/repo</code> 줄을 채워주세요.`
+        );
+        return;
+      }
+      if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(slug)) {
+        notify(`❌ GitHub 주소 형식이 올바르지 않습니다: <code>${slug}</code> (owner/repo 형식이어야 합니다)`);
+        return;
+      }
+
+      notify(`📥 <b>내려받는 중</b>\n${slug} → <code>${project.path}</code>\n(저장소가 크면 몇 분 걸립니다)`);
+
+      try {
+        fs.mkdirSync(path.dirname(project.path), { recursive: true });
+        // gh auth 가 설정한 credential helper 를 쓰도록 HTTPS 로 받는다(무인 실행에 프롬프트 없음).
+        const res = await execAsync('git', ['clone', `https://github.com/${slug}.git`, project.path], { timeoutMs: 600_000 });
+        if (res.code !== 0) {
+          const err = (res.stderr || res.stdout || 'git clone 실패').trim().slice(-500);
+          notify(`❌ <b>clone 실패</b>\n<code>${slug}</code>\n\n${err}`);
+          return;
+        }
+
+        // package.json 이 있으면 의존성까지 받아둔다 — 없으면 첫 검증 게이트가 바로 깨진다.
+        let depNote = '';
+        if (fs.existsSync(path.join(project.path, 'package.json'))) {
+          notify('📦 의존성 설치 중... (npm install)');
+          const npmRes = await execAsync('npm', ['install', '--no-audit', '--no-fund'], { cwd: project.path, timeoutMs: 900_000 });
+          depNote = npmRes.code === 0
+            ? '\n📦 의존성 설치 완료'
+            : `\n⚠️ npm install 실패 — 수동 확인 필요:\n<code>${(npmRes.stderr || '').trim().slice(-300)}</code>`;
+        }
+
+        notify(
+          `✅ <b>준비 완료</b>\n<code>${project.name}</code>\n${project.path}${depNote}\n\n` +
+          `이제 <code>/scan</code> 대상에 포함됩니다.`
+        );
+      } catch (err) {
+        notify(`❌ clone 중 오류: ${err.message.substring(0, 300)}`);
       }
     });
 
