@@ -454,6 +454,18 @@ export const taskQueries = {
     );
   },
 
+  // 오늘(UTC) 생성된 브랜치+PR 모드 작업 수.
+  // 매니저 승인(/approve)과 원문 백로그 버튼 실행이 같은 일일 상한을 공유하게 하려고 쓴다.
+  // backlog_items 기준으로만 세면 버튼 경로가 상한을 통째로 우회한다.
+  async countBranchModeToday() {
+    const row = await dbGet(
+      `SELECT COUNT(*) AS cnt FROM harness.tasks
+       WHERE branch_mode = 1
+         AND created_at >= to_char(date_trunc('day', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD HH24:MI:SS')`
+    );
+    return row ? Number(row.cnt) : 0;
+  },
+
   async getRateLimitedTasks() {
     return dbAll(
       "SELECT * FROM harness.tasks WHERE status = 'rate_limited' ORDER BY created_at DESC"
