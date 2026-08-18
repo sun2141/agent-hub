@@ -95,6 +95,38 @@ else
   warn "MANAGER_LOOP≠true — /scan /backlog /approve 가 '비활성화' 응답만 함"
 fi
 
+echo "── 텔레그램 도달성 (설정됨 ≠ 동작함) ─────"
+# 2026-08-18: 토큰이 설정돼 있고 curl로는 되는데 Node에서만 전송이 전부 실패한 사고가 있었다.
+# 원인은 Happy Eyeballs 250ms 경합 + AAAA만 있는 IPv6 경로 부재였다.
+# 그래서 "값이 있나"가 아니라 "하네스와 같은 런타임(Node)으로 실제로 나가지나"를 본다.
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  warn "TELEGRAM_BOT_TOKEN 없음 — 도달성 점검 건너뜀"
+else
+  TG_OUT=$(node -e "
+    import('./src/util/netdefaults.js').catch(()=>{}).then(async () => {
+      const t = setTimeout(() => { console.log('TIMEOUT'); process.exit(0); }, 15000);
+      try {
+        const r = await fetch('https://api.telegram.org/bot' + process.env.TELEGRAM_BOT_TOKEN + '/getMe');
+        const j = await r.json();
+        console.log(j.ok ? 'OK ' + (j.result?.username || '?') : 'BAD ' + (j.description || r.status));
+      } catch (e) {
+        const codes = e.cause?.errors?.map(x => x.code).join(',') || e.cause?.code || e.message;
+        console.log('NET ' + codes);
+      }
+      clearTimeout(t); process.exit(0);
+    });
+  " 2>&1 | tail -1)
+  case "$TG_OUT" in
+    OK*)      ok "텔레그램 API 도달 (@${TG_OUT#OK })" ;;
+    BAD*)     bad "텔레그램 토큰 거부: ${TG_OUT#BAD }" ;;
+    TIMEOUT)  bad "텔레그램 API 15초 무응답 — 네트워크 경로 확인" ;;
+    NET*)     bad "텔레그램 API 연결 실패: ${TG_OUT#NET }  (ENETUNREACH/ETIMEDOUT 조합이면 IPv6 경합 문제)" ;;
+    *)        warn "텔레그램 점검 결과 불명: $TG_OUT" ;;
+  esac
+  NETCFG=$(node -e "import('./src/util/netdefaults.js').then(m=>console.log(m.netDefaultsSummary())).catch(()=>console.log('미적용'))" 2>/dev/null | tail -1)
+  ok "네트워크 기본값 — $NETCFG"
+fi
+
 echo "── DB 연결 + providers 테이블 ─────────────"
 if [ -n "${NEON_DATABASE_URL:-}" ]; then
   node scripts/provider-status.js >/tmp/pf_providers.txt 2>&1 && { ok "providers 조회 성공"; sed 's/^/    /' /tmp/pf_providers.txt; } \

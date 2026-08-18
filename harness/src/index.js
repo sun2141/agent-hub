@@ -2,6 +2,8 @@
 // 하네스 진입점
 
 import 'dotenv/config';
+// ↓ 네트워크 기본값은 어떤 HTTP 클라이언트보다 먼저 잡혀야 한다 (WSL2 IPv6 대응)
+import { netDefaultsSummary } from './util/netdefaults.js';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
@@ -148,6 +150,7 @@ async function main() {
   await initDb();
   await projectQueries.seed(PROJECTS);
   console.log(`[Boot] 프로젝트 ${PROJECTS.length}개 등록됨`);
+  console.log(`[Boot] 네트워크 기본값 — ${netDefaultsSummary()}`);
 
   const recoveredTasks = await taskQueries.pauseInterruptedActiveTasks();
   if (recoveredTasks.length > 0) {
