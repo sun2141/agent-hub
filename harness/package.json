@@ -28,6 +28,7 @@
     "providers": "node scripts/provider-status.js",
     "providers:toggle": "node scripts/provider-enable.js",
     "backlog": "node scripts/backlog-status.js",
+    "backlog:inspect": "node scripts/backlog-inspect.js",
     "preflight": "bash scripts/preflight.sh"
   },
   "dependencies": {

@@ -3,7 +3,7 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import { projectQueries, taskQueries, backlogQueries, logQueries } from '../db/db.js';
-import { formatResumeAt, humanizeAgo } from '../util/time.js';
+import { formatResumeAt, humanizeAgo, formatLocal } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import { listBacklog, addBacklogItem, findBacklogItem, MAX_ITEM_LENGTH } from '../agent/backlogFile.js';
@@ -96,6 +96,72 @@ export function decodeRunCallback(data) {
   const [, projectId, ref] = parts;
   if (!/^[A-Za-z0-9._-]+$/.test(projectId) || !/^[0-9a-f]{8,40}$/.test(ref)) return null;
   return { projectId, ref };
+}
+
+// 제안 승인/거부 버튼. 백로그 id는 backlog_<ms>_<8자> 라 40바이트 안쪽이다.
+export const DECISION_CALLBACK_PREFIX = 'bldec';
+export const BACKLOG_ID_RE = /^backlog_[0-9]+_[a-z0-9]+$/;
+
+export function encodeDecisionCallback(action, id) {
+  if (action !== 'apv' && action !== 'rej') return null;
+  if (!BACKLOG_ID_RE.test(String(id ?? ''))) return null;
+  const data = `${DECISION_CALLBACK_PREFIX}|${action}|${id}`;
+  if (Buffer.byteLength(data, 'utf8') > CALLBACK_DATA_LIMIT) return null;
+  return data;
+}
+
+export function decodeDecisionCallback(data) {
+  const parts = String(data ?? '').split('|');
+  if (parts.length !== 3 || parts[0] !== DECISION_CALLBACK_PREFIX) return null;
+  const [, action, id] = parts;
+  if (action !== 'apv' && action !== 'rej') return null;
+  if (!BACKLOG_ID_RE.test(id)) return null;
+  return { action, id };
+}
+
+// 제안 하나 = 메시지 하나. 버튼이 어느 항목의 것인지 헷갈릴 여지를 없앤다.
+export const PROPOSALS_PER_MESSAGE_LIMIT = 8;
+
+export function buildProposalMessage(item) {
+  const apv = encodeDecisionCallback('apv', item.id);
+  const rej = encodeDecisionCallback('rej', item.id);
+
+  let text = `📥 <b>제안</b> — ${escapeHtml(item.project_name || item.project_id)}\n`;
+  text += `<code>${escapeHtml(item.id)}</code>\n\n`;
+  text += `<b>${escapeHtml(item.title)}</b>\n`;
+  if (item.description) text += `${escapeHtml(String(item.description).slice(0, 400))}\n`;
+  if (item.rationale) text += `\n근거: ${escapeHtml(String(item.rationale).slice(0, 200))}\n`;
+
+  const row = [];
+  if (apv) row.push({ text: '✅ 승인 (브랜치+PR)', callback_data: apv });
+  if (rej) row.push({ text: '🚫 거부', callback_data: rej });
+  if (!row.length) {
+    text += `\n⚠️ 버튼을 만들 수 없습니다. <code>/approve ${escapeHtml(item.id)}</code> 로 실행하세요.`;
+  }
+  return { text, reply_markup: row.length ? { inline_keyboard: [row] } : undefined };
+}
+
+// 대기 목록만 보여주면 처리된 항목이 조용히 사라져서 "3개였는데 2개네?"가 된다.
+// 최근 결정을 함께 보여줘 사라진 항목의 행방을 같은 화면에서 알 수 있게 한다.
+export function buildProposalsHeader({ pending = [], recent = [], hidden = 0 } = {}) {
+  let msg = `<b>📥 대기 중인 제안 ${pending.length}건</b>\n`;
+  if (hidden > 0) msg += `(아래에 ${pending.length - hidden}건만 표시 — 나머지 ${hidden}건은 처리 후 다시 확인)\n`;
+
+  const decided = recent.filter(r => r.status === 'approved' || r.status === 'rejected').slice(0, 5);
+  if (decided.length) {
+    msg += `\n<b>최근 처리됨</b>\n`;
+    for (const d of decided) {
+      const mark = d.status === 'approved' ? '✅' : '🚫';
+      const when = d.decided_at ? ` · ${formatLocal(d.decided_at)}` : '';
+      msg += `${mark} ${escapeHtml(String(d.title || '').slice(0, 44))}${when}\n`;
+      if (d.task_id) msg += `   <code>${escapeHtml(d.task_id)}</code>\n`;
+    }
+    msg += `\n처리된 항목의 근거 신호는 소진되어 /scan 에 다시 올라오지 않습니다.\n`;
+  }
+  if (!pending.length && !decided.length) {
+    msg += `\n제안이 없습니다. /scan 으로 백로그·GitHub 이슈를 읽어 후보를 만들어 보세요.\n`;
+  }
+  return msg;
 }
 
 // 원문 백로그를 프로젝트별 메시지로 조립한다. 버튼을 못 만드는 항목(id가 너무 긺)은
@@ -283,6 +349,43 @@ export function createTelegramBot(agentRunner) {
     return null;
   }
 
+  // 승인·거부 로직은 명령어(/approve, /reject)와 인라인 버튼이 함께 쓴다.
+  // 두 벌로 두면 한쪽만 고쳐져서 상한이 새거나 상태 전이가 어긋난다.
+  async function approveProposal(id) {
+    if (!BACKLOG_ID_RE.test(id)) return { ok: false, reason: '잘못된 백로그 ID 형식' };
+    const item = await backlogQueries.get(id);
+    if (!item) return { ok: false, reason: `백로그 항목 없음: ${id}` };
+    if (item.status !== 'proposed') return { ok: false, reason: `이미 처리된 항목입니다 (상태: ${item.status})` };
+
+    const gate = await checkBranchRunGate();
+    if (gate) return { ok: false, reason: gate };
+
+    const prompt = `${item.title}\n\n${item.description || ''}`.trim();
+    const taskId = await agentRunner.run({ projectId: item.project_id, prompt, branchMode: true, backlogItemId: id });
+    await backlogQueries.markApproved(id, taskId);
+    return { ok: true, item, taskId };
+  }
+
+  async function rejectProposal(id) {
+    if (!BACKLOG_ID_RE.test(id)) return { ok: false, reason: '잘못된 백로그 ID 형식' };
+    const item = await backlogQueries.get(id);
+    if (!item) return { ok: false, reason: `백로그 항목 없음: ${id}` };
+    if (item.status !== 'proposed') return { ok: false, reason: `이미 처리된 항목입니다 (상태: ${item.status})` };
+    await backlogQueries.markRejected(id);
+    return { ok: true, item };
+  }
+
+  // 대기 중인 제안을 헤더 + 항목별 메시지(버튼 포함)로 보낸다. /proposals 와 /scan 이 공유한다.
+  async function sendProposals(pending) {
+    const shown = pending.slice(0, PROPOSALS_PER_MESSAGE_LIMIT);
+    const recent = await backlogQueries.listRecent(10).catch(() => []);
+    await notify(buildProposalsHeader({ pending, recent, hidden: pending.length - shown.length }));
+    for (const item of shown) {
+      const m = buildProposalMessage(item);
+      await notify(m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {});
+    }
+  }
+
   // ── 명령어 등록 ───────────────────────────────────────────
   function registerCommands() {
     onCommand(/\/help/, () => {
@@ -305,9 +408,9 @@ export function createTelegramBot(agentRunner) {
         (MANAGER_LOOP
           ? '<b>매니저 루프</b>\n' +
             '/scan — 백로그·이슈를 읽어 LLM이 작업 후보 제안\n' +
-            '/proposals — 대기 중인 제안 목록 (예전 /backlog)\n' +
-            '/approve &lt;id&gt; — 제안 승인 → 브랜치+PR 모드로 실행\n' +
-            '/reject &lt;id&gt; — 제안 거절\n' +
+            '/proposals — 대기 중인 제안 + <b>승인/거부 버튼</b> · 최근 처리 이력\n' +
+            '/approve &lt;id&gt; — (버튼 대신 직접) 승인 → 브랜치+PR 모드로 실행\n' +
+            '/reject &lt;id&gt; — (버튼 대신 직접) 거부\n' +
             '/rollback &lt;projectId&gt; — 최근 완료 커밋 되돌리기(revert)\n'
           : '<i>매니저 루프 비활성화 상태 (.env MANAGER_LOOP=true 로 활성화)</i>\n')
       );
@@ -638,7 +741,12 @@ export function createTelegramBot(agentRunner) {
       notify('🔍 스캔 시작... (프로젝트별 LLM 호출 — 다소 시간이 걸릴 수 있습니다)');
       try {
         const scanResult = await runManagerScan();
-        notify(formatScanDigest(scanResult));
+        await notify(formatScanDigest(scanResult));
+        // 제안이 나왔으면 곧바로 누를 수 있게 버튼 메시지를 이어 보낸다 —
+        // id를 복사해 /approve 를 치는 단계를 없애려는 것이 목적이다.
+        if (scanResult.proposed?.length) {
+          await sendProposals(await backlogQueries.listPending());
+        }
       } catch (err) {
         notify(`❌ 스캔 실패: ${err.message.substring(0, 200)}`);
       }
@@ -665,12 +773,7 @@ export function createTelegramBot(agentRunner) {
     // /proposals — 매니저 루프가 LLM으로 만든 작업 후보(DB backlog_items). 예전 /backlog.
     onCommand(/\/proposals/, async () => {
       if (!requireManagerLoop()) return;
-      const items = await backlogQueries.listPending();
-      if (!items.length) { notify('대기 중인 제안 없음. /scan 으로 새로 찾아보세요.'); return; }
-      const msg = '<b>📥 대기 중인 매니저 제안</b>\n\n' +
-        items.map(it => `• <code>${it.id}</code> [${it.project_name}] ${escapeHtml(it.title)}\n  └ ${escapeHtml(it.rationale || '-')}`).join('\n\n') +
-        '\n\n/approve &lt;id&gt; 또는 /reject &lt;id&gt;';
-      notify(msg);
+      await sendProposals(await backlogQueries.listPending());
     });
 
     // /add <projectId> <내용> — directives 파일의 "## Backlog"에 한 줄 추가.
@@ -706,20 +809,16 @@ export function createTelegramBot(agentRunner) {
       const id = match[1].trim();
       if (!/^backlog_[0-9]+_[a-z0-9]+$/.test(id)) { notify('❌ 잘못된 백로그 ID 형식'); return; }
 
-      const item = await backlogQueries.get(id);
-      if (!item) { notify(`❌ 백로그 항목 없음: <code>${id}</code>`); return; }
-      if (item.status !== 'proposed') { notify(`❌ 이미 처리된 항목입니다 (상태: ${item.status})`); return; }
-
-      const gate = await checkBranchRunGate();
-      if (gate) { notify(`❌ ${gate}`); return; }
-
-      const prompt = `${item.title}\n\n${item.description || ''}`.trim();
       try {
-        const taskId = await agentRunner.run({ projectId: item.project_id, prompt, branchMode: true, backlogItemId: id });
-        await backlogQueries.markApproved(id, taskId);
-        notify(`✅ <b>승인됨</b>\n<code>${id}</code> → <code>${taskId}</code>\n브랜치+PR 모드로 실행됩니다. 완료 시 PR 링크를 알려드립니다(자동 병합 없음).`);
+        const res = await approveProposal(id);
+        if (!res.ok) { notify(`❌ ${escapeHtml(res.reason)}`); return; }
+        notify(
+          `✅ <b>승인됨</b>\n${escapeHtml(res.item.title)}\n` +
+          `<code>${id}</code> → <code>${res.taskId}</code>\n\n` +
+          `브랜치+PR 모드로 실행됩니다. 완료 시 PR 링크를 알려드립니다(자동 병합 없음).`
+        );
       } catch (err) {
-        notify(`❌ 실행 시작 실패: ${err.message.substring(0, 200)}`);
+        notify(`❌ 실행 시작 실패: ${escapeHtml(String(err.message).substring(0, 200))}`);
       }
     });
 
@@ -728,11 +827,9 @@ export function createTelegramBot(agentRunner) {
       if (!requireManagerLoop()) return;
       const id = match[1].trim();
       if (!/^backlog_[0-9]+_[a-z0-9]+$/.test(id)) { notify('❌ 잘못된 백로그 ID 형식'); return; }
-      const item = await backlogQueries.get(id);
-      if (!item) { notify(`❌ 백로그 항목 없음: <code>${id}</code>`); return; }
-      if (item.status !== 'proposed') { notify(`❌ 이미 처리된 항목입니다 (상태: ${item.status})`); return; }
-      await backlogQueries.markRejected(id);
-      notify(`🗑 거절됨: <code>${id}</code>`);
+      const res = await rejectProposal(id);
+      if (!res.ok) { notify(`❌ ${escapeHtml(res.reason)}`); return; }
+      notify(`🚫 <b>거부됨</b>\n${escapeHtml(res.item.title)}\n<code>${id}</code>`);
     });
 
     // /rollback <projectId> — 가장 최근 완료(done) 작업의 커밋을 git revert + push (break-glass, 직접 실행)
@@ -833,55 +930,89 @@ export function createTelegramBot(agentRunner) {
         catch (err) { console.warn('[Telegram] answerCallbackQuery 실패:', err.message); }
       };
 
-      const parsed = decodeRunCallback(query.data);
-      if (!parsed) { await answer('알 수 없는 버튼입니다'); return; }
-      const { projectId, ref } = parsed;
-      const key = `${projectId}|${ref}`;
+      // 버튼은 두 종류다: 원문 백로그 실행(blrun)과 제안 승인/거부(bldec).
+      const run = decodeRunCallback(query.data);
+      const decision = run ? null : decodeDecisionCallback(query.data);
+      if (!run && !decision) { await answer('알 수 없는 버튼입니다'); return; }
 
+      // 연타 방지 키는 콜백 데이터 자체 — 같은 버튼이 두 번 들어와도 한 번만 처리된다.
+      const key = String(query.data);
       if (_runningCallbacks.has(key)) { await answer('이미 처리 중입니다'); return; }
       _runningCallbacks.add(key);
 
-      try {
-        // 해시로 다시 찾는다 — 그 사이 항목이 지워졌거나 문장이 바뀌었으면 여기서 걸린다.
-        const item = findBacklogItem(projectId, ref);
-        if (!item) {
-          await answer('백로그에서 항목을 찾지 못했습니다. 파일이 바뀌었을 수 있습니다 — /backlog 로 다시 불러오세요', true);
-          return;
-        }
-
-        const gate = await checkBranchRunGate();
-        if (gate) { await answer(gate, true); notify(`❌ 백로그 실행 거부\n${escapeHtml(gate)}`); return; }
-
-        await answer('실행을 시작합니다…');
-        const taskId = await agentRunner.run({ projectId, prompt: item.text, branchMode: true });
-
-        // 버튼으로 이미 실행한 항목을 /scan이 "아직 안 한 요구사항"으로 보고 다시 제안하면
-        // 같은 일이 두 번 돈다. 매니저가 쓰는 소진 기록에 같은 형식(backlog_file + 내용 해시)으로
-        // 남겨 둔다. 파일은 건드리지 않는다 — 사람이 편집 중일 수 있다.
-        try {
-          await backlogQueries.markSignalsSeen(projectId, [{ source: 'backlog_file', source_ref: ref }]);
-        } catch (err) {
-          console.warn(`[Telegram] 백로그 신호 소진 기록 실패 (${projectId}/${ref}): ${err.message}`);
-        }
-
-        notify(
-          `✅ <b>백로그 실행</b>\n[${escapeHtml(projectId)}] ${escapeHtml(item.text)}\n` +
-          `<code>${taskId}</code>\n\n브랜치+PR 모드입니다. 완료되면 PR 링크를 보냅니다(자동 병합 없음).\n` +
-          `이 항목은 /scan 재제안 대상에서 제외됩니다 (파일의 <code>- [ ]</code>는 그대로).`
-        );
-
-        // 프로젝트당 동시 1작업이라 같은 메시지의 나머지 버튼도 어차피 실행되지 않는다.
-        // 눌러도 안 되는 버튼을 남겨두면 고장으로 오해하므로 키보드를 걷어낸다.
+      // 처리한 항목의 버튼은 걷어낸다. 눌러도 반응 없는 버튼을 남기면 고장으로 보인다.
+      const clearKeyboard = async () => {
         try {
           await bot.editMessageReplyMarkup(
             { inline_keyboard: [] },
             { chat_id: query.message.chat.id, message_id: query.message.message_id }
           );
         } catch (err) { console.warn('[Telegram] 버튼 제거 실패:', err.message); }
+      };
+
+      try {
+        if (run) {
+          const { projectId, ref } = run;
+          // 해시로 다시 찾는다 — 그 사이 항목이 지워졌거나 문장이 바뀌었으면 여기서 걸린다.
+          const item = findBacklogItem(projectId, ref);
+          if (!item) {
+            await answer('백로그에서 항목을 찾지 못했습니다. 파일이 바뀌었을 수 있습니다 — /backlog 로 다시 불러오세요', true);
+            return;
+          }
+
+          const gate = await checkBranchRunGate();
+          if (gate) { await answer(gate, true); notify(`❌ 백로그 실행 거부\n${escapeHtml(gate)}`); return; }
+
+          await answer('실행을 시작합니다…');
+          const taskId = await agentRunner.run({ projectId, prompt: item.text, branchMode: true });
+
+          // 버튼으로 이미 실행한 항목을 /scan이 "아직 안 한 요구사항"으로 보고 다시 제안하면
+          // 같은 일이 두 번 돈다. 매니저가 쓰는 소진 기록에 같은 형식으로 남겨 둔다.
+          // 파일은 건드리지 않는다 — 사람이 편집 중일 수 있다.
+          try {
+            await backlogQueries.markSignalsSeen(projectId, [{ source: 'backlog_file', source_ref: ref }]);
+          } catch (err) {
+            console.warn(`[Telegram] 백로그 신호 소진 기록 실패 (${projectId}/${ref}): ${err.message}`);
+          }
+
+          notify(
+            `✅ <b>백로그 실행</b>\n[${escapeHtml(projectId)}] ${escapeHtml(item.text)}\n` +
+            `<code>${taskId}</code>\n\n브랜치+PR 모드입니다. 완료되면 PR 링크를 보냅니다(자동 병합 없음).\n` +
+            `이 항목은 /scan 재제안 대상에서 제외됩니다 (파일의 <code>- [ ]</code>는 그대로).`
+          );
+          await clearKeyboard();
+          return;
+        }
+
+        // ── 제안 승인 / 거부 ──
+        const { action, id } = decision;
+        if (action === 'rej') {
+          const res = await rejectProposal(id);
+          if (!res.ok) { await answer(res.reason, true); return; }
+          await answer('거부했습니다');
+          notify(`🚫 <b>거부됨</b>\n${escapeHtml(res.item.title)}\n<code>${escapeHtml(id)}</code>`);
+          await clearKeyboard();
+          return;
+        }
+
+        await answer('승인 처리 중…');
+        const res = await approveProposal(id);
+        if (!res.ok) {
+          // 상한 초과나 중복 승인은 흔한 경우다 — 알림으로도 남겨 원인을 알 수 있게 한다.
+          await answer(res.reason, true);
+          notify(`❌ <b>승인 거부</b>\n<code>${escapeHtml(id)}</code>\n${escapeHtml(res.reason)}`);
+          return;
+        }
+        notify(
+          `✅ <b>승인됨</b>\n${escapeHtml(res.item.title)}\n` +
+          `<code>${escapeHtml(id)}</code> → <code>${res.taskId}</code>\n\n` +
+          `브랜치+PR 모드로 실행됩니다. 완료 시 PR 링크를 알려드립니다(자동 병합 없음).`
+        );
+        await clearKeyboard();
       } catch (err) {
         console.error('[Telegram] 콜백 처리 실패:', err?.stack || err?.message || err);
-        await answer('실행 실패 — 메시지를 확인하세요', true);
-        notify(`❌ <b>백로그 실행 실패</b>\n${escapeHtml(String(err?.message || err).slice(0, 300))}`);
+        await answer('처리 실패 — 메시지를 확인하세요', true);
+        notify(`❌ <b>버튼 처리 실패</b>\n${escapeHtml(String(err?.message || err).slice(0, 300))}`);
       } finally {
         _runningCallbacks.delete(key);
       }

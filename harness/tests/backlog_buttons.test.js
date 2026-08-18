@@ -10,6 +10,7 @@ import path from 'path';
 import { listBacklog, addBacklogItem, findBacklogItem, parseBacklogItems, MAX_ITEM_LENGTH } from '../src/agent/backlogFile.js';
 import {
   encodeRunCallback, decodeRunCallback, buildBacklogSections, buildBacklogEmptyMessage,
+  encodeDecisionCallback, decodeDecisionCallback, buildProposalMessage, buildProposalsHeader,
   escapeHtml, CALLBACK_DATA_LIMIT, BACKLOG_ITEMS_PER_PROJECT,
 } from '../src/telegram/bot.js';
 
@@ -166,6 +167,80 @@ console.log('\n[5] 백로그가 비었을 때 안내');
 
   assert.strictEqual(escapeHtml('<a href="x">&'), '&lt;a href="x"&gt;&amp;');
   ok('escapeHtml이 &, <, > 를 처리한다');
+}
+
+console.log('\n[6] 제안 승인/거부 콜백');
+{
+  const ID = 'backlog_1755500000_ab12cd34';
+  const apv = encodeDecisionCallback('apv', ID);
+  const rej = encodeDecisionCallback('rej', ID);
+  assert.ok(Buffer.byteLength(apv, 'utf8') <= CALLBACK_DATA_LIMIT);
+  assert.deepStrictEqual(decodeDecisionCallback(apv), { action: 'apv', id: ID });
+  assert.deepStrictEqual(decodeDecisionCallback(rej), { action: 'rej', id: ID });
+  ok('승인/거부 콜백이 왕복하고 64바이트를 넘지 않는다');
+
+  for (const bad of [['del', ID], ['apv', '../etc/passwd'], ['apv', 'backlog_bad'], ['apv', ''], ['', ID]]) {
+    assert.strictEqual(encodeDecisionCallback(bad[0], bad[1]), null, `거부: ${bad}`);
+  }
+  ok('허용되지 않은 동작이나 id 형식은 인코딩 자체가 안 된다');
+
+  // 두 버튼 종류가 서로의 데이터를 삼키면 엉뚱한 작업이 돈다
+  assert.strictEqual(decodeRunCallback(apv), null);
+  assert.strictEqual(decodeDecisionCallback(encodeRunCallback('palmoni', '0123456789abcdef')), null);
+  ok('실행 버튼과 승인/거부 버튼의 데이터는 서로 해석되지 않는다');
+}
+
+console.log('\n[7] 제안 메시지 조립');
+{
+  const item = {
+    id: 'backlog_1755500000_ab12cd34', project_id: 'palmoni', project_name: 'Palmoni',
+    title: '로그인 <b>잠금</b> 추가', description: '실패 3회 시 60초', rationale: 'GitHub 이슈 #12',
+  };
+  const m = buildProposalMessage(item);
+  const row = m.reply_markup.inline_keyboard[0];
+  assert.strictEqual(row.length, 2);
+  assert.deepStrictEqual(decodeDecisionCallback(row[0].callback_data), { action: 'apv', id: item.id });
+  assert.deepStrictEqual(decodeDecisionCallback(row[1].callback_data), { action: 'rej', id: item.id });
+  ok('제안마다 승인·거부 버튼이 한 쌍씩 붙는다');
+
+  assert.ok(m.text.includes('&lt;b&gt;잠금&lt;/b&gt;'), 'HTML 이스케이프');
+  assert.ok(m.text.includes('실패 3회 시 60초') && m.text.includes('GitHub 이슈 #12'));
+  ok('제목·설명·근거가 본문에 담기고 HTML은 이스케이프된다');
+
+  const broken = buildProposalMessage({ ...item, id: 'not-a-backlog-id' });
+  assert.strictEqual(broken.reply_markup, undefined);
+  assert.ok(broken.text.includes('/approve'), '버튼을 못 만들면 대체 방법을 알려야 함');
+  ok('버튼을 만들 수 없으면 조용히 빠지지 않고 명령어를 안내한다');
+}
+
+console.log('\n[8] 제안 헤더 — 사라진 항목의 행방');
+{
+  const header = buildProposalsHeader({
+    pending: [{ id: 'a' }, { id: 'b' }],
+    recent: [
+      { status: 'approved', title: '이슈 1번 작업', task_id: 'task_1_x', decided_at: '2026-08-18 03:11:00' },
+      { status: 'rejected', title: '이슈 2번 작업', decided_at: '2026-08-18 03:20:00' },
+      { status: 'proposed', title: '아직 대기중', proposed_at: '2026-08-18 03:30:00' },
+    ],
+  });
+  assert.ok(header.includes('대기 중인 제안 2건'));
+  ok('대기 건수를 보여준다');
+
+  // 이게 핵심: 승인/거부되어 목록에서 빠진 항목이 어디로 갔는지 같은 화면에서 보여야 한다
+  assert.ok(header.includes('✅ 이슈 1번 작업') && header.includes('task_1_x'));
+  assert.ok(header.includes('🚫 이슈 2번 작업'));
+  assert.ok(!header.includes('아직 대기중'), '대기중 항목은 처리 이력에 넣지 않는다');
+  ok('최근 승인·거부된 항목과 taskId를 함께 보여준다');
+
+  assert.ok(header.includes('12:11'), 'KST로 표시');
+  ok('처리 시각이 KST로 표시된다');
+
+  assert.ok(buildProposalsHeader({ pending: [], recent: [] }).includes('/scan'));
+  ok('아무것도 없으면 /scan 을 안내한다');
+
+  const many = buildProposalsHeader({ pending: new Array(12).fill({ id: 'x' }), recent: [], hidden: 4 });
+  assert.ok(many.includes('나머지 4건'));
+  ok('표시 상한을 넘으면 가려진 건수를 밝힌다');
 }
 
 console.log(`\n✅ backlog_buttons: ${passed}개 통과\n`);

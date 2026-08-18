@@ -300,6 +300,26 @@ export const projectQueries = {
     `);
   },
 
+  // 상태와 무관하게 최신순. "대기 목록에서 사라진 항목이 어떻게 됐나"를 답하려면
+  // proposed 만 보는 listPending 으로는 부족하다.
+  async listRecent(limit = 20) {
+    return dbAll(
+      `SELECT b.*, p.name AS project_name FROM harness.backlog_items b
+       JOIN harness.projects p ON b.project_id = p.id
+       ORDER BY COALESCE(b.decided_at, b.proposed_at) DESC
+       LIMIT $1`,
+      [limit]
+    );
+  },
+
+  // 소진 기록 전체 — 어떤 신호가 이미 제안에 쓰여 다시 안 올라오는지 확인용
+  async allSeenSignals() {
+    return dbAll(
+      `SELECT project_id, source, source_ref FROM harness.backlog_seen_signals
+       ORDER BY project_id, source, source_ref`
+    );
+  },
+
   async get(id) {
     return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
