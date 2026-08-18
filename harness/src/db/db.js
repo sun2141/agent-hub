@@ -300,26 +300,6 @@ export const projectQueries = {
     `);
   },
 
-  // 상태와 무관하게 최신순. "대기 목록에서 사라진 항목이 어떻게 됐나"를 답하려면
-  // proposed 만 보는 listPending 으로는 부족하다.
-  async listRecent(limit = 20) {
-    return dbAll(
-      `SELECT b.*, p.name AS project_name FROM harness.backlog_items b
-       JOIN harness.projects p ON b.project_id = p.id
-       ORDER BY COALESCE(b.decided_at, b.proposed_at) DESC
-       LIMIT $1`,
-      [limit]
-    );
-  },
-
-  // 소진 기록 전체 — 어떤 신호가 이미 제안에 쓰여 다시 안 올라오는지 확인용
-  async allSeenSignals() {
-    return dbAll(
-      `SELECT project_id, source, source_ref FROM harness.backlog_seen_signals
-       ORDER BY project_id, source, source_ref`
-    );
-  },
-
   async get(id) {
     return dbGet('SELECT * FROM harness.projects WHERE id = $1', [id]);
   },
@@ -748,6 +728,26 @@ export const backlogQueries = {
   // 이미 제안 근거로 소진된 원본 신호 ref 집합 — 재스캔 시 같은 신호 재제안 방지.
   // backlog_items가 아니라 backlog_seen_signals를 본다(제안 row의 source는 항상
   // 'manager_suggestion'이라 원본 신호와 매칭되지 않기 때문).
+  // 상태와 무관하게 최신순. "대기 목록에서 사라진 항목이 어떻게 됐나"를 답하려면
+  // proposed 만 보는 listPending 으로는 부족하다.
+  async listRecent(limit = 20) {
+    return dbAll(
+      `SELECT b.*, p.name AS project_name FROM harness.backlog_items b
+       JOIN harness.projects p ON b.project_id = p.id
+       ORDER BY COALESCE(b.decided_at, b.proposed_at) DESC
+       LIMIT $1`,
+      [limit]
+    );
+  },
+
+  // 소진 기록 전체 — 어떤 신호가 이미 제안에 쓰여 다시 안 올라오는지 확인용
+  async allSeenSignals() {
+    return dbAll(
+      `SELECT project_id, source, source_ref FROM harness.backlog_seen_signals
+       ORDER BY project_id, source, source_ref`
+    );
+  },
+
   async seenRefs(projectId, source) {
     const rows = await dbAll(
       `SELECT source_ref FROM harness.backlog_seen_signals WHERE project_id = $1 AND source = $2`,
