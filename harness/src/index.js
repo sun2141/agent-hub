@@ -216,30 +216,56 @@ async function main() {
   agent.on('task:failed',    ({ taskId, error }) =>
     console.error(`[FAILED] ${taskId} — ${error}`));
 
-  // 멀티 프로바이더: 대기 진입 시 ⏳ 알림 (resumeAt이 있을 때만 = 예약 재개)
-  agent.on('task:rate_limited', ({ taskId, resumeAt }) => {
-    if (resumeAt) notify(`⏳ <b>프로바이더 쿨다운</b>\n<code>${taskId}</code>\n${resumeAt} (UTC) 자동 재개 예약`);
-  });
+  // 쿨다운 진입 알림은 bot.js의 task:rate_limited 핸들러가 담당한다.
+  //   - 예약 재개(resumeAt 있음)와 수동 재개(resumeAt 없음)를 모두 커버하기 위해 한곳으로 모았다.
+  //   - 재개 성공 알림도 예고가 아니라 task:resuming 이벤트(= 실제 파이프라인 시작) 기준이다.
 
   // 멀티 프로바이더: 주기적으로 쿨다운 해제 프로바이더를 회수하고,
-  // 예약 시각이 지난 rate_limited 작업을 자동 재개한다. (pm2가 프로세스 유지)
+  // 예약 시각이 지난 rate_limited 작업을 자동 재개한다. (watchdog가 프로세스 유지)
   if (MULTI_PROVIDER) {
     const RECLAIM_MS = parseInt(process.env.PROVIDER_RECLAIM_INTERVAL_MS || '60000', 10);
+    // 재개가 실패하면 scheduled_resume_at이 그대로 남아 매 틱마다 재시도되므로,
+    // 작업별 지수 백오프로 알림/재시도 폭주를 막는다.
+    const resumeFailures = new Map();   // taskId -> { count, nextAttemptAt }
+
     const timer = setInterval(async () => {
       try {
         const reclaimed = await reclaimExpired();
         if (reclaimed.length) console.log(`[reclaim] available 복귀: ${reclaimed.join(', ')}`);
+
         const due = await taskQueries.getPendingRateLimitedTasks();
         for (const t of due) {
-          console.log(`[reclaim] 예약 재개: ${t.id}`);
-          notify(`▶️ <b>자동 재개</b>\n<code>${t.id}</code> (쿨다운 해제)`);
-          try { await agent.resume(t.id); }
-          catch (e) { console.error(`[reclaim] resume 실패 ${t.id}: ${e.message}`); }
+          const prev = resumeFailures.get(t.id);
+          if (prev && Date.now() < prev.nextAttemptAt) continue;   // 백오프 대기 중
+
+          console.log(`[reclaim] 예약 재개 시도: ${t.id}`);
+          try {
+            // resume()이 task:resuming을 emit하고, 그 시점에 텔레그램 ▶️ 알림이 나간다.
+            await agent.resume(t.id, { auto: true });
+            resumeFailures.delete(t.id);
+          } catch (e) {
+            const count = (prev?.count || 0) + 1;
+            const backoffMin = Math.min(2 ** count, 30);
+            resumeFailures.set(t.id, { count, nextAttemptAt: Date.now() + backoffMin * 60_000 });
+            console.error(`[reclaim] resume 실패 ${t.id} (${count}회): ${e.message}`);
+            // 매번 알리면 시끄럽고, 아예 안 알리면 지금처럼 무음이 된다 → 1회차와 5회차만.
+            if (count === 1 || count === 5) {
+              notify(
+                `❌ <b>자동 재개 실패</b> (${count}회째)\n` +
+                `<code>${t.id}</code>\n${String(e.message).slice(0, 200)}\n\n` +
+                `${backoffMin}분 뒤 다시 시도합니다. 수동 재개: <code>/resume ${t.id}</code>`
+              );
+            }
+          }
         }
       } catch (e) { console.error(`[reclaim] 오류: ${e.message}`); }
     }, RECLAIM_MS);
     timer.unref?.();
     console.log(`[Boot] 멀티 프로바이더 자동 회수 타이머 활성 (${RECLAIM_MS}ms)`);
+  } else {
+    // MULTI_PROVIDER=off면 자동 재개 타이머 자체가 없다. rate_limited 작업은 영원히 대기하므로
+    // 부팅 시 한 번은 명확히 알려준다 (예전엔 아무 표시도 없었다).
+    console.warn('[Boot] ⚠️ MULTI_PROVIDER=off — 자동 재개 타이머 비활성. rate_limited 작업은 /resume 으로만 재개됩니다.');
   }
 
   // 6. 매니저 루프 자동 스캔 (MANAGER_LOOP=true + MANAGER_SCAN_INTERVAL_MIN>0 일 때만).

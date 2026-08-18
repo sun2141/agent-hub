@@ -245,18 +245,23 @@ export class AgentRunner extends EventEmitter {
     }
   }
 
-  async resume(taskId) {
+  // auto=true 는 쿨다운 만료 후 자동 재개(index.js reclaim 타이머), false 는 /resume 수동 재개.
+  // task:resuming 은 상태 전환이 실제로 끝난 뒤에만 emit된다 — 알림이 "예고"가 아니라 "확인"이 되도록.
+  async resume(taskId, { auto = false } = {}) {
     const task = await taskQueries.get(taskId);
     if (!task) throw new Error(`작업 없음: ${taskId}`);
     if (task.status !== PHASE.PAUSED && task.status !== 'rate_limited') {
       throw new Error(`재개 불가 상태: ${task.status}`);
     }
+    const fromStatus = task.status;
     // paused/rate_limited 상태를 실행 상태로 전환해야 _startPipeline 루프가 정상 동작
     if (task.status === 'rate_limited') {
       await taskQueries.updateScheduledResumeAt(taskId, null);
     }
     await taskQueries.updateStatus(taskId, PHASE.BUILD);
-    this.emit('task:resuming', { taskId });
+    await logQueries.append({ task_id: taskId, phase: 'system', round: task.round || 0, level: 'info',
+      content: `[resume] ${auto ? '쿨다운 만료 자동 재개' : '수동 재개'} (${fromStatus} → building)` });
+    this.emit('task:resuming', { taskId, projectId: task.project_id, auto, fromStatus, round: task.round || 0 });
     this._startPipeline(taskId);
   }
 

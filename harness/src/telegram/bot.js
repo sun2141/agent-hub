@@ -2,7 +2,8 @@
 // Telegram 봇 — 명령 수신 + 이벤트 알림
 
 import TelegramBot from 'node-telegram-bot-api';
-import { projectQueries, taskQueries, backlogQueries } from '../db/db.js';
+import { projectQueries, taskQueries, backlogQueries, logQueries } from '../db/db.js';
+import { formatResumeAt, humanizeAgo } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import path from 'path';
@@ -12,6 +13,8 @@ import { spawn, spawnSync } from 'child_process';
 
 // 매니저 루프 (백로그 제안→승인→실행, 기본 off — MULTI_PROVIDER와 동일한 플래그 패턴)
 const MANAGER_LOOP = process.env.MANAGER_LOOP === 'true';
+// 자동 재개 타이머는 index.js에서 이 플래그로 켜진다 — /status에 상태를 그대로 노출한다.
+const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
 const MANAGER_MAX_CONCURRENT = parseInt(process.env.MANAGER_MAX_CONCURRENT || '1', 10);
 const MANAGER_MAX_APPROVALS_PER_DAY = parseInt(process.env.MANAGER_MAX_APPROVALS_PER_DAY || '3', 10);
 
@@ -51,14 +54,86 @@ function saveCooldownData(map) {
 }
 
 const PHASE_EMOJI = {
-  planning:     '📋',
-  building:     '🔨',
-  evaluating:   '🔍',
-  done:         '✅',
-  failed:       '❌',
-  paused:       '⏸',
-  needs_review: '⚠️',
+  pending:          '🕘',
+  planning:         '📋',
+  building:         '🔨',
+  evaluating:       '🔍',
+  fallback_running: '🔁',
+  done:             '✅',
+  failed:           '❌',
+  paused:           '⏸',
+  rate_limited:     '⏳',
+  needs_review:     '⚠️',
 };
+
+function formatUptime(sec) {
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+}
+
+// ── 순수 메시지 빌더 ──────────────────────────────────────────
+// 텔레그램/DB 의존 없이 데이터만 받아 문자열을 만든다 (tests/status_visibility.test.js).
+
+export function buildStatusMessage({
+  pid, uptimeSec = 0, multiProvider = false,
+  running = [], queued = 0, waiting = [],
+  activity = {}, waitingError = null, now = Date.now(),
+}) {
+  const act = (id) => activity[id] || '기록 없음';
+  let msg = '<b>📊 하네스 상태</b>\n\n';
+  msg += `PID: <code>${pid}</code>\n`;
+  msg += `업타임: ${formatUptime(uptimeSec)}\n`;
+  msg += `자동 재개: ${multiProvider ? '켜짐' : '⚠️ 꺼짐 (MULTI_PROVIDER=off)'}\n\n`;
+
+  if (running.length === 0) {
+    msg += '⚪ 실행 중인 작업 없음\n';
+  } else {
+    msg += '<b>실행 중:</b>\n';
+    for (const r of running) {
+      msg += `${PHASE_EMOJI[r.phase] || '▶'} <code>${r.taskId}</code>\n`;
+      msg += `   ${r.phase} (Round ${r.round}) · 마지막 활동 ${act(r.taskId)}\n`;
+    }
+  }
+
+  // 쿨다운 대기 작업은 메모리(_running)에서 지워지기 때문에
+  // 이전에는 /status·/tasks 어디에도 나타나지 않았다. DB에서 직접 읽어 여기 표시한다.
+  if (waitingError) {
+    msg += `\n(쿨다운 대기 조회 실패: ${String(waitingError).slice(0, 80)})\n`;
+  } else if (waiting.length) {
+    msg += `\n<b>⏳ 쿨다운 대기 (${waiting.length}개):</b>\n`;
+    for (const t of waiting) {
+      msg += `<code>${t.id}</code>\n`;
+      msg += t.scheduled_resume_at
+        ? `   재개 예정: ${formatResumeAt(t.scheduled_resume_at, now)}\n`
+        : `   ⚠️ 자동 재개 예약 없음 — <code>/resume ${t.id}</code> 필요\n`;
+      msg += `   마지막 활동 ${act(t.id)}\n`;
+    }
+    if (!multiProvider) {
+      msg += '\n⚠️ MULTI_PROVIDER가 꺼져 있어 예약 시각이 지나도 자동 재개되지 않습니다.\n';
+    }
+  }
+
+  if (queued > 0) msg += `\n🕘 실행 대기 큐: ${queued}개\n`;
+  return msg;
+}
+
+export function buildRateLimitedMessage({ taskId, resumeAt, now = Date.now() }) {
+  if (resumeAt) {
+    return `⏳ <b>프로바이더 쿨다운</b>\n<code>${taskId}</code>\n` +
+           `재개 예정: ${formatResumeAt(resumeAt, now)}\n\n` +
+           '재개되면 ▶️ 알림이 갑니다. 그 전까지 상태는 /status 에서 확인하세요.';
+  }
+  return `🛑 <b>사용량 한도로 중단</b>\n<code>${taskId}</code>\n` +
+         '자동 재개 예약이 없습니다.\n\n' +
+         `한도가 풀리면 <code>/resume ${taskId}</code> 로 재개하세요.`;
+}
+
+export function buildResumingMessage({ taskId, auto = false, round = null }) {
+  return `▶️ <b>${auto ? '자동 재개됨' : '재개됨'}</b>\n<code>${taskId}</code>\n` +
+         `Round ${round ?? '-'} · build 단계부터 다시 진행합니다.\n\n` +
+         '진행 중 상태는 /status 로 확인하세요.';
+}
 
 export function createTelegramBot(agentRunner) {
   const token  = process.env.TELEGRAM_BOT_TOKEN;
@@ -142,24 +217,34 @@ export function createTelegramBot(agentRunner) {
       );
     });
 
-    onCommand(/\/status/, () => {
-      const s = agentRunner.getStatus();
-      let msg = '<b>📊 하네스 상태</b>\n\n';
-      msg += `PID: <code>${process.pid}</code>\n`;
-      msg += `업타임: ${Math.floor(process.uptime())}초\n\n`;
+    // 마지막 로그 시각 = 실제 활동 신호. 멈춘 작업과 도는 작업을 구분하는 유일한 단서다.
+    async function lastActivity(taskId) {
+      try {
+        const rows = await logQueries.forTask(taskId, 1);
+        return rows?.[0]?.created_at ? humanizeAgo(rows[0].created_at) : '기록 없음';
+      } catch { return '조회 실패'; }
+    }
 
-      if (s.running.length === 0) {
-        msg += '⚪ 실행 중인 작업 없음\n';
-      } else {
-        msg += '<b>실행 중:</b>\n';
-        msg += s.running.map(r =>
-          `${PHASE_EMOJI[r.phase] || '▶'} <code>${r.taskId}</code>\n` +
-          `   ${r.phase} (Round ${r.round})`
-        ).join('\n') + '\n';
+    onCommand(/\/status/, async () => {
+      const s = agentRunner.getStatus();
+      let waiting = [], waitingError = null;
+      try {
+        waiting = await taskQueries.getRateLimitedTasks();
+      } catch (err) { waitingError = err.message; }
+
+      const activity = {};
+      for (const id of [...s.running.map(r => r.taskId), ...waiting.map(t => t.id)]) {
+        activity[id] = await lastActivity(id);
       }
 
-      if (s.queued > 0) msg += `\n⏳ 대기 중: ${s.queued}개\n`;
-      notify(msg);
+      notify(buildStatusMessage({
+        pid: process.pid,
+        uptimeSec: process.uptime(),
+        multiProvider: MULTI_PROVIDER,
+        running: s.running,
+        queued: s.queued,
+        waiting, activity, waitingError,
+      }));
     });
 
     onCommand(/\/projects/, async () => {
@@ -234,8 +319,8 @@ export function createTelegramBot(agentRunner) {
         return;
       }
       try {
+        // 성공 알림은 task:resuming 핸들러가 보낸다 (자동 재개와 문구를 통일).
         await agentRunner.resume(taskId);
-        notify(`▶ 재개: <code>${taskId}</code>`);
       } catch (err) {
         notify(`❌ 재개 실패: ${err.message.substring(0, 200)}`);
       }
@@ -644,13 +729,33 @@ export function createTelegramBot(agentRunner) {
       }
     });
 
+    // 쿨다운/리미트 진입 — 두 경로 모두 여기서 알린다.
+    //   · resumeAt 있음  = 프로바이더 전부 대기 → 예약 재개 (index.js 타이머가 처리)
+    //   · resumeAt 없음  = 토큰 리미트 → 수동 재개. 예전엔 이 경로가 완전 무음이었다.
+    agentRunner.on('task:rate_limited', ({ taskId, resumeAt }) => {
+      notify(buildRateLimitedMessage({ taskId, resumeAt }));
+    });
+
+    // 실제로 파이프라인이 다시 시작된 시점에만 발생한다 (예고 알림 아님).
+    agentRunner.on('task:resuming', ({ taskId, auto, round }) => {
+      notify(buildResumingMessage({ taskId, auto, round }));
+    });
+
     agentRunner.on('task:paused', ({ taskId, reason }) => {
-      const label = reason === 'rate_limit' ? '사용량 한도 도달' : '수동 중지';
+      // 'rate_limit'는 아무도 emit하지 않던 죽은 분기였다. 실제로 오는 사유만 라벨링한다.
+      const LABEL = {
+        manual_stop:       '수동 중지',
+        fallback_running:  'Codex 폴백으로 계속 진행 중',
+        codex_eval_failed: 'Codex 폴백 평가 기준 미달',
+        codex_failed:      'Codex 폴백 실패',
+      };
+      const label = LABEL[reason] || reason || '알 수 없음';
+      const resumable = reason !== 'fallback_running';
       notify(
         `⏸ <b>일시정지</b>\n\n` +
         `ID: <code>${taskId}</code>\n` +
-        `사유: ${label}\n\n` +
-        (reason === 'rate_limit' ? `/resume ${taskId} 으로 재개` : '')
+        `사유: ${label}\n` +
+        (resumable ? `\n재개: <code>/resume ${taskId}</code>` : '')
       );
     });
 
