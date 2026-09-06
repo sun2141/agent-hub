@@ -34,7 +34,8 @@
     "test:goal": "node tests/goal_planner.test.js",
     "tunnel:vps": "bash scripts/tunnel-vps.sh",
     "tunnel:check": "bash scripts/tunnel-vps.sh --check",
-    "tunnel:install": "bash scripts/tunnel-vps.sh --install"
+    "tunnel:install": "bash scripts/tunnel-vps.sh --install",
+    "endpoint:check": "bash scripts/endpoint-check.sh"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
