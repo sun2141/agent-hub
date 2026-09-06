@@ -24,7 +24,7 @@
     "test:net": "node tests/net_defaults.test.js",
     "test:backlog": "node tests/backlog_buttons.test.js",
     "test:db": "node tests/db_surface.test.js",
-    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db && npm run test:goal && npm run test:watchdog",
+    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db && npm run test:goal && npm run test:watchdog && npm run test:preflight",
     "setup:thinkpad": "bash scripts/setup-thinkpad.sh",
     "providers": "node scripts/provider-status.js",
     "providers:toggle": "node scripts/provider-enable.js",
@@ -36,7 +36,8 @@
     "tunnel:check": "bash scripts/tunnel-vps.sh --check",
     "tunnel:install": "bash scripts/tunnel-vps.sh --install",
     "endpoint:check": "bash scripts/endpoint-check.sh",
-    "test:watchdog": "node tests/provider_watchdog.test.js"
+    "test:watchdog": "node tests/provider_watchdog.test.js",
+    "test:preflight": "node tests/preflight_gate.test.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

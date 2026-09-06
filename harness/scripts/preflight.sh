@@ -9,6 +9,8 @@ PASS=0; FAIL=0; WARN=0
 ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
 bad()  { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 warn() { echo "  ! $1"; WARN=$((WARN+1)); }
+# 의도된 미사용을 알리는 줄. ✓/✗/! 어디에도 안 잡힌다 — 쓰지 않는 것이 "통과"도 "실패"도 아니기 때문이다.
+skip() { echo "  · $1"; }
 
 # .env 로드 (있으면)
 if [ -f .env ]; then set -a; . ./.env; set +a; ok ".env 로드"; else warn ".env 없음 — cp .env.example .env 후 값 입력"; fi
@@ -18,9 +20,45 @@ command -v node >/dev/null && ok "node $(node -v)" || bad "node 없음"
 
 echo "── CLI 설치 ───────────────────────────────"
 CLAUDE="${CLAUDE_CLI_PATH:-claude}"; CODEX="${CODEX_CLI_PATH:-codex}"; AGY="${AGY_CLI_PATH:-agy}"
-for pair in "claude:$CLAUDE" "codex:$CODEX" "agy:$AGY"; do
-  nm="${pair%%:*}"; bin="${pair#*:}"
-  if command -v "$bin" >/dev/null 2>&1; then ok "$nm 설치됨 ($(command -v "$bin"))"; else bad "$nm 없음 (경로: $bin)"; fi
+
+# 어떤 프로바이더를 실제로 쓰는지는 DB의 enabled가 정한다 — 하네스가 그걸 보고 고른다.
+# 설치 여부만 보면 의도적으로 끈 프로바이더 탓에 preflight가 늘 ✗로 끝난다.
+# ✗가 상수가 되면 사람은 그걸 무시하게 되고, 진짜 ✗가 떠도 똑같이 무시한다 —
+# 8/18의 "20개 항목 전부 ✓인데 커밋 불가"와 정반대로 같은 종류의 고장이다.
+# DB가 늦거나 안 오면 preflight 전체가 첫 줄에서 멎는다 — 10초로 끊고 모른다고 답한다.
+ENABLED_PROVIDERS=$(node -e "
+  const give = v => { console.log(v); process.exit(0); };
+  setTimeout(() => give('__UNKNOWN__'), 10000).unref?.();
+  import('./src/db/db.js')
+    .then(m => m.providerQueries.listEnabled())
+    .then(rows => give(rows.map(r => r.provider).join(' ')))
+    .catch(() => give('__UNKNOWN__'));
+" 2>/dev/null | tail -1)
+[ -n "$ENABLED_PROVIDERS" ] || ENABLED_PROVIDERS="__UNKNOWN__"
+
+# DB를 못 읽었으면(npm install 전/DB 미도달) env 핀으로 판정한다.
+# 모를 땐 "필요하다"로 본다 — 쓰는 걸 안 쓴다고 보고하는 오판이 반대보다 비싸다.
+provider_in_use() {
+  case " $ENABLED_PROVIDERS " in
+    *" __UNKNOWN__ "*)
+      case " ${PROVIDER_PLAN:-} ${PROVIDER_BUILD:-} ${PROVIDER_REVIEW:-} " in
+        *" $1 "*) return 0 ;; *) return 1 ;;
+      esac ;;
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+for triple in "claude:claude:$CLAUDE" "codex:codex:$CODEX" "antigravity:agy:$AGY"; do
+  adapter="${triple%%:*}"; rest="${triple#*:}"; nm="${rest%%:*}"; bin="${rest#*:}"
+  if command -v "$bin" >/dev/null 2>&1; then
+    if provider_in_use "$adapter"; then ok "$nm 설치됨 ($(command -v "$bin"))"
+    else skip "$nm 설치됨 — 다만 $adapter 는 비활성이라 쓰이지 않는다"; fi
+  elif provider_in_use "$adapter"; then
+    bad "$nm 없음 (경로: $bin) — $adapter 가 활성이라 실행 중 실패한다"
+  else
+    skip "$nm 미설치 — $adapter 비활성(의도된 미사용). 쓰려면 설치 후 npm run providers:toggle"
+  fi
 done
 
 echo "── 인증 상태 ──────────────────────────────"
@@ -29,15 +67,19 @@ if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -d "${CLAUDE_CONFIG_DIR}" ]; then ok "CL
 # Codex: ~/.codex/auth.json
 if [ -f "$HOME/.codex/auth.json" ]; then ok "codex auth.json 존재"; else warn "codex 미인증 — 'codex login' 필요"; fi
 # Antigravity: 키링/토큰 (직접 확인 어려움 → 버전 호출로 간접)
-if command -v "$AGY" >/dev/null 2>&1; then
+if provider_in_use antigravity && command -v "$AGY" >/dev/null 2>&1; then
   if "$AGY" --version >/dev/null 2>&1; then ok "agy 응답 OK"; else warn "agy 응답 실패 — 재인증/키링 확인"; fi
 fi
 
 echo "── 키링 (Antigravity 무인용) ──────────────"
-if command -v secret-tool >/dev/null 2>&1; then ok "secret-tool(libsecret) 설치됨"; else warn "secret-tool 없음 — sudo apt install libsecret-tools"; fi
-if [ -d "$HOME/.local/share/keyrings" ]; then ok "키링 디렉토리 존재"; else warn "키링 디렉토리 없음 (아직 미생성일 수 있음)"; fi
-if grep -qs "AutomaticLogin" /etc/gdm3/custom.conf 2>/dev/null; then
-  warn "GDM 자동 로그인 켜짐 → 키링 잠금 위험. bash scripts/setup-antigravity-keyring.sh empty 참고"
+if ! provider_in_use antigravity; then
+  skip "antigravity 미사용 — 키링 점검 생략"
+elif command -v secret-tool >/dev/null 2>&1; then ok "secret-tool(libsecret) 설치됨"; else warn "secret-tool 없음 — sudo apt install libsecret-tools"; fi
+if provider_in_use antigravity; then
+  if [ -d "$HOME/.local/share/keyrings" ]; then ok "키링 디렉토리 존재"; else warn "키링 디렉토리 없음 (아직 미생성일 수 있음)"; fi
+  if grep -qs "AutomaticLogin" /etc/gdm3/custom.conf 2>/dev/null; then
+    warn "GDM 자동 로그인 켜짐 → 키링 잠금 위험. bash scripts/setup-antigravity-keyring.sh empty 참고"
+  fi
 fi
 
 echo "── env 변수 ───────────────────────────────"
@@ -141,7 +183,7 @@ if git -C "$GIT_PROBE" init -q 2>/dev/null; then
        commit -q -m "preflight probe" >/tmp/pf_gitcommit.txt 2>&1; then
     ok "임시 저장소에 실제 커밋 성공 ($PROBE_NAME <$PROBE_EMAIL>)"
   else
-    fail "커밋이 실제로는 불가능하다:"
+    bad "커밋이 실제로는 불가능하다:"
     sed 's/^/    /' /tmp/pf_gitcommit.txt
   fi
   # 전역 설정도 함께 본다 — 사람이 직접 커밋할 때 필요하다.
