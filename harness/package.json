@@ -24,13 +24,14 @@
     "test:net": "node tests/net_defaults.test.js",
     "test:backlog": "node tests/backlog_buttons.test.js",
     "test:db": "node tests/db_surface.test.js",
-    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db",
+    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db && npm run test:goal",
     "setup:thinkpad": "bash scripts/setup-thinkpad.sh",
     "providers": "node scripts/provider-status.js",
     "providers:toggle": "node scripts/provider-enable.js",
     "backlog": "node scripts/backlog-status.js",
     "backlog:inspect": "node scripts/backlog-inspect.js",
-    "preflight": "bash scripts/preflight.sh"
+    "preflight": "bash scripts/preflight.sh",
+    "test:goal": "node tests/goal_planner.test.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

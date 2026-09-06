@@ -2,6 +2,7 @@
 // Telegram 봇 — 명령 수신 + 이벤트 알림
 
 import TelegramBot from 'node-telegram-bot-api';
+import { checkBranchRunGate as sharedBranchRunGate } from '../agent/runGate.js';
 import { projectQueries, taskQueries, backlogQueries, logQueries } from '../db/db.js';
 import { formatResumeAt, humanizeAgo, formatLocal } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
@@ -337,16 +338,10 @@ export function createTelegramBot(agentRunner) {
   // 예전에는 backlog_items의 승인 건수만 셌기 때문에, 제안을 거치지 않는 경로가
   // 생기면 일일 상한을 통째로 우회하게 된다.
   // registerCommands 밖에 둔다 — 인라인 버튼 콜백(registerCallbacks)도 같은 함수를 쓴다.
+  // 공용 게이트로 위임한다 (src/agent/runGate.js).
+  // 여기에 두 벌째 구현을 두면 한쪽만 고쳐져서 상한이 샌다 — 8/18에 겪은 실패다.
   async function checkBranchRunGate() {
-    const active = await backlogQueries.countActiveManagerTasks();
-    if (active >= MANAGER_MAX_CONCURRENT) {
-      return `브랜치 작업 동시 실행 상한(${MANAGER_MAX_CONCURRENT}건) 도달 — 진행 중인 작업 완료 후 재시도하세요.`;
-    }
-    const today = await taskQueries.countBranchModeToday();
-    if (today >= MANAGER_MAX_APPROVALS_PER_DAY) {
-      return `오늘 브랜치 실행 상한(${MANAGER_MAX_APPROVALS_PER_DAY}건) 도달 — 내일 다시 시도하세요.`;
-    }
-    return null;
+    return sharedBranchRunGate();
   }
 
   // 승인·거부 로직은 명령어(/approve, /reject)와 인라인 버튼이 함께 쓴다.

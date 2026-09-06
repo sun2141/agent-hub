@@ -9,12 +9,14 @@ import net from 'net';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDb, projectQueries, taskQueries, logQueries } from './db/db.js';
+import { initGoalSchema } from './db/goals.js';
 import { PROJECTS } from './projects.js';
 import { AgentRunner } from './agent/runner.js';
 import { reclaimExpired } from './agent/dispatcher.js';
 import { createApiServer } from './api/server.js';
 import { createTelegramBot } from './telegram/bot.js';
 import { startManagerScanScheduler } from './agent/scanScheduler.js';
+import { startGoalExecutor } from './agent/goalExecutor.js';
 
 // 멀티 프로바이더 자동 회수/재개 (기본 off — off면 기존 수동 재개 방식 유지).
 const MULTI_PROVIDER = process.env.MULTI_PROVIDER === 'true';
@@ -148,6 +150,7 @@ async function main() {
 
   // 1. DB 초기화 (비동기)
   await initDb();
+  await initGoalSchema();
   await projectQueries.seed(PROJECTS);
   console.log(`[Boot] 프로젝트 ${PROJECTS.length}개 등록됨`);
   console.log(`[Boot] 네트워크 기본값 — ${netDefaultsSummary()}`);
@@ -183,7 +186,7 @@ async function main() {
   }
 
   const BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
-  const { server } = createApiServer(agent);
+  const { server, setNotifier } = createApiServer(agent);
   server.listen(PORT, BIND_HOST, () => {
     console.log(`[Boot] API 서버 ${BIND_HOST}:${PORT}`);
     console.log(`[Boot] WebSocket ws://${BIND_HOST}:${PORT}/ws`);
@@ -198,6 +201,11 @@ async function main() {
   // 4. Telegram 봇
   const { notify } = createTelegramBot(agent);
   console.log('[Boot] Telegram 봇 준비');
+  // 목표 라우트가 알림을 보낼 수 있게 연결 — 봇이 뜬 뒤에만 가능하다.
+  setNotifier(notify);
+
+  // 5. 목표 자동 실행 — 승인된 계획서의 항목을 순서대로 돌린다.
+  startGoalExecutor(agent, { notify });
 
   notify('🟢 <b>하네스 시작됨</b>\n/help 로 명령어 확인');
   if (recoveredTasks.length > 0) {

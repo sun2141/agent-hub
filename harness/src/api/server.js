@@ -5,6 +5,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries, limitEventQueries } from '../db/db.js';
+import { registerGoalRoutes } from './goalRoutes.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import { spawn, spawnSync } from 'child_process';
@@ -1789,6 +1790,14 @@ export function createApiServer(agentRunner) {
     });
   });
 
+  // ── 목표 계층 라우트 ──────────────────────────────────────
+  // notify는 텔레그램 봇이 뜬 뒤에 채워진다(index.js가 setNotifier 호출).
+  // 그 전에 도착한 요청은 알림 없이 정상 처리된다 — 알림이 없다고 API가 실패하면 안 된다.
+  const notifyRef = { fn: null };
+  registerGoalRoutes(app, {
+    notify: (...args) => (notifyRef.fn ? notifyRef.fn(...args) : Promise.resolve()),
+  });
+
   if (fs.existsSync(DASHBOARD_DIST)) {
     app.get('/assets/*', (req, res) => {
       res.status(404).json({ error: 'Asset Not Found' });
@@ -1869,5 +1878,7 @@ export function createApiServer(agentRunner) {
   agentRunner.on('agent:text',        d => broadcast('agent:text',        d));
   agentRunner.on('agent:tool',        d => broadcast('agent:tool',        d));
 
-  return { app, server: httpServer };
+  return { app, server: httpServer,
+    setNotifier: (fn) => { notifyRef.fn = fn; },
+  };
 }
