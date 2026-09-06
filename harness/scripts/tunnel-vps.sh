@@ -70,16 +70,37 @@ check_vps_listener() {
 }
 
 check_public() {
-  echo "[4] 바깥에서 VPS를 통해 하네스에 닿는가 (대시보드가 쓰는 경로)"
-  local code
-  code=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://${VPS_HOST}/health" 2>/dev/null)
-  if [ "${code}" = "200" ]; then
-    ok "http://${VPS_HOST}/health → 200"
-  else
+  echo "[4] 바깥에서 VPS를 통해 닿는 하네스가 \"이 씽크패드\"인가"
+  # 200이 온다고 끝이 아니다. 터널이 없어도 VPS에 남아 있는 다른 하네스가 응답할 수 있고,
+  # 그러면 대시보드는 붙은 것처럼 보이면서 엉뚱한 인스턴스를 조작한다.
+  # /health의 pid를 대조해서 "응답함"과 "내 하네스가 응답함"을 구분한다.
+  local remote local_pid remote_pid code
+  code=$(curl -s -o /tmp/.harness_health_remote -m 10 -w "%{http_code}" "http://${VPS_HOST}/health" 2>/dev/null)
+
+  if [ "${code}" != "200" ]; then
     bad "http://${VPS_HOST}/health → ${code:-무응답}"
     info "3번이 통과했는데 여기서 막히면 nginx 설정 문제다."
     info "VPS에서 확인: sudo nginx -T | grep -A5 ${TUNNEL_PORT}"
-    info "필요한 것: location / { proxy_pass http://127.0.0.1:${TUNNEL_PORT}; } + WebSocket 업그레이드 헤더"
+    FAILED=1
+    return
+  fi
+
+  local_pid=$(curl -fsS -m 5 "http://127.0.0.1:${LOCAL_PORT}/health" 2>/dev/null \
+              | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
+  remote_pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' /tmp/.harness_health_remote 2>/dev/null)
+
+  if [ -z "${remote_pid}" ]; then
+    warn "200이 오지만 하네스 형식의 응답이 아니다 (pid 없음)"
+    info "nginx가 다른 것을 서빙하고 있을 수 있다"
+    FAILED=1
+  elif [ -n "${local_pid}" ] && [ "${local_pid}" = "${remote_pid}" ]; then
+    ok "pid ${remote_pid} 일치 — 이 씽크패드의 하네스가 응답한다"
+  else
+    bad "다른 하네스가 응답하고 있다 (바깥 pid=${remote_pid}, 로컬 pid=${local_pid:-확인불가})"
+    info "VPS에 예전 하네스가 살아 있다는 뜻이다. 같은 Neon DB와 같은 텔레그램 토큰을"
+    info "두 인스턴스가 함께 쓰면 작업이 중복 실행되고 텔레그램은 409로 충돌한다."
+    info "VPS에서 확인: ssh ${VPS_USER}@${VPS_HOST} 'ss -ltnp | grep -E \":(3000|${TUNNEL_PORT})\"; systemctl is-active harness; pm2 list'"
+    info "정리 후 이 스크립트를 다시 돌릴 것."
     FAILED=1
   fi
 }
