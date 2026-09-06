@@ -31,7 +31,10 @@
     "backlog": "node scripts/backlog-status.js",
     "backlog:inspect": "node scripts/backlog-inspect.js",
     "preflight": "bash scripts/preflight.sh",
-    "test:goal": "node tests/goal_planner.test.js"
+    "test:goal": "node tests/goal_planner.test.js",
+    "tunnel:vps": "bash scripts/tunnel-vps.sh",
+    "tunnel:check": "bash scripts/tunnel-vps.sh --check",
+    "tunnel:install": "bash scripts/tunnel-vps.sh --install"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
