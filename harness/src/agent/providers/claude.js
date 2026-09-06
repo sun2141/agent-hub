@@ -6,7 +6,7 @@
 import { spawn } from 'child_process';
 import {
   prependCliNodePath, looksLikeLimit, parseResetDuration,
-  minutesFromNow, DEFAULT_5H_BACKOFF_MIN,
+  minutesFromNow, DEFAULT_5H_BACKOFF_MIN, attachWatchdog,
 } from './base.js';
 
 const CLAUDE_CLI   = process.env.CLAUDE_CLI_PATH || 'claude';
@@ -51,6 +51,10 @@ export function run({ taskId, phase, round, cwd, prompt, resumeId = null, onText
       return;
     }
 
+    // 행(hang) 감시. 이 파일에만 감시가 없어서, 가장 오래 걸리고 가장 잘 물리는
+    // Build 단계가 무한정 매달릴 수 있었다.
+    const wd = attachWatchdog(proc, { label: 'Claude CLI' });
+
     let finalResult = null;
     let assistant = [];
     let buffer = '';
@@ -67,6 +71,7 @@ export function run({ taskId, phase, round, cwd, prompt, resumeId = null, onText
     };
 
     proc.stdout.on('data', (chunk) => {
+      wd.notifyActivity();
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
@@ -98,10 +103,15 @@ export function run({ taskId, phase, round, cwd, prompt, resumeId = null, onText
       }
     });
 
-    proc.stderr.on('data', (chunk) => detect(chunk.toString()));
+    proc.stderr.on('data', (chunk) => { wd.notifyActivity(); detect(chunk.toString()); });
 
     proc.on('close', (code) => {
+      wd.clear();
       if (limit) return settle({ status: 'limit', output: '', limitHit: true, resetAt: limit.resetAt, windowType: limit.windowType });
+      // 감시기가 죽인 경우는 리미트도 정상 종료도 아니다. 조용히 빈 결과로 넘기면
+      // 파이프라인이 "출력이 없네" 하고 다음 라운드로 가버린다 — 실패로 못 박는다.
+      const killed = wd.reason();
+      if (killed) return settle({ status: 'error', output: '', error: killed, hung: true });
       const output = (finalResult && finalResult.trim()) ? finalResult : assistant.join('\n').trim();
       // 안전망: 비정상 종료 + 짧은 출력에 리미트 흔적
       if (code !== 0 && output.length < 500 && looksLikeLimit(output)) {
@@ -111,6 +121,6 @@ export function run({ taskId, phase, round, cwd, prompt, resumeId = null, onText
       if (code !== 0 && !output) return settle({ status: 'error', output: '', error: `Claude CLI 비정상 종료 (code=${code})` });
       settle({ status: 'ok', output: output.trim() });
     });
-    proc.on('error', (err) => settle({ status: 'error', output: '', error: `Claude CLI 실행 실패: ${err.message}` }));
+    proc.on('error', (err) => { wd.clear(); settle({ status: 'error', output: '', error: `Claude CLI 실행 실패: ${err.message}` }); });
   });
 }

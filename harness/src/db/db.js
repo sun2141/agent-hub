@@ -687,6 +687,11 @@ export const backlogQueries = {
     return dbGet('SELECT * FROM harness.backlog_items WHERE id = $1', [id]);
   },
 
+  // task_id로 원본 제안을 되찾는다 — 실패 알림에 재실행 명령을 실으려면 필요하다.
+  async findByTaskId(taskId) {
+    return dbGet('SELECT * FROM harness.backlog_items WHERE task_id = $1 LIMIT 1', [taskId]);
+  },
+
   async markApproved(id, taskId) {
     await dbRun(
       `UPDATE harness.backlog_items

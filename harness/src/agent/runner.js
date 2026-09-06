@@ -100,6 +100,14 @@ function parseJson(text) {
   throw new Error('유효한 JSON 객체를 찾을 수 없음');
 }
 
+// 에이전트 커밋의 신원. 전역 git config에 의존하지 않는다.
+// 8/18: 씽크패드에 user.name/user.email이 없어 커밋이 조용히 실패했고,
+// 산출물이 워킹트리에 dirty로 남아 다음 작업의 브랜치 생성까지 연쇄로 막혔다.
+// 커밋마다 -c로 주입하면 환경 설정과 무관해지고, 사람 커밋과도 구분된다.
+const AGENT_GIT_NAME  = process.env.AGENT_GIT_NAME  || 'Agent Harness';
+const AGENT_GIT_EMAIL = process.env.AGENT_GIT_EMAIL || 'agent-harness@localhost';
+const GIT_IDENTITY_ARGS = ['-c', `user.name=${AGENT_GIT_NAME}`, '-c', `user.email=${AGENT_GIT_EMAIL}`];
+
 export class AgentRunner extends EventEmitter {
   constructor() {
     super();
@@ -781,7 +789,7 @@ export class AgentRunner extends EventEmitter {
         return null;
       }
 
-      const commitRes = spawnSync('git', ['commit', '-m', commitMsg], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+      const commitRes = spawnSync('git', [...GIT_IDENTITY_ARGS, 'commit', '-m', commitMsg], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
       if (commitRes.error || commitRes.status !== 0) {
         const cStderr = (commitRes.stderr || '').trim();
         const cStdout = (commitRes.stdout || '').trim();
@@ -793,6 +801,15 @@ export class AgentRunner extends EventEmitter {
         }
         console.error(`[deploy] [${label}] commit 실패: stderr=${cStderr} | stdout=${cStdout}`);
         await logQueries.append({ task_id: task.id, phase: 'deploy', round, level: 'error', content: `[commit ${label} 실패] stderr=${cStderr} | stdout=${cStdout}`.substring(0, 1000) });
+        // 조용히 넘기지 않는다. 커밋 실패는 산출물이 워킹트리에 dirty로 남는다는 뜻이고,
+        // 그 상태는 다음 작업의 브랜치 생성까지 막는다 — 증상이 한참 뒤에 엉뚱한 곳에서 나타난다.
+        this.emit('task:commit_failed', {
+          taskId: task.id,
+          projectId: task.project_id,
+          gitRoot,
+          reason: cMsg.substring(0, 400),
+          identity: `${AGENT_GIT_NAME} <${AGENT_GIT_EMAIL}>`,
+        });
         return null;
       }
 

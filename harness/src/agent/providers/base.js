@@ -67,6 +67,74 @@ export function parseResetDuration(text = '') {
 
 // ── CLI 실행 (stdout/stderr 수집, 스트림 콜백) ─────────────────
 // stdin은 항상 'ignore'로 비워 확인 프롬프트 대기 정지를 원천 차단한다.
+
+// ── 프로세스 감시기 ────────────────────────────────────────────
+// CLI가 물리면(hang) Promise가 영원히 resolve되지 않는다. 사람이 승인할 때는
+// "왜 안 끝나지" 하고 들여다봤지만, 목표 계층의 자동 실행에서는 그 눈이 없어서
+// 며칠을 멈춰 있어도 모른다.
+//
+// 절대 시간만으로는 부족하다 — 정상적인 긴 빌드와 물린 프로세스를 구분하지 못해서
+// 넉넉하게 잡으면 행을 못 잡고, 빡빡하게 잡으면 멀쩡한 작업을 죽인다.
+// **무출력 지속 시간(idle)**이 둘을 가르는 신호다: 살아 있는 CLI는 뭐라도 내보낸다.
+export const PROVIDER_IDLE_TIMEOUT_MS =
+  parseInt(process.env.PROVIDER_IDLE_TIMEOUT_MIN || '10', 10) * 60_000;
+export const PROVIDER_HARD_TIMEOUT_MS =
+  parseInt(process.env.PROVIDER_HARD_TIMEOUT_MIN || '45', 10) * 60_000;
+
+// SIGTERM 후 이만큼 기다렸다 SIGKILL. 정리할 기회는 주되 무한정은 아니다.
+const KILL_GRACE_MS = 10_000;
+
+/**
+ * proc에 idle/hard 타임아웃을 건다.
+ * @returns {{ notifyActivity: () => void, clear: () => void, reason: () => string|null }}
+ *   notifyActivity()를 stdout/stderr 수신 때마다 불러 idle 타이머를 되돌린다.
+ */
+export function attachWatchdog(proc, { idleTimeoutMs = PROVIDER_IDLE_TIMEOUT_MS,
+                                       hardTimeoutMs = PROVIDER_HARD_TIMEOUT_MS,
+                                       label = 'CLI' } = {}) {
+  let killReason = null;
+  let idleTimer = null;
+  let killTimer = null;
+
+  const kill = (reason) => {
+    if (killReason) return;
+    killReason = reason;
+    try { proc.kill('SIGTERM'); } catch { /* 이미 죽음 */ }
+    killTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* 무시 */ } }, KILL_GRACE_MS);
+    if (killTimer.unref) killTimer.unref();
+  };
+
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (!idleTimeoutMs) return;
+    idleTimer = setTimeout(
+      () => kill(`${label}이(가) ${Math.round(idleTimeoutMs / 60000)}분간 아무 출력도 내지 않아 행(hang)으로 판단하고 종료했습니다`),
+      idleTimeoutMs
+    );
+    if (idleTimer.unref) idleTimer.unref();
+  };
+
+  const hardTimer = hardTimeoutMs
+    ? setTimeout(
+        () => kill(`${label} 실행이 ${Math.round(hardTimeoutMs / 60000)}분을 넘겨 종료했습니다`),
+        hardTimeoutMs
+      )
+    : null;
+  if (hardTimer?.unref) hardTimer.unref();
+
+  armIdle();
+
+  return {
+    notifyActivity: armIdle,
+    clear: () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      if (killTimer) clearTimeout(killTimer);
+    },
+    reason: () => killReason,
+  };
+}
+
 export function spawnCollect({ cmd, args, cwd, env, timeoutMs = 600_000, onStdout, onStderr }) {
   return new Promise((resolve) => {
     let proc;
@@ -78,27 +146,30 @@ export function spawnCollect({ cmd, args, cwd, env, timeoutMs = 600_000, onStdou
     }
     let stdout = '';
     let stderr = '';
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; try { proc.kill('SIGKILL'); } catch {} }, timeoutMs);
+    // 절대 시간(timeoutMs)은 상한으로 유지하고, 그 안에서 idle 감시가 행을 먼저 잡는다.
+    const wd = attachWatchdog(proc, { hardTimeoutMs: timeoutMs, label: cmd });
     proc.stdout.on('data', d => {
       const s = d.toString();
       stdout += s;
       if (stdout.length > 400_000) stdout = stdout.slice(-200_000);
+      wd.notifyActivity();
       if (onStdout) onStdout(s);
     });
     proc.stderr.on('data', d => {
       const s = d.toString();
       stderr += s;
       if (stderr.length > 200_000) stderr = stderr.slice(-100_000);
+      wd.notifyActivity();
       if (onStderr) onStderr(s);
     });
     proc.on('close', code => {
-      clearTimeout(timer);
-      if (timedOut) stderr += `\n[timeout] ${Math.round(timeoutMs / 1000)}초 초과로 강제 종료`;
-      resolve({ code: code ?? 1, stdout, stderr, timedOut, proc });
+      wd.clear();
+      const killed = wd.reason();
+      if (killed) stderr += `\n[watchdog] ${killed}`;
+      resolve({ code: code ?? 1, stdout, stderr, timedOut: Boolean(killed), killReason: killed, proc });
     });
     proc.on('error', err => {
-      clearTimeout(timer);
+      wd.clear();
       resolve({ code: 1, stdout, stderr: `${stderr}\n${err.message}`, spawnError: true, proc });
     });
   });

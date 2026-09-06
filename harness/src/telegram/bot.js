@@ -1101,6 +1101,22 @@ export function createTelegramBot(agentRunner) {
       );
     });
 
+    // 커밋 실패는 실패 알림 쿨다운을 타지 않는다.
+    // 드물게 일어나고, 일어나면 산출물이 dirty로 남아 다음 작업까지 막는다.
+    // 억제했다가 늦게 알면 8/18처럼 연쇄가 다 진행된 뒤에야 발견하게 된다.
+    agentRunner.on('task:commit_failed', ({ taskId, projectId, gitRoot, reason, identity }) => {
+      notify(
+        `🚨 <b>커밋 실패</b>\n` +
+        `<code>${escapeHtml(taskId)}</code>\n` +
+        `프로젝트: ${escapeHtml(projectId || '?')}\n\n` +
+        `${escapeHtml(String(reason || '').slice(0, 300))}\n\n` +
+        `작업 산출물이 커밋되지 못하고 워킹트리에 남아 있습니다.\n` +
+        `이 상태를 두면 다음 작업의 브랜치 생성이 막힙니다.\n\n` +
+        `확인: <code>cd ${escapeHtml(gitRoot || '')} && git status</code>\n` +
+        `커밋 신원: ${escapeHtml(identity || '')}`
+      );
+    });
+
     agentRunner.on('task:failed', ({ taskId, error, projectId }) => {
       const now = Date.now();
       const pid = projectId || taskId;
@@ -1135,12 +1151,31 @@ export function createTelegramBot(agentRunner) {
         ? `\n⚠️ 연속 ${failCount}회 실패. 이후 알림이 억제됩니다.`
         : '';
 
-      notify(
-        `❌ <b>실패</b>\n\n` +
-        `ID: <code>${taskId}</code>\n` +
-        `오류: ${(error || '').substring(0, 200)}` +
-        suppressNote
-      );
+      // 재실행 방법을 메시지 안에 넣는다.
+      // 8/18: 전용 /retry가 없고 그 사실이 어디에도 안내되지 않아, 실패한 #2 대신
+      // #3을 실행하는 우회가 발생했다. 복구 경로는 실패를 알리는 자리에 있어야 한다.
+      backlogQueries.findByTaskId(taskId)
+        .then(item => {
+          const retry = item?.id
+            ? `\n\n재실행: <code>/approve ${item.id}</code>`
+            : '\n\n(이 작업은 백로그 경로가 아니라 재실행 명령이 없습니다. 목표 항목이면 대시보드에서 재시도하세요.)';
+          notify(
+            `❌ <b>실패</b>\n\n` +
+            `ID: <code>${taskId}</code>\n` +
+            `오류: ${(error || '').substring(0, 200)}` +
+            retry +
+            suppressNote
+          );
+        })
+        .catch(() => {
+          // 조회가 실패해도 알림 자체는 나가야 한다 — 알림을 잃는 게 더 나쁘다.
+          notify(
+            `❌ <b>실패</b>\n\n` +
+            `ID: <code>${taskId}</code>\n` +
+            `오류: ${(error || '').substring(0, 200)}` +
+            suppressNote
+          );
+        });
     });
   }
 

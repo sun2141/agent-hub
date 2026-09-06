@@ -127,6 +127,36 @@ else
   ok "네트워크 기본값 — $NETCFG"
 fi
 
+echo "── git 커밋 실동작 (설정됨 ≠ 동작함) ──────"
+# 8/18: preflight 20개 항목이 전부 ✓ 인데 커밋은 불가능한 상태였다.
+# git config 값의 "존재"를 확인하는 것으로는 못 잡는다 — 임시 저장소에서 진짜로 커밋해 본다.
+# 하네스가 실제로 쓰는 신원(AGENT_GIT_NAME/EMAIL 주입)으로 시도해야 의미가 있다.
+GIT_PROBE=$(mktemp -d 2>/dev/null || mktemp -d -t gitprobe)
+if git -C "$GIT_PROBE" init -q 2>/dev/null; then
+  : > "$GIT_PROBE/probe.txt"
+  git -C "$GIT_PROBE" add probe.txt >/dev/null 2>&1
+  PROBE_NAME="${AGENT_GIT_NAME:-Agent Harness}"
+  PROBE_EMAIL="${AGENT_GIT_EMAIL:-agent-harness@localhost}"
+  if git -C "$GIT_PROBE" -c "user.name=$PROBE_NAME" -c "user.email=$PROBE_EMAIL" \
+       commit -q -m "preflight probe" >/tmp/pf_gitcommit.txt 2>&1; then
+    ok "임시 저장소에 실제 커밋 성공 ($PROBE_NAME <$PROBE_EMAIL>)"
+  else
+    fail "커밋이 실제로는 불가능하다:"
+    sed 's/^/    /' /tmp/pf_gitcommit.txt
+  fi
+  # 전역 설정도 함께 본다 — 사람이 직접 커밋할 때 필요하다.
+  GN=$(git config --global user.name 2>/dev/null || true)
+  GE=$(git config --global user.email 2>/dev/null || true)
+  if [ -n "$GN" ] && [ -n "$GE" ]; then
+    ok "전역 git identity: $GN <$GE>"
+  else
+    warn "전역 git identity 없음 — 하네스는 주입해서 쓰므로 동작하지만, 수동 커밋 시 실패한다"
+  fi
+  rm -rf "$GIT_PROBE" 2>/dev/null || true
+else
+  warn "임시 저장소 생성 실패 — 커밋 실동작 검사 건너뜀"
+fi
+
 echo "── DB 연결 + providers 테이블 ─────────────"
 if [ -n "${NEON_DATABASE_URL:-}" ]; then
   node scripts/provider-status.js >/tmp/pf_providers.txt 2>&1 && { ok "providers 조회 성공"; sed 's/^/    /' /tmp/pf_providers.txt; } \
