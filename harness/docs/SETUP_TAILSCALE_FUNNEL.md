@@ -8,7 +8,7 @@ SSH도 필요 없다.
 
 ```
 브라우저 → Vercel(harness-dashboard) → [vercel.json rewrite]
-        → https://<머신>.<tailnet>.ts.net → 씽크패드 하네스 :3000
+        → https://sunho.taild364f9.ts.net → 씽크패드 하네스 :3000
 ```
 
 rewrite로 넘기므로 브라우저 입장에서는 same-origin이다. **CORS나 SameSite 쿠키 설정을
@@ -45,7 +45,7 @@ tailscale funnel --bg 3000
 tailscale funnel status
 ```
 
-출력에 나오는 `https://<머신>.<tailnet>.ts.net`이 공개 주소다.
+출력에 나오는 `https://sunho.taild364f9.ts.net`이 공개 주소다.
 
 **막히면 확인할 것**
 - 관리 콘솔 → Access controls → **Add Funnel to policy** (노드 속성이 없으면 거부된다)
@@ -70,7 +70,7 @@ tailscale funnel status
 ## 검증 — 반드시 이걸로 확인할 것
 
 ```bash
-npm --prefix harness run endpoint:check https://<머신>.<tailnet>.ts.net
+npm --prefix harness run endpoint:check https://sunho.taild364f9.ts.net
 ```
 
 `/health`의 **pid를 로컬과 대조**한다. 200이 온다고 끝이 아니다 —
@@ -86,10 +86,10 @@ VPS 사례에서 터널이 끊긴 상태에서도 다른 무언가가 200을 돌
 ```json
 {
   "rewrites": [
-    { "source": "/health",      "destination": "https://<머신>.<tailnet>.ts.net/health" },
-    { "source": "/auth/:path*", "destination": "https://<머신>.<tailnet>.ts.net/auth/:path*" },
-    { "source": "/api/:path*",  "destination": "https://<머신>.<tailnet>.ts.net/api/:path*" },
-    { "source": "/ws",          "destination": "https://<머신>.<tailnet>.ts.net/ws" },
+    { "source": "/health",      "destination": "https://sunho.taild364f9.ts.net/health" },
+    { "source": "/auth/:path*", "destination": "https://sunho.taild364f9.ts.net/auth/:path*" },
+    { "source": "/api/:path*",  "destination": "https://sunho.taild364f9.ts.net/api/:path*" },
+    { "source": "/ws",          "destination": "https://sunho.taild364f9.ts.net/ws" },
     { "source": "/(.*)",        "destination": "/index.html" }
   ]
 }
