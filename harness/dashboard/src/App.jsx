@@ -1,5 +1,7 @@
 // src/App.jsx
 import { useState, useRef, useEffect, useCallback } from 'react'
+import Goals from './components/Goals.jsx'
+import { useGoals } from './hooks/useGoals.js'
 import { useHarness } from './hooks/useHarness'
 
 // ── 진동 피드백 (iOS Safari 미지원 → try-catch) ──────────
@@ -2402,6 +2404,7 @@ function LimitBanner({ event, onResume, onDismiss }) {
 
 function AppContent({ onLogout }) {
   const { projects, tasks, status, connected, wsEvents, runTask, stopTask, resumeTask, resumeNow, deleteTask, fetchTaskLogs, fetchTaskFiles, addProject, createProject, updateProject, deleteProject, forceDeleteProject, toggleProjectVisibility, refresh } = useHarness()
+  const goalsApi = useGoals()
   const [view, setView]               = useState('list')
   const [selected, setSelected]       = useState(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)
@@ -2496,6 +2499,20 @@ function AppContent({ onLogout }) {
           fetchTaskLogs={fetchTaskLogs}
           fetchTaskFiles={fetchTaskFiles}
         />
+      ) : view === 'goals' ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <button onClick={() => { vibrate(); setView('list') }} style={{
+              background: 'none', border: 'none', color: 'var(--text3)', fontSize: 26,
+              minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 10, marginLeft: -8, WebkitTapHighlightColor: 'transparent',
+            }}>‹</button>
+            <span style={{ fontSize: 15, fontWeight: 700 }}>목표</span>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
+            <Goals projects={projects} api={goalsApi} />
+          </div>
+        </div>
       ) : view === 'history' ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -2531,6 +2548,37 @@ function AppContent({ onLogout }) {
               </div>
             </div>
           )}
+
+          {/* 목표 진입 — 확인 필요 건수를 여기서 바로 보여준다 */}
+          <div
+            onClick={() => { vibrate(8); setView('goals') }}
+            style={{
+              padding: '14px 16px', borderRadius: 12, marginBottom: 20, cursor: 'pointer',
+              background: goalsApi.inboxCount > 0 ? 'rgba(251,146,60,0.10)' : 'var(--bg2)',
+              border: `1px solid ${goalsApi.inboxCount > 0 ? 'rgba(251,146,60,0.35)' : 'var(--border)'}`,
+              display: 'flex', alignItems: 'center', gap: 12,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>목표</div>
+              <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                {goalsApi.inboxCount > 0
+                  ? `확인 필요 ${goalsApi.inboxCount}건`
+                  : goalsApi.goals.filter(g => !['done', 'abandoned'].includes(g.status)).length > 0
+                    ? `진행 중 ${goalsApi.goals.filter(g => !['done', 'abandoned'].includes(g.status)).length}건`
+                    : '목표와 기한을 넣으면 계획을 만들어 옵니다'}
+              </div>
+            </div>
+            {goalsApi.inboxCount > 0 && (
+              <span style={{
+                background: 'var(--orange)', color: '#fff', fontSize: 12, fontWeight: 700,
+                minWidth: 22, height: 22, borderRadius: 11, display: 'flex',
+                alignItems: 'center', justifyContent: 'center', padding: '0 6px',
+              }}>{goalsApi.inboxCount}</span>
+            )}
+            <span style={{ color: 'var(--text3)', fontSize: 20 }}>›</span>
+          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text3)', letterSpacing: '0.08em', textTransform: 'uppercase', flex: 1 }}>프로젝트</div>
