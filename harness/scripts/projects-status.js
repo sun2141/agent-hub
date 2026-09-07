@@ -10,7 +10,18 @@ import 'dotenv/config';
 import fs from 'fs';
 import { projectQueries } from '../src/db/db.js';
 
-function fmt(v, w) { return String(v ?? '-').padEnd(w); }
+// 열을 밀지 않으려면 넘치는 값은 잘라야 한다. 자르지 않으면 옆 열과 붙어
+// 'github.com/x/y/home/user/z' 처럼 두 값이 한 값으로 읽힌다 — 표가 거짓말을 한다.
+function fmt(v, w) {
+  const s = String(v ?? '-');
+  return (s.length > w - 1 ? s.slice(0, w - 2) + '…' : s).padEnd(w);
+}
+// github은 owner/repo만 보면 된다 — URL 전체는 폭만 먹는다.
+function ghSlug(v) {
+  if (!v) return '-';
+  const m = String(v).match(/(?:github\.com[/:])?([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/);
+  return m ? m[1] : String(v);
+}
 
 async function main() {
   let rows;
@@ -24,17 +35,17 @@ async function main() {
   if (!rows.length) { console.log('등록된 프로젝트 없음.'); return; }
 
   console.log(`\n프로젝트 경로  (기준: ${new Date().toISOString()})`);
-  console.log('─'.repeat(88));
-  console.log(`${fmt('ID', 16)}${fmt('EXISTS', 8)}${fmt('GITHUB', 22)}PATH`);
-  console.log('─'.repeat(88));
+  console.log('─'.repeat(84));
+  console.log(`${fmt('ID', 16)}${fmt('EXISTS', 8)}${fmt('GITHUB', 26)}PATH`);
+  console.log('─'.repeat(84));
   let missing = 0;
   for (const r of rows) {
     // "등록됨"과 "실제로 있음"은 다르다 — 기기를 옮기면 갈라지는 지점이 정확히 여기다.
     const exists = r.path && fs.existsSync(r.path);
     if (!exists) missing++;
-    console.log(`${fmt(r.id, 16)}${fmt(exists ? '✅' : '❌', 8)}${fmt(r.github, 22)}${r.path ?? '-'}`);
+    console.log(`${fmt(r.id, 16)}${fmt(exists ? '✅' : '❌', 7)}${fmt(ghSlug(r.github), 26)}${r.path ?? '-'}`);
   }
-  console.log('─'.repeat(88));
+  console.log('─'.repeat(84));
   if (missing) {
     console.log(`⚠️ ${missing}개 경로가 이 기기에 없다 — 그 프로젝트의 작업은 실행 즉시 실패한다.`);
     console.log('   대시보드나 /api/projects 로 경로를 이 기기 기준으로 고치세요.');
