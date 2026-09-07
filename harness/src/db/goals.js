@@ -572,11 +572,21 @@ export const goalItemQueries = {
   },
 
   // 24시간 내 이 목표의 실패 건수 — 차단기(circuit breaker) 입력
+  // 목표 단위 차단기(24시간 N건 → 자동 일시정지)가 세는 값.
+  //
+  // 예전에는 goal_items.status = 'failed' 를 셌는데, 실행기는 항목을 'failed'로
+  // 만들지 않는다 — 재시도 여지가 있으면 'pending', 없으면 'blocked'다.
+  // 즉 이 차단기는 한 번도 발동한 적이 없다. 설계 문서에는 있고 코드에는 없었다.
+  //
+  // 실패 사실이 실제로 남는 곳은 이벤트다. 거기를 센다.
+  // item_blocked_env(환경 문제)는 일부러 빼둔다 — 코드로 고칠 수 없는 원인 하나로
+  // 목표 전체를 멈추면, 손볼 것은 항목 하나인데 나머지 진행까지 죽는다.
   async recentFailures(goalId, hours = 24) {
     const row = await dbGet(
-      `SELECT COUNT(*) AS cnt FROM harness.goal_items
-       WHERE goal_id = $1 AND status = 'failed'
-         AND updated_at >= to_char((now() AT TIME ZONE 'UTC') - ($2 || ' hours')::interval,
+      `SELECT COUNT(*) AS cnt FROM harness.goal_events
+       WHERE goal_id = $1
+         AND kind IN ('item_failed', 'item_blocked')
+         AND created_at >= to_char((now() AT TIME ZONE 'UTC') - ($2 || ' hours')::interval,
                                    'YYYY-MM-DD HH24:MI:SS')`,
       [goalId, String(hours)]
     );

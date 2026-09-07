@@ -12,6 +12,7 @@ import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries 
 import { generateReport } from './report_generator.js';
 import { runPhase } from './phaseDispatch.js';
 import { minutesFromNow } from './providers/base.js';
+import { classifyVerifyFailure } from './verifyFailure.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_HUB_ROOT = path.resolve(__dirname, '../../..');
@@ -492,7 +493,12 @@ export class AgentRunner extends EventEmitter {
       } else {
         const safeError = err.message.replace(/\/Users\/[^\s]+/g, '[path]');
         await taskQueries.updateStatus(taskId, PHASE.FAILED, { error: safeError });
-        this.emit('task:failed', { taskId, projectId: task?.project_id, error: safeError });
+        // failureKind를 같이 실어 보낸다 — 목표 차단기가 환경 실패를 작업 실패로
+        // 집계하면, 고칠 수 없는 원인 하나로 목표가 통째로 멈춘다.
+        this.emit('task:failed', {
+          taskId, projectId: task?.project_id, error: safeError,
+          failureKind: err.failureKind || 'code',
+        });
       }
     } finally {
       // 브랜치 모드 작업은 어떤 경로로 끝나든(완료/실패/일시중지) 워킹트리를 base로 되돌린다.
@@ -987,6 +993,22 @@ export class AgentRunner extends EventEmitter {
   async _runGatedEvaluator(task, project, plan, round, safeCwd) {
     const verify = await this._runVerifyGate(task.id, round, safeCwd);
     if (!verify.passed) {
+      // 게이트가 "코드가 틀렸다"가 아니라 "여기서는 돌릴 수 없다"고 말하는 경우가 있다.
+      // 그걸 에이전트에게 돌려보내면 고칠 수 없는 것을 고치려고 MAX_EVAL_ROUNDS를
+      // 전부 태운다 — 구독 할당량을 다 쓰고 마지막에 "작업 실패"만 남는다.
+      // 즉시 중단하고 사람에게 넘긴다.
+      const cls = classifyVerifyFailure(verify);
+      if (cls.kind === 'environment') {
+        console.error(`[verify] 환경 문제로 중단: ${verify.label} — ${cls.why}`);
+        await logQueries.append({
+          task_id: task.id, phase: 'eval', round, level: 'error',
+          content: `[verify 환경 실패] ${verify.label} — ${cls.why}\n재시도해도 같은 결과이므로 라운드를 소진하지 않고 중단합니다.`.substring(0, 2000),
+        });
+        const err = new Error(`검증 게이트를 실행할 수 없음 (${verify.label}): ${cls.why}`);
+        err.failureKind = 'environment';
+        err.verifyLabel = verify.label;
+        throw err;
+      }
       return {
         score: 0,
         passed: false,

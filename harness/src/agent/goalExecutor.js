@@ -248,12 +248,34 @@ export function startGoalExecutor(agentRunner, { notify } = {}) {
   }
 
   // ── 실패 처리 + 차단기 ──────────────────────────────────────
-  async function onTaskFailed({ taskId, error, reason }) {
+  async function onTaskFailed({ taskId, error, reason, failureKind }) {
     const item = await goalItemQueries.findByTask(taskId);
     if (!item) return;
 
     const detail = String(error || reason || '알 수 없는 오류').slice(0, 300);
     const attempts = item.attempts || 0;
+
+    // 환경 실패 — 검증 게이트를 이 기기에서 돌릴 수 없어서 실패한 경우.
+    // 재시도해도 결과가 같으므로 attempts를 올리지 않고 바로 막는다. 그리고
+    // 목표 차단기 집계에 넣지 않는다: 고칠 수 없는 원인 하나 때문에 목표가
+    // 통째로 일시정지되면, 정작 손볼 것은 항목 하나인데 나머지 진행까지 죽는다.
+    // 대신 조용시간과 무관하게 즉시 알린다 — 삼키는 게 아니라 다르게 부르는 것이다.
+    if (failureKind === 'environment') {
+      await goalItemQueries.setStatus(item.id, 'blocked', {
+        blocked_reason: `환경: ${detail}`.slice(0, 300),
+      });
+      await goalEventQueries.add({
+        goal_id: item.goal_id, item_id: item.id, kind: 'item_blocked_env',
+        message: `환경 문제로 중단 — ${item.title}: ${detail}`.slice(0, 500),
+      });
+      await send(
+        `🧱 <b>환경 문제로 중단</b>\n${escapeHtml(item.title)}\n${escapeHtml(detail)}\n`
+        + '코드로 고칠 수 없는 실패라 재시도하지 않았고, 목표 차단기에도 넣지 않았습니다.\n'
+        + '실행 환경(의존성·네이티브 바이너리·디스크)을 확인하세요.',
+        { urgent: true }
+      );
+      return;
+    }
 
     if (attempts >= MAX_ATTEMPTS_PER_ITEM) {
       await goalItemQueries.setStatus(item.id, 'blocked', {
