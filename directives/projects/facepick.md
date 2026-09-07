@@ -6,7 +6,9 @@
 - **Name**: FacePick
 - **Path**: harness.projects.path 참조 — `npm --prefix harness run projects`
   <!-- 경로를 여기 박아두면 기기를 옮길 때마다 조용히 거짓이 된다. 출처는 DB 하나. -->
-- **GitHub**: -
+- **GitHub**: sun2141/face-product
+  <!-- 저장소 이름이 프로젝트 id(facepick)와 다르다. 비워두면 매니저 루프의
+       의도 신호(GitHub 이슈)가 영원히 0건이라 제안 대상에서 빠진다. -->
 - **Deploy**: 개발중
 - **DB 타입**: neon
 - **DB 상태**: pending (Neon Postgres 연동 설정 필요)
