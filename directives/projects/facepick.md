@@ -4,7 +4,8 @@
 
 - **ID**: facepick
 - **Name**: FacePick
-- **Path**: `/Users/sun/facepick/`
+- **Path**: harness.projects.path 참조 — `npm --prefix harness run projects`
+  <!-- 경로를 여기 박아두면 기기를 옮길 때마다 조용히 거짓이 된다. 출처는 DB 하나. -->
 - **GitHub**: -
 - **Deploy**: 개발중
 - **DB 타입**: neon
@@ -33,7 +34,7 @@ Vercel 네이티브 Neon Postgres를 표준 DB로 사용합니다.
 
 ```bash
 # agent-hub에서 실행 (NEON_API_KEY, VERCEL_TOKEN 필요)
-cd /Users/sun/agent-hub
+cd "$AGENT_HUB"        # agent-hub 체크아웃 위치
 python execution/setup_neon_db.py --project facepick
 ```
 
@@ -46,7 +47,7 @@ python execution/setup_neon_db.py --project facepick
 ### 2단계: 클라이언트 설치
 
 ```bash
-cd /Users/sun/facepick
+cd "$FACEPICK"        # 경로 확인: npm --prefix "$AGENT_HUB/harness" run projects
 
 # Neon serverless 드라이버 (Vercel Edge/Serverless 최적화)
 npm install @neondatabase/serverless

@@ -4,7 +4,8 @@
 
 - **ID**: pray-crawling
 - **Name**: Pray-crawling
-- **Path**: `/Users/sun/pray-crawling`
+- **Path**: harness.projects.path 참조 — `npm --prefix harness run projects`
+  <!-- 경로를 여기 박아두면 기기를 옮길 때마다 조용히 거짓이 된다. 출처는 DB 하나. -->
 - **GitHub**: https://github.com/sun2141/pray-crawling
 - **Deploy**: 개발중
 

@@ -4,7 +4,8 @@
 
 - **ID**: palmoni
 - **Name**: Palmoni 기도앱
-- **Path**: `/Users/sun/palmoni/`
+- **Path**: harness.projects.path 참조 — `npm --prefix harness run projects`
+  <!-- 경로를 여기 박아두면 기기를 옮길 때마다 조용히 거짓이 된다. 출처는 DB 하나. -->
 - **GitHub**: sun2141/palmoni
 - **Deploy**: palmoni.vercel.app (Vercel)
 
