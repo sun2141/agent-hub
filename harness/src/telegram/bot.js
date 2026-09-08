@@ -213,6 +213,62 @@ export function buildReviewQueueItem(task, hasFollowUp = false) {
   return { text, reply_markup: { inline_keyboard: [row] } };
 }
 
+// 저장소 정리 버튼. 프로젝트 id만 실으면 되므로 64바이트 걱정이 없다.
+export const CLEAN_CALLBACK_PREFIX = 'clean';
+export const CLEAN_PROJECT_ID_RE = /^[a-z0-9][a-z0-9-]{0,49}$/;
+
+export function encodeCleanCallback(projectId) {
+  if (!CLEAN_PROJECT_ID_RE.test(String(projectId ?? ''))) return null;
+  const data = `${CLEAN_CALLBACK_PREFIX}|do|${projectId}`;
+  if (Buffer.byteLength(data, 'utf8') > CALLBACK_DATA_LIMIT) return null;
+  return data;
+}
+
+export function decodeCleanCallback(data) {
+  const parts = String(data ?? '').split('|');
+  if (parts.length !== 3 || parts[0] !== CLEAN_CALLBACK_PREFIX || parts[1] !== 'do') return null;
+  if (!CLEAN_PROJECT_ID_RE.test(parts[2])) return null;
+  return { projectId: parts[2] };
+}
+
+// 정리가 필요한 저장소 하나. info는 agentRunner.inspectRepo()의 결과.
+export function buildCleanupItem(projectId, info) {
+  let text = `🧹 <b>${escapeHtml(projectId)}</b>\n`;
+  text += `브랜치: <code>${escapeHtml(info.branch)}</code>`;
+  if (info.onTaskBranch) text += ` (base: ${escapeHtml(info.base)})`;
+  text += '\n';
+  if (info.dirtyCount > 0) {
+    text += `커밋 안 된 변경 ${info.dirtyCount}건\n`;
+    text += `<pre>${escapeHtml(info.dirty.split('\n').slice(0, 6).join('\n'))}</pre>`;
+  }
+  if (info.staleBranches?.length > 1) {
+    text += `미정리 task 브랜치 ${info.staleBranches.length}개\n`;
+  }
+
+  if (!info.onTaskBranch) {
+    // base 위의 dirty는 사람 작업일 수 있다 — 버튼을 주지 않는다.
+    text += '\n⚠️ base 브랜치의 변경입니다. 사람 작업일 수 있어 자동 정리 대상이 아닙니다.';
+    return { text, reply_markup: undefined };
+  }
+
+  const data = encodeCleanCallback(projectId);
+  if (!data) {
+    text += '\n⚠️ 버튼을 만들 수 없습니다.';
+    return { text, reply_markup: undefined };
+  }
+  text += '\n산출물을 wip 커밋으로 봉인하고 base로 되돌립니다. 아무것도 지우지 않습니다.';
+  return { text, reply_markup: { inline_keyboard: [[{ text: '🧹 정리', callback_data: data }]] } };
+}
+
+export function buildCleanupResultMessage(projectId, result) {
+  if (!result.ok) return `❌ <b>정리 실패</b> ${escapeHtml(projectId)}\n${escapeHtml(result.reason || '')}`;
+  if (!result.changed) return `✅ <b>${escapeHtml(projectId)}</b> — 이미 깨끗합니다.`;
+  return `🧹 <b>정리 완료</b> ${escapeHtml(projectId)}\n`
+    + `${escapeHtml(result.before.branch)} → <code>${escapeHtml(result.after.branch)}</code>\n`
+    + (result.sealed ? `산출물 ${result.before.dirtyCount}건을 wip 커밋으로 봉인했습니다.\n` : '')
+    + `남은 변경: ${result.after.dirtyCount}건`;
+}
+
 // 제안 하나 = 메시지 하나. 버튼이 어느 항목의 것인지 헷갈릴 여지를 없앤다.
 export const PROPOSALS_PER_MESSAGE_LIMIT = 8;
 export const REVIEW_QUEUE_LIMIT = 10;
@@ -501,6 +557,7 @@ export function createTelegramBot(agentRunner) {
             '/proposals — 대기 중인 제안 + <b>승인/거부 버튼</b> · 최근 처리 이력\n' +
             '/review — 검토 대기 작업 + <b>재투입/리포트/완료 버튼</b>\n' +
             '/goal — 목표 만들기 (하네스가 계획을 세움) · /goals — 목표 현황\n' +
+            '/cleanup — 저장소를 base 브랜치로 되돌리기 (산출물은 봉인)\n' +
             '/answer — 하네스의 되물음에 답하기\n' +
             '/approve &lt;id&gt; — (버튼 대신 직접) 승인 → 브랜치+PR 모드로 실행\n' +
             '/reject &lt;id&gt; — (버튼 대신 직접) 거부\n' +
@@ -869,6 +926,39 @@ export function createTelegramBot(agentRunner) {
       await sendProposals(await backlogQueries.listPending());
     });
 
+    // /cleanup [projectId] — 저장소를 base 브랜치로 되돌린다.
+    // eval 불합격은 커밋을 건너뛰므로 저장소가 task/* 브랜치에 dirty로 남는 일이
+    // 생긴다. 그때마다 사람이 git 명령을 치게 두면 결국 아무도 안 치고 방치된다.
+    onCommand(/^\/cleanup(?:@\w+)?(?:\s+(\S+))?\s*$/, async (msg, match) => {
+      const target = (match[1] || '').trim();
+
+      if (target) {
+        const project = await projectQueries.get(target);
+        if (!project?.path) { notify(`❌ 프로젝트 없음: <code>${escapeHtml(target)}</code>`); return; }
+        notify(buildCleanupResultMessage(target, agentRunner.cleanupRepo(project.path)));
+        return;
+      }
+
+      const projects = await projectQueries.list({ includeHidden: false });
+      const dirtyOnes = [];
+      for (const p of projects) {
+        if (!p.path) continue;
+        try {
+          const info = agentRunner.inspectRepo(p.path);
+          if (info.ok && info.needsCleanup) dirtyOnes.push([p.id, info]);
+        } catch (err) {
+          console.warn(`[Telegram] ${p.id} 저장소 점검 실패: ${err.message}`);
+        }
+      }
+
+      if (!dirtyOnes.length) { notify('✅ 정리가 필요한 저장소가 없습니다.'); return; }
+      notify(`🧹 <b>정리 필요 ${dirtyOnes.length}건</b>\n방치하면 다음 작업이 그 위에서 시작합니다.`);
+      for (const [id, info] of dirtyOnes) {
+        const item = buildCleanupItem(id, info);
+        await notify(item.text, item.reply_markup ? { reply_markup: item.reply_markup } : {});
+      }
+    });
+
     // ── 목표 계층 ────────────────────────────────────────────
     // 목표 한 줄을 던지면 하네스가 계획(= 실행 항목 목록)을 스스로 만든다.
     // 백로그를 사람이 한 줄씩 쓰지 않아도 되게 하는 게 이 명령의 요점이다.
@@ -1125,7 +1215,8 @@ export function createTelegramBot(agentRunner) {
       const decision = run ? null : decodeDecisionCallback(query.data);
       const review = (run || decision) ? null : decodeReviewCallback(query.data);
       const goalAct = (run || decision || review) ? null : decodeGoalCallback(query.data);
-      if (!run && !decision && !review && !goalAct) { await answer('알 수 없는 버튼입니다'); return; }
+      const clean = (run || decision || review || goalAct) ? null : decodeCleanCallback(query.data);
+      if (!run && !decision && !review && !goalAct && !clean) { await answer('알 수 없는 버튼입니다'); return; }
 
       // 연타 방지 키는 콜백 데이터 자체 — 같은 버튼이 두 번 들어와도 한 번만 처리된다.
       const key = String(query.data);
@@ -1143,6 +1234,17 @@ export function createTelegramBot(agentRunner) {
       };
 
       try {
+        // ── 저장소 정리 ──
+        if (clean) {
+          const project = await projectQueries.get(clean.projectId);
+          if (!project?.path) { await answer('프로젝트를 찾지 못했습니다', true); return; }
+          await answer('정리 중…');
+          const result = agentRunner.cleanupRepo(project.path);
+          notify(buildCleanupResultMessage(clean.projectId, result));
+          if (result.ok) await clearKeyboard();
+          return;
+        }
+
         // ── 목표 계획서 승인 / 재계획 / 폐기 ──
         if (goalAct) {
           const { action, id } = goalAct;

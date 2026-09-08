@@ -664,14 +664,28 @@ export class AgentRunner extends EventEmitter {
     const currentRes = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
     if ((currentRes.stdout || '').trim() === branchName) return; // 이미 브랜치 위 — 재개 시
 
-    // 커밋되지 않은 변경이 있으면 checkout이 실패하거나 변경을 끌고 넘어간다 — 먼저 막는다.
+    // 커밋되지 않은 변경이 있으면 checkout이 실패하거나 변경을 끌고 넘어간다.
+    //
+    // 9/8: 예전에는 여기서 무조건 예외를 던졌다. 그런데 eval 불합격은 커밋을
+    // 건너뛰므로 직전 작업이 남긴 dirty가 오히려 기본값이고, 그러면 다음 작업이
+    // 아예 시작도 못 한다 — 사람이 git 명령을 칠 때까지 프로젝트 전체가 막힌다.
+    //
+    // 누구의 변경인지로 갈라놓는다:
+    //   · 직전 task/* 브랜치 위의 dirty = 에이전트 산출물 → wip 커밋으로 봉인하고 진행
+    //   · base 브랜치 위의 dirty        = 사람이 작업 중인 것 → 손대지 않고 거부
+    const currentBranch = (currentRes.stdout || '').trim();
     const dirtyRes = spawnSync('git', ['status', '--porcelain'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
     const dirty = (dirtyRes.stdout || '').trim();
     if (dirty) {
-      throw new Error(
-        `브랜치 모드: 워킹트리에 커밋되지 않은 변경이 있어 브랜치를 만들 수 없습니다 (${gitRoot}).\n` +
-        `정리 후 재시도하세요:\n${dirty.split('\n').slice(0, 10).join('\n')}`
-      );
+      if (currentBranch.startsWith('task/') && this._sealWorkingTree(gitRoot, currentBranch, null)) {
+        console.log(`[branchMode] 직전 작업 산출물을 ${currentBranch}에 봉인하고 진행합니다.`);
+      } else {
+        throw new Error(
+          `브랜치 모드: 워킹트리에 커밋되지 않은 변경이 있어 브랜치를 만들 수 없습니다 (${gitRoot}, 현재: ${currentBranch}).\n` +
+          `사람이 작업 중인 변경일 수 있어 자동으로 커밋하지 않습니다. 정리 후 재시도하세요:\n` +
+          `${dirty.split('\n').slice(0, 10).join('\n')}`
+        );
+      }
     }
 
     const existsRes = spawnSync('git', ['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
@@ -733,6 +747,49 @@ export class AgentRunner extends EventEmitter {
     } catch (err) {
       console.warn(`[branchMode] base 복귀 중 예외: ${err.message}`);
     }
+  }
+
+  // 저장소 상태 점검 — 아무것도 바꾸지 않는다. /cleanup 목록에 쓴다.
+  inspectRepo(cwd) {
+    const gitRoot = this._gitRoot(cwd);
+    if (!gitRoot) return { ok: false, reason: 'git 저장소 아님' };
+    const branch = (spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: gitRoot, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' }).stdout || '').trim();
+    const dirty = (spawnSync('git', ['status', '--porcelain'],
+      { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' }).stdout || '').trim();
+    const staleBranches = (spawnSync('git', ['branch', '--list', 'task/*', '--format=%(refname:short)'],
+      { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' }).stdout || '')
+      .trim().split('\n').filter(Boolean);
+    return {
+      ok: true,
+      gitRoot,
+      branch,
+      base: this._resolveBaseBranch(gitRoot),
+      onTaskBranch: branch.startsWith('task/'),
+      dirtyCount: dirty ? dirty.split('\n').length : 0,
+      dirty,
+      staleBranches,
+      needsCleanup: branch.startsWith('task/') || !!dirty,
+    };
+  }
+
+  // 저장소를 정리한다 — 산출물을 봉인하고 base로 복귀. 아무것도 지우지 않는다.
+  // base 브랜치 위의 dirty는 사람 작업일 수 있으므로 손대지 않는다.
+  cleanupRepo(cwd) {
+    const before = this.inspectRepo(cwd);
+    if (!before.ok) return { ok: false, reason: before.reason };
+    if (!before.needsCleanup) return { ok: true, changed: false, before, after: before };
+
+    if (!before.onTaskBranch) {
+      return {
+        ok: false, changed: false, before,
+        reason: `base 브랜치(${before.branch})의 커밋되지 않은 변경은 자동으로 건드리지 않습니다 — 사람 작업일 수 있습니다.`,
+      };
+    }
+
+    this._restoreBaseBranch(cwd, null);
+    const after = this.inspectRepo(cwd);
+    return { ok: true, changed: true, sealed: before.dirtyCount > 0, before, after };
   }
 
   // 커밋되지 않은 산출물을 현재 task 브랜치에 wip 커밋으로 봉인한다.

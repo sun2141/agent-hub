@@ -85,7 +85,10 @@ console.log('\n[4] 배선 — 분류 결과가 실제로 흐른다');
 
   // 환경 실패는 에이전트에게 돌려보내지 않고 즉시 던져야 한다.
   // 돌려보내면 MAX_EVAL_ROUNDS(기본 10)를 전부 태운다.
-  const gated = runner.slice(runner.indexOf('_runGatedEvaluator'));
+  // 정의부에서 잘라야 한다. 예전엔 indexOf('_runGatedEvaluator')를 썼는데 그건
+  // 파일 앞쪽의 "호출부"에 걸려서, 그 사이 아무 데나 `return {`이 하나 생기면
+  // 검사 구간이 엉뚱하게 잘리고 이 테스트가 통째로 무의미해진다(9/8에 실제로 발생).
+  const gated = runner.slice(runner.indexOf('async _runGatedEvaluator'));
   const envBranch = gated.slice(0, gated.indexOf('return {'));
   assert.ok(/kind === 'environment'/.test(envBranch) && /throw err/.test(envBranch),
     '환경 실패가 라운드 피드백보다 먼저 중단되지 않는다');
