@@ -6,6 +6,7 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectQueries, taskQueries, logQueries, limitEventQueries } from '../db/db.js';
 import { registerGoalRoutes } from './goalRoutes.js';
+import { registerReadRoutes } from './readRoutes.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import { spawn, spawnSync } from 'child_process';
@@ -457,6 +458,11 @@ export function createApiServer(agentRunner) {
     }
     res.json({ token: generateWsToken() });
   });
+
+  // ── 읽기 전용 토큰 라우트 (/r/:token/*) ────────────────────
+  // 커스텀 헤더를 못 보내는 원격 클라이언트를 위한 GET 전용 표면.
+  // READ_API_KEY 미설정 시 503으로 닫혀 있다. 인증 미들웨어보다 먼저 등록한다.
+  registerReadRoutes(app, agentRunner, AGENT_HUB_ROOT);
 
   app.use(dashboardAuthMiddleware);
 
