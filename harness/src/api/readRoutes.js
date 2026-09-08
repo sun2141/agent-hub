@@ -100,9 +100,29 @@ async function resolveProjectRoot(projectId) {
   return { project, root: project.path };
 }
 
+// 실행 중인 코드의 버전. 프로세스가 뜬 시점에 한 번 읽는다 —
+// 이 값이 "지금 돌고 있는 코드"이고, 요청 때마다 읽는 HEAD가 "저장소에 있는 코드"다.
+// 둘이 다르면 pull은 됐는데 재시작이 안 된 것이다. 이 상태를 밖에서 알 방법이
+// 없어서 "배포했다"를 확인할 수 없었다.
+function gitSha(root) {
+  const res = spawnSync('git', ['rev-parse', '--short', 'HEAD'],
+    { cwd: root, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+  if (res.error || res.status !== 0) return null;
+  return (res.stdout || '').trim() || null;
+}
+
+function gitSubject(root, ref = 'HEAD') {
+  const res = spawnSync('git', ['log', '-1', '--pretty=%s', ref],
+    { cwd: root, encoding: 'utf8', timeout: 5_000, stdio: 'pipe' });
+  if (res.error || res.status !== 0) return null;
+  return (res.stdout || '').trim() || null;
+}
+
 export function registerReadRoutes(app, agentRunner, agentHubRoot) {
   const router = express.Router({ mergeParams: true });
   const TASKS_DONE_DIR = path.join(agentHubRoot, 'tasks', 'done');
+  const RUNNING_SHA = gitSha(agentHubRoot);   // 부팅 시 1회 — 이후 pull 해도 바뀌지 않는다
+  console.log(`[read-api] 실행 중인 커밋: ${RUNNING_SHA || '(git 아님)'}`);
 
   // GET 이외는 전부 거부 (라우터 진입 단계에서)
   router.use((req, res, next) => {
@@ -134,10 +154,18 @@ export function registerReadRoutes(app, agentRunner, agentHubRoot) {
   });
 
   router.get('/status', (req, res) => {
+    const headSha = gitSha(agentHubRoot);
     res.json({
       ok: true,
       pid: process.pid,
       uptime: Math.floor(process.uptime()),
+      startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      version: {
+        running: RUNNING_SHA,                  // 프로세스가 뜰 때의 커밋 = 지금 도는 코드
+        head: headSha,                         // 저장소의 현재 커밋
+        headSubject: gitSubject(agentHubRoot),
+        restartNeeded: !!(RUNNING_SHA && headSha && RUNNING_SHA !== headSha),
+      },
       harness: agentRunner.getStatus(),
       ts: Date.now(),
     });
