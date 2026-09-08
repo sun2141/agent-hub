@@ -9,6 +9,12 @@ import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import { listBacklog, addBacklogItem, findBacklogItem, MAX_ITEM_LENGTH } from '../agent/backlogFile.js';
 import { readFollowUpPayload, findReportPath } from '../agent/report_generator.js';
+import { goalQueries, goalItemQueries } from '../db/goals.js';
+import { createGoal, answerClarify, requestReplan, approvePlan, rejectPlan } from '../agent/goalActions.js';
+import {
+  parseGoalCommand, parseAnswerCommand, mapAnswersToQuestions,
+  buildGoalListMessage, goalUsageMessage, decodeGoalCallback,
+} from './goalMessages.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -210,6 +216,7 @@ export function buildReviewQueueItem(task, hasFollowUp = false) {
 // 제안 하나 = 메시지 하나. 버튼이 어느 항목의 것인지 헷갈릴 여지를 없앤다.
 export const PROPOSALS_PER_MESSAGE_LIMIT = 8;
 export const REVIEW_QUEUE_LIMIT = 10;
+export const GOAL_LIST_LIMIT = 10;
 
 export function buildProposalMessage(item) {
   const apv = encodeDecisionCallback('apv', item.id);
@@ -493,6 +500,8 @@ export function createTelegramBot(agentRunner) {
             '/scan — 백로그·이슈를 읽어 LLM이 작업 후보 제안\n' +
             '/proposals — 대기 중인 제안 + <b>승인/거부 버튼</b> · 최근 처리 이력\n' +
             '/review — 검토 대기 작업 + <b>재투입/리포트/완료 버튼</b>\n' +
+            '/goal — 목표 만들기 (하네스가 계획을 세움) · /goals — 목표 현황\n' +
+            '/answer — 하네스의 되물음에 답하기\n' +
             '/approve &lt;id&gt; — (버튼 대신 직접) 승인 → 브랜치+PR 모드로 실행\n' +
             '/reject &lt;id&gt; — (버튼 대신 직접) 거부\n' +
             '/rollback &lt;projectId&gt; — 최근 완료 커밋 되돌리기(revert)\n'
@@ -860,6 +869,82 @@ export function createTelegramBot(agentRunner) {
       await sendProposals(await backlogQueries.listPending());
     });
 
+    // ── 목표 계층 ────────────────────────────────────────────
+    // 목표 한 줄을 던지면 하네스가 계획(= 실행 항목 목록)을 스스로 만든다.
+    // 백로그를 사람이 한 줄씩 쓰지 않아도 되게 하는 게 이 명령의 요점이다.
+    onCommand(/^\/goals(?:@\w+)?\s*$/, async () => {
+      const goals = await goalQueries.list();
+      const shown = goals.slice(0, GOAL_LIST_LIMIT);
+      for (const g of shown) {
+        try { g.progress = await goalQueries.progress(g.id); } catch { g.progress = null; }
+      }
+      notify(buildGoalListMessage(shown));
+
+      // 확인이 필요한 항목이 있으면 같이 알린다 — 들어가 봐야 아는 인박스는 없는 것과 같다.
+      try {
+        const inbox = await goalItemQueries.inbox();
+        if (inbox.length) {
+          notify(`📥 <b>확인 필요 ${inbox.length}건</b>\n` +
+            inbox.slice(0, 5).map(i => `• [${escapeHtml(i.project_id)}] ${escapeHtml(String(i.title).slice(0, 60))}`).join('\n'));
+        }
+      } catch (err) {
+        console.warn('[Telegram] 목표 인박스 조회 실패:', err.message);
+      }
+    });
+
+    onCommand(/^\/goal(?:@\w+)?(?:\s+([\s\S]+))?$/, async (msg, match) => {
+      const body = (match[1] || '').trim();
+      if (!body) { notify(goalUsageMessage()); return; }
+
+      const parsed = parseGoalCommand(body);
+      if (!parsed.ok) { notify(`❌ ${escapeHtml(parsed.error)}\n\n${goalUsageMessage()}`); return; }
+
+      const result = await createGoal({
+        project_id: parsed.projectId,
+        title: parsed.title,
+        outcome: parsed.outcome,
+        due_date: parsed.dueDate,
+        kind: parsed.kind,
+      }, { notify });
+
+      if (!result.ok) { notify(`❌ ${escapeHtml(result.error)}`); return; }
+
+      notify(
+        `🎯 <b>목표 생성됨</b>\n${escapeHtml(parsed.title)}\n` +
+        `<code>${escapeHtml(result.id)}</code>\n` +
+        `📁 ${escapeHtml(parsed.projectId)}${parsed.kind === 'research' ? ' · 조사' : ''}` +
+        `${parsed.dueDate ? ` · 기한 ${escapeHtml(parsed.dueDate)}` : ''}\n\n` +
+        (parsed.outcomeInferred
+          ? '완료 조건을 적지 않으셨습니다 — 하네스가 판단할 수 없는 것을 되물을 수 있습니다.\n'
+          : '') +
+        '계획을 세우는 중입니다. 준비되면 승인 버튼과 함께 알립니다.'
+      );
+    });
+
+    // /answer <goalId> + 번호별 답변 — clarify 질문에 폰에서 바로 답한다.
+    onCommand(/^\/answer(?:@\w+)?\s+([\s\S]+)$/, async (msg, match) => {
+      const parsed = parseAnswerCommand(match[1]);
+      if (!parsed.ok) { notify(`❌ ${escapeHtml(parsed.error)}`); return; }
+
+      const goal = await goalQueries.get(parsed.goalId);
+      if (!goal) { notify(`❌ 목표를 찾지 못했습니다: <code>${escapeHtml(parsed.goalId)}</code>`); return; }
+
+      const questions = Array.isArray(goal.clarify_questions) ? goal.clarify_questions : [];
+      if (!questions.length) {
+        notify('❌ 이 목표에는 대기 중인 질문이 없습니다. /goals 로 상태를 확인하세요.');
+        return;
+      }
+      const answers = mapAnswersToQuestions(parsed.byIndex, questions);
+      const result = await answerClarify(parsed.goalId, answers, { notify });
+      if (!result.ok) { notify(`❌ ${escapeHtml(result.error)}`); return; }
+
+      notify(
+        `✅ <b>답변 반영</b> ${result.count}건\n${escapeHtml(String(goal.title).slice(0, 80))}\n\n` +
+        `${questions.length > result.count ? `(${questions.length - result.count}건은 답이 없어 비워둡니다)\n\n` : ''}` +
+        '계획을 다시 세우는 중입니다.'
+      );
+    });
+
     // /review — 검토 대기(needs_review) 작업 목록 + 처리 버튼.
     // 이 목록이 없어서 6월에 멈춘 작업이 9월까지 아무에게도 안 보였다.
     onCommand(/\/review/, async () => {
@@ -1039,7 +1124,8 @@ export function createTelegramBot(agentRunner) {
       const run = decodeRunCallback(query.data);
       const decision = run ? null : decodeDecisionCallback(query.data);
       const review = (run || decision) ? null : decodeReviewCallback(query.data);
-      if (!run && !decision && !review) { await answer('알 수 없는 버튼입니다'); return; }
+      const goalAct = (run || decision || review) ? null : decodeGoalCallback(query.data);
+      if (!run && !decision && !review && !goalAct) { await answer('알 수 없는 버튼입니다'); return; }
 
       // 연타 방지 키는 콜백 데이터 자체 — 같은 버튼이 두 번 들어와도 한 번만 처리된다.
       const key = String(query.data);
@@ -1057,6 +1143,41 @@ export function createTelegramBot(agentRunner) {
       };
 
       try {
+        // ── 목표 계획서 승인 / 재계획 / 폐기 ──
+        if (goalAct) {
+          const { action, id } = goalAct;
+
+          if (action === 'apv') {
+            await answer('승인 처리 중…');
+            const res = await approvePlan(id, { notify });
+            if (!res.ok) { await answer(res.error, true); notify(`❌ <b>승인 실패</b>\n${escapeHtml(res.error)}`); return; }
+            if (res.already) { await answer('이미 승인된 계획서입니다'); await clearKeyboard(); return; }
+            // 승인 알림은 approvePlan이 보낸다 — 두 번 보내지 않는다.
+            await clearKeyboard();
+            return;
+          }
+
+          if (action === 'rej') {
+            const res = await rejectPlan(id);
+            if (!res.ok) { await answer(res.error, true); return; }
+            await answer('계획서를 폐기했습니다');
+            notify(
+              `🚫 <b>계획서 폐기</b> v${res.version}\n${escapeHtml(String(res.title).slice(0, 80))}\n\n` +
+              `목표는 초안으로 돌아갔습니다. <code>/goal</code> 로 다시 지시하거나 대시보드에서 수정하세요.`
+            );
+            await clearKeyboard();
+            return;
+          }
+
+          // action === 'rpl' — 같은 목표로 계획만 다시 세운다.
+          await answer('계획을 다시 세웁니다…');
+          const res = await requestReplan(id, null, { notify });
+          if (!res.ok) { await answer(res.error, true); return; }
+          notify(`🔄 <b>계획 재생성</b>\n${escapeHtml(String(res.title).slice(0, 80))}\n준비되면 다시 알립니다.`);
+          await clearKeyboard();
+          return;
+        }
+
         // ── 검토 필요 작업 처리 ──
         if (review) {
           const { action, taskId } = review;
