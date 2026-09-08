@@ -8,6 +8,7 @@ import { formatResumeAt, humanizeAgo, formatLocal } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import { listBacklog, addBacklogItem, findBacklogItem, MAX_ITEM_LENGTH } from '../agent/backlogFile.js';
+import { readFollowUpPayload, findReportPath } from '../agent/report_generator.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -120,8 +121,95 @@ export function decodeDecisionCallback(data) {
   return { action, id };
 }
 
+// 검토 필요(needs_review) 작업의 처리 버튼.
+// 여기가 지금까지 루프가 끊기던 지점이다 — "대시보드에서 확인 후 새 작업으로
+// 재시도하세요"는 사람이 기억하고, 판단하고, 다시 타이핑해야 한다는 뜻이었고,
+// 그래서 6월에 멈춘 작업이 9월까지 큐에 남아 있었다.
+// callback_data에는 taskId만 싣고(64바이트 규격), 프롬프트는 누른 시점에
+// tasks/done/{taskId}_followup.json 에서 다시 읽는다. 재시작 뒤에도 눌린다.
+export const REVIEW_CALLBACK_PREFIX = 'rvw';
+export const REVIEW_TASK_ID_RE = /^task_[0-9]+_[a-z0-9]+$/;
+export const REVIEW_ACTIONS = ['run', 'done', 'rpt'];
+
+export function encodeReviewCallback(action, taskId) {
+  if (!REVIEW_ACTIONS.includes(action)) return null;
+  if (!REVIEW_TASK_ID_RE.test(String(taskId ?? ''))) return null;
+  const data = `${REVIEW_CALLBACK_PREFIX}|${action}|${taskId}`;
+  if (Buffer.byteLength(data, 'utf8') > CALLBACK_DATA_LIMIT) return null;
+  return data;
+}
+
+export function decodeReviewCallback(data) {
+  const parts = String(data ?? '').split('|');
+  if (parts.length !== 3 || parts[0] !== REVIEW_CALLBACK_PREFIX) return null;
+  const [, action, taskId] = parts;
+  if (!REVIEW_ACTIONS.includes(action)) return null;
+  if (!REVIEW_TASK_ID_RE.test(taskId)) return null;
+  return { action, taskId };
+}
+
+// 검토 필요 알림 — 버튼까지 포함한 완성된 메시지.
+// hasFollowUp=false면 재투입 버튼을 만들지 않는다(되돌릴 내용이 없다).
+export function buildNeedsReviewMessage({ taskId, round, evalResult, unresolvedIssues, telegramSummary, hasFollowUp = false }) {
+  const head = '⚠️ <b>검토 필요</b> — 최대 라운드 도달, 기준 미충족';
+  let text;
+  if (telegramSummary) {
+    text = `${head}\n\n${telegramSummary}`;
+  } else {
+    const issuePreview = Array.isArray(evalResult?.issues)
+      ? evalResult.issues.slice(0, 3).map(x => `• ${escapeHtml(String(x).substring(0, 80))}`).join('\n')
+      : '';
+    text = `${head}\n\n` +
+      `ID: <code>${escapeHtml(taskId)}</code>\n` +
+      `라운드: ${round} | 점수: ${evalResult?.score ?? '-'}/100 | 미해결: ${unresolvedIssues ?? '-'}개\n` +
+      (issuePreview ? `\n<b>미해결 항목:</b>\n${issuePreview}\n` : '');
+  }
+  text += '\n\n커밋·배포는 보류됨.';
+
+  const row = [];
+  const rerun = hasFollowUp ? encodeReviewCallback('run', taskId) : null;
+  const report = encodeReviewCallback('rpt', taskId);
+  const done   = encodeReviewCallback('done', taskId);
+  if (rerun)  row.push({ text: '🔁 후속 작업으로 재투입', callback_data: rerun });
+  if (report) row.push({ text: '📄 리포트', callback_data: report });
+  if (done)   row.push({ text: '✅ 검토 완료', callback_data: done });
+
+  if (!row.length) {
+    text += ' 대시보드에서 리포트를 확인하고 새 작업으로 재시도하세요.';
+    return { text, reply_markup: undefined };
+  }
+  if (!rerun) text += '\n(재투입할 후속 작업이 없습니다 — 리포트를 확인하세요)';
+  return { text, reply_markup: { inline_keyboard: [row] } };
+}
+
+// /review 목록의 항목 하나. 알림과 같은 버튼을 쓰되, DB에 남은 필드만으로 조립한다.
+// 이미 큐에 쌓여 있던 과거 작업도 버튼으로 처리할 수 있어야 하기 때문이다.
+export function buildReviewQueueItem(task, hasFollowUp = false) {
+  const taskId = task?.id || '';
+  const created = task?.created_at ? String(task.created_at).slice(0, 10) : '-';
+  let text = '⚠️ <b>검토 대기</b>\n';
+  text += `<code>${escapeHtml(taskId)}</code>\n`;
+  text += `📁 ${escapeHtml(task?.project_id || '-')} · ${escapeHtml(created)}\n`;
+  if (task?.prompt) text += `\n${escapeHtml(String(task.prompt).slice(0, 120))}\n`;
+
+  const row = [];
+  const rerun = hasFollowUp ? encodeReviewCallback('run', taskId) : null;
+  const report = encodeReviewCallback('rpt', taskId);
+  const done   = encodeReviewCallback('done', taskId);
+  if (rerun)  row.push({ text: '🔁 재투입', callback_data: rerun });
+  if (report) row.push({ text: '📄 리포트', callback_data: report });
+  if (done)   row.push({ text: '✅ 검토 완료', callback_data: done });
+
+  if (!row.length) {
+    text += `\n⚠️ 버튼을 만들 수 없습니다 — 대시보드에서 처리하세요.`;
+    return { text, reply_markup: undefined };
+  }
+  return { text, reply_markup: { inline_keyboard: [row] } };
+}
+
 // 제안 하나 = 메시지 하나. 버튼이 어느 항목의 것인지 헷갈릴 여지를 없앤다.
 export const PROPOSALS_PER_MESSAGE_LIMIT = 8;
+export const REVIEW_QUEUE_LIMIT = 10;
 
 export function buildProposalMessage(item) {
   const apv = encodeDecisionCallback('apv', item.id);
@@ -404,6 +492,7 @@ export function createTelegramBot(agentRunner) {
           ? '<b>매니저 루프</b>\n' +
             '/scan — 백로그·이슈를 읽어 LLM이 작업 후보 제안\n' +
             '/proposals — 대기 중인 제안 + <b>승인/거부 버튼</b> · 최근 처리 이력\n' +
+            '/review — 검토 대기 작업 + <b>재투입/리포트/완료 버튼</b>\n' +
             '/approve &lt;id&gt; — (버튼 대신 직접) 승인 → 브랜치+PR 모드로 실행\n' +
             '/reject &lt;id&gt; — (버튼 대신 직접) 거부\n' +
             '/rollback &lt;projectId&gt; — 최근 완료 커밋 되돌리기(revert)\n'
@@ -771,6 +860,27 @@ export function createTelegramBot(agentRunner) {
       await sendProposals(await backlogQueries.listPending());
     });
 
+    // /review — 검토 대기(needs_review) 작업 목록 + 처리 버튼.
+    // 이 목록이 없어서 6월에 멈춘 작업이 9월까지 아무에게도 안 보였다.
+    onCommand(/\/review/, async () => {
+      const all = await taskQueries.list(100);
+      const pending = all.filter(t => t.status === 'needs_review');
+      if (!pending.length) {
+        notify('✅ 검토 대기 중인 작업이 없습니다.');
+        return;
+      }
+      const shown = pending.slice(0, REVIEW_QUEUE_LIMIT);
+      notify(
+        `⚠️ <b>검토 대기 ${pending.length}건</b>` +
+        (pending.length > shown.length ? ` (오래된 순 ${shown.length}건만 표시)` : '') +
+        `\n처리하지 않으면 계속 쌓입니다.`
+      );
+      for (const t of shown) {
+        const item = buildReviewQueueItem(t, !!readFollowUpPayload(t.id));
+        await notify(item.text, item.reply_markup ? { reply_markup: item.reply_markup } : {});
+      }
+    });
+
     // /add <projectId> <내용> — directives 파일의 "## Backlog"에 한 줄 추가.
     // 지금까지 백로그는 파일 편집이나 GitHub 이슈로만 넣을 수 있어서, 폰에서는 사실상 불가능했다.
     onCommand(/\/add\s+(\S+)\s+([\s\S]+)/, async (msg, match) => {
@@ -928,7 +1038,8 @@ export function createTelegramBot(agentRunner) {
       // 버튼은 두 종류다: 원문 백로그 실행(blrun)과 제안 승인/거부(bldec).
       const run = decodeRunCallback(query.data);
       const decision = run ? null : decodeDecisionCallback(query.data);
-      if (!run && !decision) { await answer('알 수 없는 버튼입니다'); return; }
+      const review = (run || decision) ? null : decodeReviewCallback(query.data);
+      if (!run && !decision && !review) { await answer('알 수 없는 버튼입니다'); return; }
 
       // 연타 방지 키는 콜백 데이터 자체 — 같은 버튼이 두 번 들어와도 한 번만 처리된다.
       const key = String(query.data);
@@ -946,6 +1057,66 @@ export function createTelegramBot(agentRunner) {
       };
 
       try {
+        // ── 검토 필요 작업 처리 ──
+        if (review) {
+          const { action, taskId } = review;
+
+          if (action === 'rpt') {
+            const file = findReportPath(taskId);
+            if (!file) { await answer('리포트 파일을 찾지 못했습니다', true); return; }
+            await answer('리포트를 보냅니다…');
+            try {
+              await bot.sendDocument(chatId, file);
+            } catch (err) {
+              console.warn('[Telegram] 리포트 전송 실패:', err.message);
+              notify(`❌ 리포트 전송 실패\n${escapeHtml(String(err.message).slice(0, 200))}`);
+            }
+            return; // 버튼은 남긴다 — 리포트는 여러 번 볼 수 있어야 한다
+          }
+
+          if (action === 'done') {
+            await taskQueries.updateStatus(taskId, 'reviewed');
+            await answer('검토 완료로 표시했습니다');
+            notify(`✅ <b>검토 완료</b>\n<code>${escapeHtml(taskId)}</code>\n큐에서 내려갑니다.`);
+            await clearKeyboard();
+            return;
+          }
+
+          // action === 'run' — 리포트가 남긴 재투입 페이로드로 새 작업을 만든다.
+          const payload = readFollowUpPayload(taskId);
+          if (!payload) {
+            await answer('재투입 정보를 찾지 못했습니다. 리포트를 확인하고 직접 /run 하세요', true);
+            return;
+          }
+
+          if (payload.branchMode) {
+            const gate = await checkBranchRunGate();
+            if (gate) { await answer(gate, true); notify(`❌ 재투입 거부\n${escapeHtml(gate)}`); return; }
+          }
+
+          await answer('재투입합니다…');
+          const newTaskId = await agentRunner.run({
+            projectId: payload.projectId,
+            prompt: payload.prompt,
+            branchMode: !!payload.branchMode,
+          });
+
+          // 원본은 큐에서 내린다 — 안 그러면 재투입해도 계속 검토 대기로 남는다.
+          try {
+            await taskQueries.updateStatus(taskId, 'reviewed');
+          } catch (err) {
+            console.warn(`[Telegram] 원본 작업 상태 갱신 실패 (${taskId}): ${err.message}`);
+          }
+
+          notify(
+            `🔁 <b>재투입</b>\n<code>${escapeHtml(taskId)}</code> → <code>${newTaskId}</code>\n` +
+            `📁 ${escapeHtml(payload.projectId)}${payload.branchMode ? ' · 브랜치+PR 모드' : ''}\n\n` +
+            `미해결 항목만 처리하도록 프롬프트가 좁혀졌습니다.`
+          );
+          await clearKeyboard();
+          return;
+        }
+
         if (run) {
           const { projectId, ref } = run;
           // 해시로 다시 찾는다 — 그 사이 항목이 지워졌거나 문장이 바뀌었으면 여기서 걸린다.
@@ -1055,20 +1226,12 @@ export function createTelegramBot(agentRunner) {
 
     agentRunner.on('task:needs_review', ({ taskId, round, evalResult, unresolvedIssues, reportInfo, projectId }) => {
       // 완료가 아니므로 실패 카운터는 건드리지 않음 (알림 억제 대상도 아님 — 검토는 사용자 액션 필요)
-      const issuePreview = Array.isArray(evalResult?.issues)
-        ? evalResult.issues.slice(0, 3).map(x => `• ${String(x).substring(0, 80)}`).join('\n')
-        : '';
-      if (reportInfo?.telegramSummary) {
-        notify(`⚠️ <b>검토 필요</b> — 최대 라운드 도달, 기준 미충족\n\n${reportInfo.telegramSummary}\n\n커밋·배포는 보류됨. 대시보드에서 리포트 확인 후 새 작업으로 재시도하세요.`);
-      } else {
-        notify(
-          `⚠️ <b>검토 필요</b> — 최대 라운드 도달, 기준 미충족\n\n` +
-          `ID: <code>${taskId}</code>\n` +
-          `라운드: ${round} | 점수: ${evalResult?.score ?? '-'}/100 | 미해결: ${unresolvedIssues ?? '-'}개\n` +
-          (issuePreview ? `\n<b>미해결 항목:</b>\n${issuePreview}\n` : '') +
-          `\n커밋·배포는 보류됨. 대시보드에서 리포트 확인 후 새 작업으로 재시도하세요.`
-        );
-      }
+      const m = buildNeedsReviewMessage({
+        taskId, round, evalResult, unresolvedIssues,
+        telegramSummary: reportInfo?.telegramSummary,
+        hasFollowUp: !!reportInfo?.followUpPath,
+      });
+      notify(m.text, m.reply_markup ? { reply_markup: m.reply_markup } : {});
     });
 
     // 쿨다운/리미트 진입 — 두 경로 모두 여기서 알린다.

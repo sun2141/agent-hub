@@ -371,6 +371,76 @@ function buildReportFilename(taskId) {
   return path.join(TASKS_DONE_DIR, `${safe}_report.md`);
 }
 
+// ── 재투입 사이드카 ──────────────────────────────────────────
+// 불합격 리포트 옆에 tasks/done/{task_id}_followup.json 을 같이 쓴다.
+// 텔레그램 버튼의 callback_data는 64바이트가 상한이라 프롬프트를 실을 수 없고,
+// 버튼은 재시작 뒤에 눌릴 수도 있으므로 메모리에 들고 있을 수도 없다.
+// taskId 하나로 디스크에서 다시 찾는다.
+export const FOLLOWUP_SUFFIX = '_followup.json';
+
+function buildFollowUpFilename(taskId) {
+  const safe = (taskId || 'unknown').replace(/[^a-z0-9_-]/gi, '_');
+  return path.join(TASKS_DONE_DIR, `${safe}${FOLLOWUP_SUFFIX}`);
+}
+
+// 미해결 이슈와 후속 작업만 담은 재시도 프롬프트.
+// "처음부터 다시"가 아니라 "남은 것만"이라는 점을 프롬프트가 명시해야
+// 다음 라운드가 또 전체 재설계로 흘러가지 않는다.
+export function buildRetryPrompt({ title, originalPrompt, issues = [], followUps = [], score, rounds }) {
+  const lines = [];
+  const goal = title || originalPrompt || '(제목 없음)';
+  lines.push(`직전 작업이 ${rounds ?? '?'}라운드를 소진하고 ${score ?? '?'}/100 으로 종료됐다.`);
+  lines.push(`원래 목표: ${goal}`);
+  lines.push('');
+  lines.push('아래 미해결 항목만 처리한다. 새로 설계하지 말고, 이미 구현된 부분은 건드리지 말 것.');
+  lines.push('');
+
+  if (issues.length > 0) {
+    lines.push('## 미해결 항목 (평가자 지적)');
+    issues.forEach((issue, i) => lines.push(`${i + 1}. ${issue}`));
+    lines.push('');
+  }
+
+  const high = followUps.filter(t => t.priority === 'HIGH' && !/^최대 라운드 초과/.test(t.title || ''));
+  if (high.length > 0) {
+    lines.push('## 우선 처리');
+    for (const t of high) lines.push(`- ${t.title}`);
+    lines.push('');
+  }
+
+  const evaluatorNote = followUps.find(t => t.title === '평가자 개선 제안 반영');
+  if (evaluatorNote?.reason) {
+    lines.push('## 평가자 개선 제안');
+    lines.push(evaluatorNote.reason);
+    lines.push('');
+  }
+
+  lines.push('## 완료 기준');
+  lines.push('- 위 미해결 항목이 모두 해소될 것');
+  lines.push('- 기존 lint / test 가 통과할 것 (스킵하지 말 것)');
+  return lines.join('\n');
+}
+
+// 재투입 페이로드를 디스크에서 읽는다. 없으면 null.
+export function readFollowUpPayload(taskId) {
+  try {
+    const file = buildFollowUpFilename(taskId);
+    if (!fs.existsSync(file)) return null;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!parsed?.prompt || !parsed?.projectId) return null;
+    return parsed;
+  } catch (err) {
+    console.warn(`[report] 재투입 페이로드 읽기 실패 (${taskId}): ${err.message}`);
+    return null;
+  }
+}
+
+// 리포트 파일 경로 (버튼에서 문서로 보낼 때 사용)
+export function findReportPath(taskId) {
+  const file = buildReportFilename(taskId);
+  return fs.existsSync(file) ? file : null;
+}
+
 // 텔레그램 요약 메시지 생성 (HTML 포맷)
 export function buildTelegramSummary({ taskId, projectName, score, passed, failedCount, maxRoundsReached, followUpCount, reportPath }) {
   const { grade } = getScoreGrade(score ?? 0);
@@ -463,6 +533,34 @@ export function generateReport(params) {
     console.error(`[report] 리포트 저장 실패: ${err.message}`);
   }
 
+  // 불합격일 때만 재투입 페이로드를 남긴다. 합격 작업에는 되돌릴 게 없다.
+  let followUpPath = null;
+  if (!breakdown.passed) {
+    try {
+      followUpPath = buildFollowUpFilename(task?.id || 'unknown');
+      fs.writeFileSync(followUpPath, JSON.stringify({
+        taskId: task?.id || null,
+        projectId: task?.project_id || null,
+        branchMode: task?.branch_mode ? true : false,
+        score: breakdown.score,
+        rounds,
+        title: plan?.title || null,
+        prompt: buildRetryPrompt({
+          title: plan?.title,
+          originalPrompt: task?.prompt,
+          issues: breakdown.issues,
+          followUps: followUpTasks,
+          score: breakdown.score,
+          rounds,
+        }),
+        savedAt: new Date().toISOString(),
+      }, null, 2), 'utf8');
+    } catch (err) {
+      console.error(`[report] 재투입 페이로드 저장 실패: ${err.message}`);
+      followUpPath = null;
+    }
+  }
+
   const telegramSummary = buildTelegramSummary({
     taskId: task?.id,
     projectName: project?.name || task?.project_id,
@@ -476,6 +574,7 @@ export function generateReport(params) {
 
   return {
     reportPath,
+    followUpPath,
     markdown,
     breakdown,
     followUpTasks,

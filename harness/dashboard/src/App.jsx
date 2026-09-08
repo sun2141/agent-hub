@@ -21,6 +21,10 @@ const PHASE = {
   rate_limited:    { icon: '⏳', label: '리미트 대기', color: '#f97316' },
   handoff_pending: { icon: '⇢', label: 'Handoff',   color: '#818cf8' },
   fallback_running:{ icon: '⟳', label: 'Codex',     color: '#818cf8' },
+  // needs_review가 빠져 있어서 검토 대기 작업이 '대기'로 보였다(PHASE[status] || PHASE.pending).
+  // 눈에 띄지 않으니 6월 작업이 9월까지 큐에 남았다.
+  needs_review:    { icon: '⚠', label: '검토 필요',  color: '#fbbf24' },
+  reviewed:        { icon: '✓', label: '검토됨',    color: '#585870' },
 }
 
 const INFRA_IDS = ['agent-hub']
