@@ -58,11 +58,27 @@ function buildScoreBreakdown(plan, evalResult) {
     };
   });
 
+  // 평가자가 남긴 이슈를 어떤 기준에도 매핑하지 못했는데 불합격인 경우.
+  // 예전에는 이 상황에서 모든 기준이 '충족'으로 찍혀서, 75점짜리 리포트가
+  // "10개 전부 충족, 미충족 0개"라고 거짓말을 했다. 매핑은 이슈 문자열이
+  // "1." 로 시작하거나 기준 앞 30자를 그대로 포함할 때만 성공하는데,
+  // 평가자는 보통 번호 없는 서술문을 쓰기 때문에 실패가 기본값에 가깝다.
+  // 모르면 모른다고 표시한다.
+  const anyMappedFail = criteriaResults.some(r => r.status === 'fail');
+  const inconclusive = !passed && issues.length > 0 && !anyMappedFail;
+  if (inconclusive) {
+    for (const r of criteriaResults) {
+      r.status = 'unknown';
+      r.statusLabel = '? 판정 불가';
+    }
+  }
+
   // 가중치 계산: 기준 개수가 있으면 균등 분배, 없으면 100점 기준
   const totalCriteria = criteria.length || 1;
   const weightPerCriterion = Math.round(100 / totalCriteria);
-  const passedCount = criteriaResults.filter(r => r.status === 'pass').length;
-  const failedCount = criteriaResults.filter(r => r.status === 'fail').length;
+  const passedCount  = criteriaResults.filter(r => r.status === 'pass').length;
+  const failedCount  = criteriaResults.filter(r => r.status === 'fail').length;
+  const unknownCount = criteriaResults.filter(r => r.status === 'unknown').length;
 
   return {
     score,
@@ -71,6 +87,8 @@ function buildScoreBreakdown(plan, evalResult) {
     totalCriteria,
     passedCount,
     failedCount,
+    unknownCount,
+    inconclusive,
     weightPerCriterion,
     criteriaResults,
     issues,
@@ -103,12 +121,27 @@ function generateFollowUpTasks(breakdown, plan, maxRoundsReached) {
     });
   }
 
-  // 최대 라운드 도달 시
-  if (maxRoundsReached && breakdown.failedCount > 0) {
+  // 기준에 매핑되지 않은 이슈 — 이슈 자체를 후속 작업으로 올린다.
+  // 이게 없으면 불합격인데도 후속 작업이 비어 있는 리포트가 나온다.
+  if (breakdown.inconclusive) {
+    for (const issue of breakdown.issues) {
+      suggestions.push({
+        priority: 'HIGH',
+        title: `평가 이슈 해소: ${issue.slice(0, 60)}`,
+        reason: issue,
+      });
+    }
+  }
+
+  // 최대 라운드 도달 시 — 불합격이면 미충족 매핑 여부와 무관하게 남긴다.
+  if (maxRoundsReached && !breakdown.passed) {
+    const unmet = breakdown.failedCount > 0
+      ? `${breakdown.failedCount}개 항목 미충족`
+      : `미충족 항목 특정 실패(이슈 ${breakdown.issues.length}건)`;
     suggestions.push({
       priority: 'HIGH',
       title: '최대 라운드 초과로 미완성 — rounds 증가 후 재시도',
-      reason: `${breakdown.failedCount}개 항목 미충족 상태로 최대 라운드 도달`,
+      reason: `${unmet} 상태로 최대 라운드 도달`,
     });
   }
 
@@ -154,7 +187,11 @@ function buildMarkdownReport({ task, project, plan, breakdown, followUpTasks, ph
   lines.push(`|------|-----|`);
   lines.push(`| 작업 ID | \`${task?.id || '-'}\` |`);
   lines.push(`| 프로젝트 | ${projectName} |`);
-  lines.push(`| 생성일시 | ${now} UTC |`);
+  const createdAt = task?.created_at
+    ? new Date(task.created_at).toISOString().replace('T', ' ').slice(0, 19)
+    : null;
+  lines.push(`| 작업 생성 | ${createdAt ? createdAt + ' UTC' : '-'} |`);
+  lines.push(`| 리포트 생성 | ${now} UTC |`);
   lines.push(`| 총 라운드 | ${rounds} |`);
   lines.push(`| 상태 | ${maxRoundsReached ? '⚠️ 최대 라운드 도달' : breakdown.passed ? '✅ 합격' : '❌ 불합격'} |`);
   if (commitSha) lines.push(`| 커밋 SHA | \`${commitSha.slice(0, 8)}\` |`);
@@ -172,7 +209,10 @@ function buildMarkdownReport({ task, project, plan, breakdown, followUpTasks, ph
   lines.push('');
   lines.push(`- **총 완료 기준**: ${breakdown.totalCriteria}개`);
   lines.push(`- **항목당 가중치**: 약 ${breakdown.weightPerCriterion}점`);
-  lines.push(`- **충족**: ${breakdown.passedCount}개 / **미충족**: ${breakdown.failedCount}개`);
+  const countLine = breakdown.unknownCount > 0
+    ? `- **충족**: ${breakdown.passedCount}개 / **미충족**: ${breakdown.failedCount}개 / **판정 불가**: ${breakdown.unknownCount}개`
+    : `- **충족**: ${breakdown.passedCount}개 / **미충족**: ${breakdown.failedCount}개`;
+  lines.push(countLine);
   lines.push(`- **기본 점수**: 구현 충족도 기반 0~100 (평가자 AI 판정)`);
   lines.push('');
 
@@ -193,6 +233,19 @@ function buildMarkdownReport({ task, project, plan, breakdown, followUpTasks, ph
     }
   }
   lines.push('');
+
+  // 판정 불가 — 이슈를 기준에 매핑하지 못했음을 숨기지 않고 드러낸다.
+  if (breakdown.inconclusive) {
+    lines.push('> ⚠️ 평가자 이슈를 개별 완료 기준에 매핑하지 못했습니다.');
+    lines.push('> 위 체크리스트는 판정 불가이며, 아래 이슈 원문을 기준으로 판단하세요.');
+    lines.push('');
+    lines.push('## ⚠️ 평가자 이슈 원문');
+    lines.push('');
+    for (const issue of breakdown.issues) {
+      lines.push(`- ${issue}`);
+    }
+    lines.push('');
+  }
 
   // 미충족/부분 완료 항목 상세
   const failedItems = breakdown.criteriaResults.filter(r => r.status === 'fail');
@@ -283,7 +336,9 @@ function buildMarkdownReport({ task, project, plan, breakdown, followUpTasks, ph
   } else {
     lines.push('## 🚀 후속 작업 제안');
     lines.push('');
-    lines.push('_후속 작업 없음 — 모든 기준 충족_');
+    lines.push(breakdown.passed
+      ? '_후속 작업 없음 — 모든 기준 충족_'
+      : '_후속 작업을 생성하지 못했습니다 — 평가자 이슈가 비어 있습니다._');
     lines.push('');
   }
 

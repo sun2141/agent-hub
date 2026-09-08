@@ -503,7 +503,7 @@ export class AgentRunner extends EventEmitter {
     } finally {
       // 브랜치 모드 작업은 어떤 경로로 끝나든(완료/실패/일시중지) 워킹트리를 base로 되돌린다.
       // 재개 시에는 _ensureTaskBranch가 다시 task 브랜치를 체크아웃하므로 안전하다.
-      if (task?.branch_mode) this._restoreBaseBranch(safeCwd);
+      if (task?.branch_mode) this._restoreBaseBranch(safeCwd, taskId);
       this._running.delete(taskId);
       this._cleanupAttachments(taskId);
       this._drainQueue();
@@ -700,8 +700,13 @@ export class AgentRunner extends EventEmitter {
   // 파이프라인이 끝나면(성공/실패/일시중지 모두) 워킹트리를 base 브랜치로 되돌린다.
   // 되돌리지 않으면 저장소가 task/* 브랜치에 머물러서, 이후의 일반 /run 작업이
   // 미병합 task 브랜치 위에 커밋하고 그 브랜치로 direct push해버린다.
-  // 커밋되지 않은 변경이 남아 있으면(예: 빌드 산출물) 강제로 전환하지 않고 경고만 남긴다.
-  _restoreBaseBranch(cwd) {
+  //
+  // 9/8: 예전에는 커밋되지 않은 변경이 남아 있으면 경고만 찍고 그냥 포기했다.
+  // eval 불합격은 커밋을 건너뛰므로 dirty가 오히려 기본값이었고, 결과적으로
+  // 저장소가 task 브랜치에 dirty로 방치돼 다음 작업이 그 위에서 시작했다.
+  // 이제는 산출물을 wip 커밋으로 봉인한 뒤 base로 복귀한다. 커밋은 task 브랜치에
+  // 남으므로 아무것도 잃지 않고, base는 깨끗한 상태로 돌아간다.
+  _restoreBaseBranch(cwd, taskId = null) {
     try {
       const gitRoot = this._gitRoot(cwd);
       if (!gitRoot) return;
@@ -712,8 +717,10 @@ export class AgentRunner extends EventEmitter {
 
       const dirtyRes = spawnSync('git', ['status', '--porcelain'], { cwd: gitRoot, encoding: 'utf8', timeout: 10_000, stdio: 'pipe' });
       if ((dirtyRes.stdout || '').trim()) {
-        console.warn(`[branchMode] 워킹트리가 clean하지 않아 base 복귀를 건너뜁니다 (현재: ${current}). 수동 확인 필요.`);
-        return;
+        if (!this._sealWorkingTree(gitRoot, current, taskId)) {
+          console.warn(`[branchMode] 워킹트리 봉인 실패 — base 복귀를 건너뜁니다 (현재: ${current}). 수동 확인 필요.`);
+          return;
+        }
       }
 
       const base = this._resolveBaseBranch(gitRoot);
@@ -726,6 +733,39 @@ export class AgentRunner extends EventEmitter {
     } catch (err) {
       console.warn(`[branchMode] base 복귀 중 예외: ${err.message}`);
     }
+  }
+
+  // 커밋되지 않은 산출물을 현재 task 브랜치에 wip 커밋으로 봉인한다.
+  // 성공하면 true. 되돌릴 수 없는 삭제는 하지 않는다 — 커밋만 한다.
+  _sealWorkingTree(gitRoot, branch, taskId) {
+    const label = taskId ? `task=${taskId}` : branch;
+    const addRes = spawnSync('git', ['add', '-A'], { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+    if (addRes.error || addRes.status !== 0) {
+      console.warn(`[branchMode] wip add 실패: ${(addRes.stderr || addRes.stdout || '').trim().slice(0, 200)}`);
+      return false;
+    }
+
+    const stagedRes = spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: gitRoot, encoding: 'utf8', timeout: 15_000, stdio: 'pipe' });
+    const staged = (stagedRes.stdout || '').trim();
+    if (!staged) {
+      // .gitignore 대상만 남은 경우 — 커밋할 게 없고, 체크아웃도 막지 않는다.
+      console.log('[branchMode] 무시 대상만 남음 — wip 커밋 없이 복귀합니다.');
+      return true;
+    }
+
+    const msg = `wip: eval 미완료 산출물 보존 (${label}, branch=${branch})`;
+    const commitRes = spawnSync('git', [...GIT_IDENTITY_ARGS, 'commit', '-m', msg],
+      { cwd: gitRoot, encoding: 'utf8', timeout: 30_000, stdio: 'pipe' });
+    if (commitRes.error || commitRes.status !== 0) {
+      const out = (commitRes.stderr || commitRes.stdout || '').trim();
+      if (out.includes('nothing to commit') || out.includes('nothing added to commit')) return true;
+      console.warn(`[branchMode] wip 커밋 실패: ${out.slice(0, 300)}`);
+      return false;
+    }
+
+    const fileCount = staged.split('\n').filter(Boolean).length;
+    console.log(`[branchMode] wip 커밋으로 산출물 봉인: ${fileCount}개 파일 → ${branch}`);
+    return true;
   }
 
   // 매니저 루프 브랜치+PR 가드레일: 커밋 완료 후 PR 생성(이미 있으면 그대로 반환).

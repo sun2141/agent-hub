@@ -126,6 +126,7 @@ export function registerReadRoutes(app, agentRunner, agentHubRoot) {
         `${base}/reports`,
         `${base}/projects`,
         `${base}/projects/:projectId/git`,
+        `${base}/projects/:projectId/diff?staged=&path=`,
         `${base}/projects/:projectId/ls?path=`,
         `${base}/projects/:projectId/file?path=`,
       ],
@@ -226,6 +227,34 @@ export function registerReadRoutes(app, agentRunner, agentHubRoot) {
         branches:  git(['branch', '--list', '--format=%(refname:short)'], cwd).out,
         recentCommits: git(['log', '-10', '--pretty=%h %ad %s', '--date=short'], cwd).out,
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 커밋되지 않은 변경의 실제 diff. status/diffStat만으로는 살릴지 버릴지 판단이 안 된다.
+  router.get('/projects/:projectId/diff', async (req, res) => {
+    const { projectId } = req.params;
+    if (!PROJECT_ID_RE.test(projectId)) return res.status(400).json({ error: '잘못된 프로젝트 ID' });
+    try {
+      const found = await resolveProjectRoot(projectId);
+      if (!found) return res.status(404).json({ error: '프로젝트 없음 또는 경로 없음' });
+      const cwd = found.root;
+      const args = ['diff'];
+      if (req.query.staged === 'true') args.push('--cached');
+      if (req.query.path) {
+        const target = safeResolve(cwd, String(req.query.path));
+        if (!target) return res.status(403).json({ error: '접근 불가 경로' });
+        args.push('--', path.relative(cwd, target));
+      }
+      let out = git(args, cwd).out;
+      if (out.length > MAX_FILE_BYTES) {
+        out = out.slice(0, MAX_FILE_BYTES) + `\n\n[... diff 잘림 — 총 ${out.length} bytes]`;
+      }
+      const untracked = git(['ls-files', '--others', '--exclude-standard'], cwd).out;
+      res.type('text/plain; charset=utf-8').send(
+        (out || '(diff 없음)') + (untracked ? `\n\n--- 추적되지 않는 파일 ---\n${untracked}` : '')
+      );
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
