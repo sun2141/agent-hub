@@ -8,7 +8,7 @@ import { formatResumeAt, humanizeAgo, formatLocal } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
 import { listBacklog, addBacklogItem, findBacklogItem, MAX_ITEM_LENGTH } from '../agent/backlogFile.js';
-import { readFollowUpPayload, findReportPath } from '../agent/report_generator.js';
+import { readFollowUpPayload, rebuildFollowUpPayload, findReportPath } from '../agent/report_generator.js';
 import { goalQueries, goalItemQueries } from '../db/goals.js';
 import { createGoal, answerClarify, requestReplan, approvePlan, rejectPlan } from '../agent/goalActions.js';
 import {
@@ -209,6 +209,10 @@ export function buildReviewQueueItem(task, hasFollowUp = false) {
   if (!row.length) {
     text += `\n⚠️ 버튼을 만들 수 없습니다 — 대시보드에서 처리하세요.`;
     return { text, reply_markup: undefined };
+  }
+  // 버튼이 왜 없는지 말해주지 않으면 "고장난 건가?"가 된다.
+  if (!rerun) {
+    text += '\n재투입 정보가 없습니다(평가 결과 없음). 리포트를 확인하고 /run 으로 직접 지시하세요.';
   }
   return { text, reply_markup: { inline_keyboard: [row] } };
 }
@@ -491,6 +495,17 @@ export function createTelegramBot(agentRunner) {
   // registerCommands 밖에 둔다 — 인라인 버튼 콜백(registerCallbacks)도 같은 함수를 쓴다.
   // 공용 게이트로 위임한다 (src/agent/runGate.js).
   // 여기에 두 벌째 구현을 두면 한쪽만 고쳐져서 상한이 샌다 — 8/18에 겪은 실패다.
+  // 재투입 정보: 사이드카 파일이 먼저, 없으면 DB의 plan/eval_result로 재구성한다.
+  // 사이드카 기능보다 먼저 끝난 작업에는 파일이 없다 — 그렇다고 되돌릴 방법이
+  // 없는 건 아니다. 실제로 palmoni 건이 이 경우였다.
+  // 명령(/rerun, /review)과 버튼 콜백이 함께 쓰므로 바깥 스코프에 둔다.
+  async function loadRetryPayload(taskId, taskRow = null) {
+    const fromDisk = readFollowUpPayload(taskId);
+    if (fromDisk) return fromDisk;
+    const task = taskRow || await taskQueries.get(taskId);
+    return rebuildFollowUpPayload(task);
+  }
+
   async function checkBranchRunGate() {
     return sharedBranchRunGate();
   }
@@ -556,6 +571,7 @@ export function createTelegramBot(agentRunner) {
             '/scan — 백로그·이슈를 읽어 LLM이 작업 후보 제안\n' +
             '/proposals — 대기 중인 제안 + <b>승인/거부 버튼</b> · 최근 처리 이력\n' +
             '/review — 검토 대기 작업 + <b>재투입/리포트/완료 버튼</b>\n' +
+            '/rerun &lt;taskId&gt; — 과거 작업을 미해결 항목만으로 재투입\n' +
             '/goal — 목표 만들기 (하네스가 계획을 세움) · /goals — 목표 현황\n' +
             '/cleanup — 저장소를 base 브랜치로 되돌리기 (산출물은 봉인)\n' +
             '/answer — 하네스의 되물음에 답하기\n' +
@@ -926,6 +942,43 @@ export function createTelegramBot(agentRunner) {
       await sendProposals(await backlogQueries.listPending());
     });
 
+    // /rerun <taskId> — 상태와 무관하게 과거 작업을 재투입한다.
+    // /review 에서 검토 완료로 내려버린 뒤에도 되돌릴 수 있어야 한다.
+    onCommand(/^\/rerun(?:@\w+)?\s+(\S+)\s*$/, async (msg, match) => {
+      const taskId = match[1].trim();
+      if (!REVIEW_TASK_ID_RE.test(taskId)) {
+        notify('❌ task id 형식이 아닙니다. <code>/rerun task_1786977920451_adeed5</code>');
+        return;
+      }
+      const task = await taskQueries.get(taskId);
+      if (!task) { notify(`❌ 작업 없음: <code>${escapeHtml(taskId)}</code>`); return; }
+
+      const payload = await loadRetryPayload(taskId, task);
+      if (!payload) {
+        notify(`❌ 재투입 정보를 만들 수 없습니다 — 평가 결과가 없는 작업입니다.\n<code>${escapeHtml(taskId)}</code>`);
+        return;
+      }
+      if (payload.branchMode) {
+        const gate = await checkBranchRunGate();
+        if (gate) { notify(`❌ 재투입 거부\n${escapeHtml(gate)}`); return; }
+      }
+
+      const newTaskId = await agentRunner.run({
+        projectId: payload.projectId,
+        prompt: payload.prompt,
+        branchMode: !!payload.branchMode,
+      });
+      if (task.status === 'needs_review') {
+        try { await taskQueries.updateStatus(taskId, 'reviewed'); } catch { /* 무시 */ }
+      }
+      notify(
+        `🔁 <b>재투입</b>${payload.rebuilt ? ' (DB에서 복원)' : ''}\n` +
+        `<code>${escapeHtml(taskId)}</code> → <code>${newTaskId}</code>\n` +
+        `📁 ${escapeHtml(payload.projectId)}${payload.branchMode ? ' · 브랜치+PR 모드' : ''}\n\n` +
+        `미해결 항목만 처리하도록 프롬프트가 좁혀졌습니다.`
+      );
+    });
+
     // /cleanup [projectId] — 저장소를 base 브랜치로 되돌린다.
     // eval 불합격은 커밋을 건너뛰므로 저장소가 task/* 브랜치에 dirty로 남는 일이
     // 생긴다. 그때마다 사람이 git 명령을 치게 두면 결국 아무도 안 치고 방치된다.
@@ -1051,7 +1104,7 @@ export function createTelegramBot(agentRunner) {
         `\n처리하지 않으면 계속 쌓입니다.`
       );
       for (const t of shown) {
-        const item = buildReviewQueueItem(t, !!readFollowUpPayload(t.id));
+        const item = buildReviewQueueItem(t, !!(await loadRetryPayload(t.id, t)));
         await notify(item.text, item.reply_markup ? { reply_markup: item.reply_markup } : {});
       }
     });
@@ -1305,8 +1358,8 @@ export function createTelegramBot(agentRunner) {
             return;
           }
 
-          // action === 'run' — 리포트가 남긴 재투입 페이로드로 새 작업을 만든다.
-          const payload = readFollowUpPayload(taskId);
+          // action === 'run' — 재투입 페이로드로 새 작업을 만든다.
+          const payload = await loadRetryPayload(taskId);
           if (!payload) {
             await answer('재투입 정보를 찾지 못했습니다. 리포트를 확인하고 직접 /run 하세요', true);
             return;

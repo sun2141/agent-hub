@@ -10,7 +10,7 @@ import {
   encodeRunCallback, encodeDecisionCallback, buildReviewQueueItem,
   CALLBACK_DATA_LIMIT,
 } from '../src/telegram/bot.js';
-import { buildRetryPrompt } from '../src/agent/report_generator.js';
+import { buildRetryPrompt, rebuildFollowUpPayload } from '../src/agent/report_generator.js';
 
 let passed = 0;
 const ok = (name) => { console.log(`  ✓ ${name}`); passed++; };
@@ -155,5 +155,60 @@ const brokenQ = buildReviewQueueItem({ id: 'weird', project_id: 'x' }, true);
 assert.strictEqual(brokenQ.reply_markup, undefined);
 assert.ok(brokenQ.text.includes('대시보드'));
 ok('id 형식이 어긋나면 안내로 대체');
+
+console.log('\n[6] DB에서 재투입 정보 복원');
+
+// 사이드카는 리포트 생성 시점에 쓰인다. 그 기능보다 먼저 끝난 작업에는 파일이 없다.
+// 재구성에 필요한 것은 전부 tasks 행에 있으므로, 리포트 마크다운을 파싱하지 않는다.
+const EVAL = {
+  score: 75, passed: false,
+  summary: 's', suggestions: 'OAuth 콜백을 분리할 것',
+  issues: ['npm run test가 ENOENT로 실패', 'OAuth 복귀 경로 소실', 'Apple 호출부 없음'],
+};
+const PLAN = { title: '로그인 후 원래 화면 복귀', acceptance_criteria: ['기준1', '기준2'] };
+
+const fromStrings = rebuildFollowUpPayload({
+  id: TASK, project_id: 'palmoni', prompt: '원래 요청', branch_mode: 1,
+  round: 10, plan: JSON.stringify(PLAN), eval_result: JSON.stringify(EVAL),
+});
+assert.ok(fromStrings);
+assert.strictEqual(fromStrings.projectId, 'palmoni');
+assert.strictEqual(fromStrings.branchMode, true);
+assert.strictEqual(fromStrings.score, 75);
+assert.strictEqual(fromStrings.rebuilt, true);
+assert.ok(fromStrings.prompt.includes('npm run test가 ENOENT로 실패'));
+assert.ok(fromStrings.prompt.includes('로그인 후 원래 화면 복귀'));
+ok('JSON 문자열 컬럼에서 복원하고 branch_mode를 물려받는다');
+
+// db 계층이 이미 파싱해 객체로 주는 경우도 있다.
+const fromObjects = rebuildFollowUpPayload({
+  id: TASK, project_id: 'palmoni', prompt: 'p', branch_mode: 0,
+  round: 4, plan: PLAN, eval_result: EVAL,
+});
+assert.ok(fromObjects);
+assert.strictEqual(fromObjects.branchMode, false);
+assert.ok(fromObjects.prompt.includes('4라운드'));
+ok('객체로 들어와도 동작한다');
+
+assert.strictEqual(rebuildFollowUpPayload({
+  id: TASK, project_id: 'p', eval_result: JSON.stringify({ score: 92, passed: true, issues: [] }),
+}), null);
+ok('합격한 작업은 null — 되돌릴 게 없다');
+
+assert.strictEqual(rebuildFollowUpPayload({ id: TASK, project_id: 'p' }), null);
+assert.strictEqual(rebuildFollowUpPayload({ id: TASK, eval_result: '깨진 JSON{' }), null);
+assert.strictEqual(rebuildFollowUpPayload(null), null);
+ok('평가 결과가 없거나 깨졌으면 null');
+
+console.log('\n[7] 재투입 불가 사유를 말한다');
+
+const noRetry = buildReviewQueueItem({ id: TASK, project_id: 'facepick', created_at: '2026-06-28' }, false);
+assert.ok(noRetry.text.includes('재투입 정보가 없습니다'));
+assert.ok(noRetry.text.includes('/run'));
+ok('버튼이 없으면 이유와 대안을 알려준다');
+
+const withRetry = buildReviewQueueItem({ id: TASK, project_id: 'palmoni' }, true);
+assert.ok(!withRetry.text.includes('재투입 정보가 없습니다'));
+ok('재투입 가능하면 그 문구를 넣지 않는다');
 
 console.log(`\n✅ review_buttons: ${passed}개 통과\n`);

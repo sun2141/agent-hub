@@ -421,6 +421,47 @@ export function buildRetryPrompt({ title, originalPrompt, issues = [], followUps
   return lines.join('\n');
 }
 
+// DB에 남은 plan/eval_result로 재투입 페이로드를 다시 만든다.
+// 사이드카는 리포트 생성 시점에 같이 쓰이므로, 사이드카 기능보다 먼저 끝난
+// 작업에는 파일이 없다. 그런데 재구성에 필요한 것은 전부 tasks 행에 있다 —
+// 리포트 마크다운을 파싱하는 것보다 이쪽이 안전하다.
+function parseMaybeJson(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+export function rebuildFollowUpPayload(task) {
+  if (!task?.id) return null;
+  const evalResult = parseMaybeJson(task.eval_result);
+  if (!evalResult || typeof evalResult !== 'object') return null;
+
+  const plan = parseMaybeJson(task.plan);
+  const breakdown = buildScoreBreakdown(plan, evalResult);
+  if (breakdown.passed) return null;   // 합격한 작업에는 되돌릴 게 없다
+
+  const rounds = task.round || task.max_rounds || null;
+  const followUps = generateFollowUpTasks(breakdown, plan, true);
+
+  return {
+    taskId: task.id,
+    projectId: task.project_id || null,
+    branchMode: !!task.branch_mode,
+    score: breakdown.score,
+    rounds,
+    title: plan?.title || null,
+    prompt: buildRetryPrompt({
+      title: plan?.title,
+      originalPrompt: task.prompt,
+      issues: breakdown.issues,
+      followUps,
+      score: breakdown.score,
+      rounds,
+    }),
+    rebuilt: true,
+  };
+}
+
 // 재투입 페이로드를 디스크에서 읽는다. 없으면 null.
 export function readFollowUpPayload(taskId) {
   try {
