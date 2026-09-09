@@ -8,7 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries } from '../db/db.js';
+import { taskQueries, logQueries, projectQueries, deleteTask, limitEventQueries, TASK_STATUS } from '../db/db.js';
 import { generateReport } from './report_generator.js';
 import { runPhase } from './phaseDispatch.js';
 import { minutesFromNow } from './providers/base.js';
@@ -56,14 +56,15 @@ function prependCliNodePath(env = process.env) {
   };
 }
 
+// 상태 문자열은 db.js의 TASK_STATUS가 단일 출처다 — 여기서 다시 적지 않는다.
 const PHASE = {
-  PLAN:   'planning',
-  BUILD:  'building',
-  EVAL:   'evaluating',
-  DONE:   'done',
-  FAILED: 'failed',
-  PAUSED: 'paused',
-  REVIEW: 'needs_review',
+  PLAN:   TASK_STATUS.PLANNING,
+  BUILD:  TASK_STATUS.BUILDING,
+  EVAL:   TASK_STATUS.EVALUATING,
+  DONE:   TASK_STATUS.DONE,
+  FAILED: TASK_STATUS.FAILED,
+  PAUSED: TASK_STATUS.PAUSED,
+  REVIEW: TASK_STATUS.NEEDS_REVIEW,
 };
 
 function parseJson(text) {

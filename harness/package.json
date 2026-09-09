@@ -24,7 +24,7 @@
     "test:net": "node tests/net_defaults.test.js",
     "test:backlog": "node tests/backlog_buttons.test.js",
     "test:db": "node tests/db_surface.test.js",
-    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db && npm run test:goal && npm run test:watchdog && npm run test:preflight && npm run test:directives && npm run test:verifyfail && npm run test:review && npm run test:goaltg && npm run test:cleanup && npm run test:readapi",
+    "verify": "npm test && npm run test:mp && npm run test:manager && npm run test:status && npm run test:net && npm run test:backlog && npm run test:db && npm run test:goal && npm run test:watchdog && npm run test:preflight && npm run test:directives && npm run test:verifyfail && npm run test:review && npm run test:goaltg && npm run test:cleanup && npm run test:readapi && npm run test:status2",
     "setup:thinkpad": "bash scripts/setup-thinkpad.sh",
     "providers": "node scripts/provider-status.js",
     "projects": "node scripts/projects-status.js",
@@ -44,7 +44,8 @@
     "test:review": "node tests/review_buttons.test.js",
     "test:goaltg": "node tests/goal_telegram.test.js",
     "test:cleanup": "node tests/repo_cleanup.test.js",
-    "test:readapi": "node tests/read_api_version.test.js"
+    "test:readapi": "node tests/read_api_version.test.js",
+    "test:status2": "node tests/task_status.test.js"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

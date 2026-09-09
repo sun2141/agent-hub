@@ -7,6 +7,42 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// ── 작업 상태의 단일 출처 ──────────────────────────────────────
+// 새 상태를 추가하면 여기와 TERMINAL_TASK_STATUSES 를 함께 고친다.
+//
+// 9/9 사고: 'reviewed' 를 추가하면서 종료 상태 목록에 넣지 않았다. 그러면
+// 그 상태의 branch_mode 작업이 영원히 "실행 중"으로 잡혀 동시 실행 상한을
+// 점유하고, /approve·백로그 버튼·목표 자동 실행까지 브랜치 경로 전체가 막힌다.
+// 상태 문자열이 SQL 안에 리터럴로 흩어져 있어서 한 곳만 고치면 갈라진다.
+export const TASK_STATUS = {
+  PENDING:          'pending',
+  PLANNING:         'planning',
+  BUILDING:         'building',
+  EVALUATING:       'evaluating',
+  HANDOFF_PENDING:  'handoff_pending',
+  FALLBACK_RUNNING: 'fallback_running',
+  RATE_LIMITED:     'rate_limited',
+  PAUSED:           'paused',
+  DONE:             'done',
+  FAILED:           'failed',
+  NEEDS_REVIEW:     'needs_review',
+  REVIEWED:         'reviewed',
+};
+
+// 사람이 손대지 않으면 더 진행되지 않는 상태 — 동시 실행 슬롯을 차지하지 않는다.
+// rate_limited 는 여기 없다: 쿨다운이 풀리면 스스로 재개하므로 슬롯을 계속 점유한다.
+export const TERMINAL_TASK_STATUSES = [
+  TASK_STATUS.DONE,
+  TASK_STATUS.FAILED,
+  TASK_STATUS.PAUSED,
+  TASK_STATUS.NEEDS_REVIEW,
+  TASK_STATUS.REVIEWED,
+];
+
+// 프로젝트의 "현재 작업"을 찾을 때는 쿨다운 대기도 제외한다 — 재개를 기다리는
+// 작업 때문에 그 프로젝트의 조회가 막히면 안 된다.
+export const IDLE_TASK_STATUSES = [...TERMINAL_TASK_STATUSES, TASK_STATUS.RATE_LIMITED];
+
 let _sql = null;
 
 function getSql() {
@@ -443,8 +479,10 @@ export const taskQueries = {
 
   async getActiveForProject(projectId) {
     return dbGet(
-      "SELECT id, status FROM harness.tasks WHERE project_id = $1 AND status NOT IN ('done','failed','paused','rate_limited','needs_review') ORDER BY created_at DESC LIMIT 1",
-      [projectId]
+      `SELECT id, status FROM harness.tasks
+       WHERE project_id = $1 AND NOT (status = ANY($2::text[]))
+       ORDER BY created_at DESC LIMIT 1`,
+      [projectId, IDLE_TASK_STATUSES]
     );
   },
 
@@ -725,7 +763,8 @@ export const backlogQueries = {
   async countActiveManagerTasks() {
     const row = await dbGet(
       `SELECT COUNT(*) AS cnt FROM harness.tasks
-       WHERE branch_mode = 1 AND status NOT IN ('done', 'failed', 'paused', 'needs_review')`
+       WHERE branch_mode = 1 AND NOT (status = ANY($1::text[]))`,
+      [TERMINAL_TASK_STATUSES]
     );
     return row ? Number(row.cnt) : 0;
   },

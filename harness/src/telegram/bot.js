@@ -3,7 +3,7 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import { checkBranchRunGate as sharedBranchRunGate } from '../agent/runGate.js';
-import { projectQueries, taskQueries, backlogQueries, logQueries } from '../db/db.js';
+import { projectQueries, taskQueries, backlogQueries, logQueries, TASK_STATUS } from '../db/db.js';
 import { formatResumeAt, humanizeAgo, formatLocal } from '../util/time.js';
 import { spawnDetached } from './deploy_worker.js';
 import { runManagerScan, formatScanDigest, parseDirective } from '../agent/manager.js';
@@ -968,8 +968,8 @@ export function createTelegramBot(agentRunner) {
         prompt: payload.prompt,
         branchMode: !!payload.branchMode,
       });
-      if (task.status === 'needs_review') {
-        try { await taskQueries.updateStatus(taskId, 'reviewed'); } catch { /* 무시 */ }
+      if (task.status === TASK_STATUS.NEEDS_REVIEW) {
+        try { await taskQueries.updateStatus(taskId, TASK_STATUS.REVIEWED); } catch { /* 무시 */ }
       }
       notify(
         `🔁 <b>재투입</b>${payload.rebuilt ? ' (DB에서 복원)' : ''}\n` +
@@ -1092,7 +1092,7 @@ export function createTelegramBot(agentRunner) {
     // 이 목록이 없어서 6월에 멈춘 작업이 9월까지 아무에게도 안 보였다.
     onCommand(/\/review/, async () => {
       const all = await taskQueries.list(100);
-      const pending = all.filter(t => t.status === 'needs_review');
+      const pending = all.filter(t => t.status === TASK_STATUS.NEEDS_REVIEW);
       if (!pending.length) {
         notify('✅ 검토 대기 중인 작업이 없습니다.');
         return;
@@ -1351,7 +1351,7 @@ export function createTelegramBot(agentRunner) {
           }
 
           if (action === 'done') {
-            await taskQueries.updateStatus(taskId, 'reviewed');
+            await taskQueries.updateStatus(taskId, TASK_STATUS.REVIEWED);
             await answer('검토 완료로 표시했습니다');
             notify(`✅ <b>검토 완료</b>\n<code>${escapeHtml(taskId)}</code>\n큐에서 내려갑니다.`);
             await clearKeyboard();
@@ -1379,7 +1379,7 @@ export function createTelegramBot(agentRunner) {
 
           // 원본은 큐에서 내린다 — 안 그러면 재투입해도 계속 검토 대기로 남는다.
           try {
-            await taskQueries.updateStatus(taskId, 'reviewed');
+            await taskQueries.updateStatus(taskId, TASK_STATUS.REVIEWED);
           } catch (err) {
             console.warn(`[Telegram] 원본 작업 상태 갱신 실패 (${taskId}): ${err.message}`);
           }
